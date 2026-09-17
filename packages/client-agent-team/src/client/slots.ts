@@ -24,6 +24,7 @@ import type {
   AgentTeamPutAttachmentRequest,
   AgentTeamPutAttachmentResult,
   AgentTeamMemberResult,
+  AgentTeamAddMemberResult,
   AgentTeamRecoverMemberRequest,
   AgentTeamRecoverMemberResult,
   AgentTeamMembersRequest,
@@ -105,7 +106,7 @@ export type TeamSidebarProps = PropsRuntime<'sidebar.workspaces'>
     /** Fired after every committed durable Thread read; the badge refreshes without waiting for a changes wake. */
     subscribeReads: (listener: () => void) => () => void
     subscribeChanges: SubscribeTeamChanges
-    addMember: (request: AgentTeamAddMemberRequest) => Promise<RemoteResult<AgentTeamMemberResult>>
+    addMember: (request: AgentTeamAddMemberRequest) => Promise<RemoteResult<AgentTeamAddMemberResult>>
     loadChannels: (request: AgentTeamViewRequest) => Promise<RemoteResult<AgentTeamView>>
     createChannel: (request: AgentTeamCreateChannelRequest) => Promise<RemoteResult<AgentTeamCreateChannelResult>>
     updateChannel: (request: AgentTeamUpdateChannelRequest) => Promise<RemoteResult<AgentTeamUpdateChannelResult>>

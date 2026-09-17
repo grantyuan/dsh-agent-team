@@ -107,6 +107,7 @@ export async function runtimeWithTeam(options?: { mode?: 'team'; workspaceId?: s
       },
       availability: 'active', presence: 'available',
     },
+    workspaceIds: [request.workspaceId],
   } }))
   let channels: Array<Record<string, unknown>> = options?.initialChannels === true
     ? [{ channelRef: 'channel:engineering', workspaceId: 'w1', name: 'engineering', description: 'Engineering work', createdAtSequence: 1 }]
