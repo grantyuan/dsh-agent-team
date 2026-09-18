@@ -329,6 +329,63 @@ export interface AgentTeamGetAttachmentResult {
   readonly bytesBase64: string
 }
 
+/** Human profile read: name + avatar reference + version footnote facts. */
+export interface AgentTeamHumanProfileRequest {
+}
+
+export interface AgentTeamHumanProfileResult {
+  readonly name: string
+  readonly avatarRef?: string | undefined
+  /** Bundle version shown in the settings footnote. */
+  readonly version: string
+  /** Repository home the footnote links to. */
+  readonly repoUrl: string
+  /**
+   * Whether a newer release is known. v1 never self-checks (Host-side check
+   * is a follow-up), so this stays false until that lands; the footnote
+   * shows only the version + link until then.
+   */
+  readonly updateAvailable: boolean
+  readonly latestVersion?: string | undefined
+}
+
+/** Upload one human avatar image into the persistent avatar store. */
+export interface AgentTeamPutHumanAvatarRequest {
+  readonly name: string
+  readonly mediaType?: string | undefined
+  readonly bytesBase64: string
+}
+
+export interface AgentTeamPutHumanAvatarResult {
+  readonly avatarRef: string
+  /** Absolute path members read the bytes from; stable until removed. */
+  readonly path: string
+  readonly name: string
+  readonly byteSize: number
+  readonly mediaType: string
+}
+
+/** Read one human avatar back for client-side display. */
+export interface AgentTeamGetHumanAvatarRequest {
+  readonly avatarRef: string
+}
+
+export interface AgentTeamGetHumanAvatarResult {
+  readonly name: string
+  readonly mediaType: string
+  readonly byteSize: number
+  readonly bytesBase64: string
+}
+
+/** Remove one human avatar entry; the profile falls back to hue/initial. */
+export interface AgentTeamRemoveHumanAvatarRequest {
+  readonly avatarRef: string
+}
+
+export interface AgentTeamRemoveHumanAvatarResult {
+  readonly removed: boolean
+}
+
 /** Intent to append one public Message to an existing Thread. */
 export interface AgentTeamReplyRequest {
   readonly requestId: AgentTeamRequestId

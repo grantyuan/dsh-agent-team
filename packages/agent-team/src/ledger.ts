@@ -504,6 +504,13 @@ export class AgentTeamLedger {
   private readonly createRef: (kind: 'channel' | 'message' | 'task' | 'thread' | 'claim' | 'activity') => string
   private operationTail: Promise<void> = Promise.resolve()
   /**
+   * Runtime human display name. Durable identity stays `member:human`; only
+   * the handle read by @ matching and handle-uniqueness follows this value.
+   * The Host syncs it from the `agent-team-human` settings namespace; the
+   * ledger never persists it, so a rename affects only later resolutions.
+   */
+  private humanHandle: string = AGENT_TEAM_HUMAN_HANDLE
+  /**
    * Head of the durable records the constructor's record-level replay
    * validated, adoptable once by the invariant mount. See `validateAtMount`.
    */
@@ -535,6 +542,20 @@ export class AgentTeamLedger {
       lastSequence: head?.sequence ?? 0,
       lastOperationId: head?.operationId ?? null,
     })
+  }
+
+  /** Current human display name for @ matching and uniqueness checks. */
+  humanDisplayHandle(): string {
+    return this.humanHandle
+  }
+
+  /**
+   * Sync the runtime human display name from Host settings. Never persisted:
+   * a rename affects only later @ resolutions and handle checks.
+   */
+  setHumanDisplayHandle(handle: string): void {
+    const name = handle.normalize('NFKC').trim()
+    if (name !== '') this.humanHandle = name
   }
 
   initialize(request: AgentTeamInitializeRequest = {
@@ -2153,7 +2174,10 @@ export class AgentTeamLedger {
     if (human === undefined || human.kind !== 'team/initialized') throw new Error('agent-team ledger has no Human Member')
     const humanMemberId = human.data.humanMemberId
     const assertHuman = (): void => {
-      if (operation.actor.kind !== 'human' || operation.actor.memberId !== humanMemberId || operation.actor.handle !== HUMAN_ACTOR.handle) {
+      // memberId is the durable Human authority; the handle is display-only
+      // and may carry a configured name (old records carry the historic
+      // literal), so replay never judges it here.
+      if (operation.actor.kind !== 'human' || operation.actor.memberId !== humanMemberId) {
         throw new Error(`agent-team operation ${operation.sequence} has invalid Human authority`)
       }
     }
@@ -2266,6 +2290,11 @@ export class AgentTeamLedger {
         if (other.memberId !== prior.memberId && other.state !== 'inactive' && this.participationOverlapFrom(projection, other.memberId, prior.memberId)
           && other.handle.normalize('NFKC').trim().toLowerCase() === normalized) throw new Error('invalid Member update handle')
       }
+      // Replay-time human collision uses the Host-synced runtime name; the
+      // default keeps old ledgers (written before configurable names) valid.
+      // A stored rename that now collides fails replay loudly rather than
+      // silently forking the @ namespace, so the operator renames first.
+      if (normalized === this.humanHandle.normalize('NFKC').trim().toLowerCase()) throw new Error('invalid Member update handle')
       return
     }
     if (operation.kind === 'team/channel-member-added') {
@@ -3652,7 +3681,8 @@ export class AgentTeamLedger {
 
   private assertHumanActor(actor: AgentTeamHumanActor): void {
     const initialization = this.initialization()
-    if (actor.kind !== 'human' || actor.memberId !== initialization.data.humanMemberId || actor.handle !== HUMAN_ACTOR.handle) {
+    // memberId is the durable Human authority; the handle is display-only.
+    if (actor.kind !== 'human' || actor.memberId !== initialization.data.humanMemberId) {
       throw new Error('agent-team operation lacks Human authority')
     }
   }
@@ -3898,7 +3928,7 @@ export class AgentTeamLedger {
    * deliver to.
    */
   private mentionCandidatesFor(channelRef: AgentTeamChannelRef): readonly AgentTeamBodyMentionCandidate[] {
-    const candidates: AgentTeamBodyMentionCandidate[] = [{ memberId: AGENT_TEAM_HUMAN_MEMBER_ID, handle: AGENT_TEAM_HUMAN_HANDLE }]
+    const candidates: AgentTeamBodyMentionCandidate[] = [{ memberId: AGENT_TEAM_HUMAN_MEMBER_ID, handle: this.humanHandle }]
     for (const member of this.state.members.values()) {
       if (member.state === 'inactive' || member.state === 'archived') continue
       if (!this.isChannelMember(channelRef, member.memberId)) continue
@@ -3977,6 +4007,14 @@ export class AgentTeamLedger {
       && this.participatesInFrom(projection, member.memberId, workspaceId)
       && member.handle.normalize('NFKC').trim().toLowerCase() === normalized)) {
       throw new Error(`Agent Member handle '${handle}' is already active in Workspace '${workspaceId}'`)
+    }
+    // The human display name shares the @ namespace: an agent handle colliding
+    // with it would make body mentions ambiguous, so it is reserved globally.
+    // The ledger's runtime humanHandle is the single source; replay uses the
+    // Host-synced value, and the default equals the historic literal.
+    const humanNormalized = this.humanHandle.normalize('NFKC').trim().toLowerCase()
+    if (humanNormalized !== '' && normalized === humanNormalized) {
+      throw new Error(`Agent Member handle '${handle}' collides with the human display name`)
     }
   }
 

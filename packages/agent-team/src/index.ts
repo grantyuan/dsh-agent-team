@@ -20,9 +20,12 @@ import type {} from '@deepseek-ai/dsh-session-persistence'
 import { setSandboxMode } from '@deepseek-ai/dsh-sandbox-policy'
 import { Remote, TypertRemoteService } from '@deepseek-ai/dsh-typert-protocol'
 import type {} from '@deepseek-ai/dsh-tools'
+import type {} from '@deepseek-ai/dsh-settings'
 import type { Domain } from '@deepseek-ai/dsh-storage-domain'
 import type { WorkspaceId } from '@deepseek-ai/dsh-workspace'
 import { ATTACHMENT_MAX_BYTES, attachmentPayloadPath, attachmentsRoot, copyPathAttachment, newAttachmentId, readAttachment, sanitizeMediaType, sweepAttachmentCache, validatePathAttachment, writeAttachment } from './attachments.ts'
+import { HUMAN_PROFILE_DEFAULT_NAME, HUMAN_PROFILE_REPO_URL, HUMAN_PROFILE_SETTINGS_NAMESPACE, HUMAN_PROFILE_SETTINGS_SCHEMA, HUMAN_PROFILE_VERSION, assertValidHumanName, normalizeHumanName, type HumanProfileSettings } from './human-profile.ts'
+import { humanAvatarsRoot, readHumanAvatar, removeHumanAvatar, writeHumanAvatar } from './human-avatar.ts'
 import { PressurePolicyCoordinator } from './pressure-policy.ts'
 import { ContextManagementCoordinator, type TransitionPlan } from './context-management.ts'
 import { AGENT_TEAM_PLUGIN_ID, createHandoffMessage } from './context-source.ts'
@@ -60,6 +63,14 @@ import type {
   AgentTeamCreateChannelResult,
   AgentTeamGetAttachmentRequest,
   AgentTeamGetAttachmentResult,
+  AgentTeamGetHumanAvatarRequest,
+  AgentTeamGetHumanAvatarResult,
+  AgentTeamHumanProfileRequest,
+  AgentTeamHumanProfileResult,
+  AgentTeamPutHumanAvatarRequest,
+  AgentTeamPutHumanAvatarResult,
+  AgentTeamRemoveHumanAvatarRequest,
+  AgentTeamRemoveHumanAvatarResult,
   AgentTeamInbox,
   AgentTeamInboxRequest,
   AgentTeamJoinChannelRequest,
@@ -128,6 +139,8 @@ import type {
 export { agentTeamDomainSpec, agentTeamOperationSchema } from './spec.ts'
 export type * from './types.ts'
 export { AGENT_TEAM_HUMAN_HANDLE, AGENT_TEAM_HUMAN_MEMBER_ID, AGENT_TEAM_INITIALIZE_REQUEST_ID } from './ledger.ts'
+export { HUMAN_PROFILE_DEFAULT_NAME, HUMAN_PROFILE_REPO_URL, HUMAN_PROFILE_SETTINGS_NAMESPACE, HUMAN_PROFILE_SETTINGS_SCHEMA, HUMAN_PROFILE_VERSION, assertValidHumanName, normalizeHumanName } from './human-profile.ts'
+export { humanAvatarsRoot } from './human-avatar.ts'
 export { AGENT_TEAM_TOOL_NAMES } from './member-runtime.ts'
 
 /** Process-stable marker carried by the final Team message tool definition. */
@@ -389,6 +402,12 @@ export default class AgentTeam extends TypertRemoteService {
   private readonly pressurePolicy: PressurePolicyCoordinator
   private readonly notifiedInbox = new Map<AgentTeamMemberId, string>()
   private attachmentGcTimer?: ReturnType<typeof setInterval> | undefined
+  /**
+   * Current human profile source, wired to the `agent-team-human` settings
+   * namespace when a settings service is present. Falls back to the historic
+   * default so team_view and @ matching keep working without settings.
+   */
+  private humanProfileSource: () => HumanProfileSettings = () => ({ name: HUMAN_PROFILE_DEFAULT_NAME })
 
   private readonly recovery = new RecoveryCoordinator({
     wake: memberId => {
@@ -473,6 +492,64 @@ export default class AgentTeam extends TypertRemoteService {
       },
       log: message => { this.ctx.logger.warn(`agent-team: ${message}`) },
     })
+    // Human profile settings: the composition entry is the historic default;
+    // the settings provider overlays the user document section when present.
+    // Reads stay live through the source closure, so team_view and @ matching
+    // follow a rename without a Host restart.
+    this.ctx.inject(['settings'], settingsCtx => {
+      settingsCtx.settings.installSection(this.ctx, HUMAN_PROFILE_SETTINGS_NAMESPACE, HUMAN_PROFILE_SETTINGS_SCHEMA, { name: HUMAN_PROFILE_DEFAULT_NAME }, {
+        setSource: (current: () => HumanProfileSettings) => {
+          this.humanProfileSource = current
+          this.syncHumanHandle()
+        },
+        validate: (value: HumanProfileSettings) => {
+          this.validateHumanProfile(value)
+        },
+        onChange: () => {
+          this.syncHumanHandle()
+        },
+      })
+    })
+  }
+
+  /** Current human display name; the single source for team_view and @ matching. */
+  humanHandle(): string {
+    const name = normalizeHumanName(this.humanProfileSource().name)
+    return name === '' ? HUMAN_PROFILE_DEFAULT_NAME : name
+  }
+
+  /** Current human profile reference held in settings (name + avatarRef). */
+  humanProfile(): { readonly name: string; readonly avatarRef?: string | undefined } {
+    const current = this.humanProfileSource()
+    const name = this.humanHandle()
+    return Object.freeze({ name, ...(current.avatarRef === undefined ? {} : { avatarRef: current.avatarRef }) })
+  }
+
+  /** Push the current settings name into the ledger's runtime @ handle. */
+  private syncHumanHandle(): void {
+    try {
+      this.ledger?.setHumanDisplayHandle(this.humanHandle())
+    } catch {
+      // The ledger is absent before Service.init; the post-open sync covers it.
+    }
+  }
+
+  /**
+   * Settings-level validation for the human profile: same non-empty floor as
+   * Member handles plus global uniqueness against live Members. Runs inside
+   * the settings write path, so a colliding rename rejects before persisting.
+   */
+  private validateHumanProfile(value: HumanProfileSettings): void {
+    const name = assertValidHumanName(value.name)
+    const ledger = this.ledger
+    if (ledger === undefined) return
+    const normalized = name.normalize('NFKC').trim().toLowerCase()
+    for (const member of ledger.listMembers()) {
+      if (member.state === 'inactive' || member.state === 'archived') continue
+      if (member.handle.normalize('NFKC').trim().toLowerCase() === normalized) {
+        throw new Error(`human name '${name}' collides with an existing Member handle`)
+      }
+    }
   }
 
   /** Open the durable ledger and restore every enabled Member independently. */
@@ -553,6 +630,9 @@ export default class AgentTeam extends TypertRemoteService {
     this.domain = domain
     const ledger = new AgentTeamLedger(domain.table('operations'))
     this.ledger = ledger
+    // The settings wiring in the constructor may have fired before the ledger
+    // existed; sync once here so @ matching starts from the stored name.
+    this.syncHumanHandle()
     const initialization = await ledger.initialize()
     if (initialization.committed) this.emitCommitted(initialization.value)
     this.startAttachmentGc(ledger)
@@ -1254,6 +1334,54 @@ export default class AgentTeam extends TypertRemoteService {
     const stored = await readAttachment(attachmentsRoot(), request.attachmentId)
     if (stored === undefined) throw new Error(`attachment '${request.attachmentId}' is no longer cached`)
     return Object.freeze({ name: stored.name, mediaType: stored.mediaType, byteSize: stored.byteSize, bytesBase64: stored.bytes.toString('base64') })
+  }
+
+  /**
+   * Human profile read for the settings page and footnote: name + avatar
+   * reference from settings plus static version facts. Human-scoped (the Web
+   * Client calls it); agent tools never receive avatar bytes, only the name
+   * through team_view. Update checking stays Host-side and unimplemented in
+   * v1, so `updateAvailable` is always false until that lands.
+   */
+  @Remote('humanProfile')
+  humanProfileForClient(_request: AgentTeamHumanProfileRequest): AgentTeamHumanProfileResult {
+    const profile = this.humanProfile()
+    return Object.freeze({
+      name: profile.name,
+      ...(profile.avatarRef === undefined ? {} : { avatarRef: profile.avatarRef }),
+      version: HUMAN_PROFILE_VERSION,
+      repoUrl: HUMAN_PROFILE_REPO_URL,
+      updateAvailable: false,
+    })
+  }
+
+  /**
+   * Upload one human avatar image into the persistent store. Human-only by
+   * construction: only the Web Client calls this Remote, never agent tools.
+   * The caller stores the returned ref in settings; bytes never enter the
+   * TTL-bound attachment cache.
+   */
+  @Remote('putHumanAvatar')
+  async putHumanAvatar(request: AgentTeamPutHumanAvatarRequest): Promise<AgentTeamPutHumanAvatarResult> {
+    this.requireAccepting()
+    const bytes = Buffer.from(request.bytesBase64, 'base64')
+    return Object.freeze(await writeHumanAvatar(humanAvatarsRoot(), request.name, request.mediaType ?? 'application/octet-stream', bytes))
+  }
+
+  /** Read one human avatar back; removed entries throw and the UI falls back to hue/initial. */
+  @Remote('getHumanAvatar')
+  async getHumanAvatar(request: AgentTeamGetHumanAvatarRequest): Promise<AgentTeamGetHumanAvatarResult> {
+    const stored = await readHumanAvatar(humanAvatarsRoot(), request.avatarRef)
+    if (stored === undefined) throw new Error(`human avatar '${request.avatarRef}' is no longer stored`)
+    return Object.freeze({ name: stored.name, mediaType: stored.mediaType, byteSize: stored.byteSize, bytesBase64: stored.bytes.toString('base64') })
+  }
+
+  /** Remove one human avatar entry; the UI falls back to hue/initial afterwards. */
+  @Remote('removeHumanAvatar')
+  async removeHumanAvatar(request: AgentTeamRemoveHumanAvatarRequest): Promise<AgentTeamRemoveHumanAvatarResult> {
+    this.requireAccepting()
+    await removeHumanAvatar(humanAvatarsRoot(), request.avatarRef)
+    return Object.freeze({ removed: true })
   }
 
   /** Human existing-Thread reply; unread and revision conflicts are business outcomes. */

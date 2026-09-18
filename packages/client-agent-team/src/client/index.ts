@@ -38,6 +38,10 @@ import type {} from '@deepseek-ai/dsh-client-ui-renderer/client'
 import type {} from '@deepseek-ai/dsh-client-ui-settings-general/client'
 import type {} from '@deepseek-ai/dsh-client-ui-sidebar/client'
 import type {} from '@deepseek-ai/dsh-client-ui-workspace/client'
+import type {} from '@deepseek-ai/dsh-client-ui-settings/client'
+import type {} from '@deepseek-ai/dsh-api-remotes/client'
+import { HumanSettingsSection } from './HumanSettingsSection.tsx'
+import { bytesToBase64 } from './attachment-preview.ts'
 import { TeamNavigation } from './navigation.ts'
 import { TeamChangeStream, TeamReadStream, type TeamChangeListener, type TeamChangeScope } from './team-changes.ts'
 import { TeamDraftStore } from './drafts.ts'
@@ -263,6 +267,57 @@ function applyUi(ctx: ClientContext): void {
   registerModeShadow(ctx, navigation, changes, reads, drafts, 'sidebar.workspaces', TeamWorkspaceBrowser as never)
   registerModeShadow(ctx, navigation, changes, reads, drafts, 'main', TeamConversation as never, undefined, 'conversation')
   registerModeShadow(ctx, navigation, changes, reads, drafts, 'sidebar.settings', TeamMembersAction as never, () => ({ loadMemberGroups }))
+
+  // Human profile settings section (v1 skeleton; visual copy is Iris's).
+  // Ordered between General (0) and Models (10) so identity sits near the top.
+  ctx.slots.inject('settings.section', () => ctx.slots.register({
+    name: 'settings.section',
+    id: 'team-human',
+    order: 5,
+    label: () => ctx.locale.bind(NS)('humanSettingsNav'),
+    locale: NS,
+    inject: () => ({
+      loadProfile: () => ctx.remote.agentTeam.humanProfile({}),
+      saveName: async (name: string) => {
+        const settings = (ctx.remote as unknown as { settings?: { update: (ns: string, patch: Record<string, unknown>, revision: number | undefined) => Promise<{ ok: boolean; error?: { message: string } }> } }).settings
+        if (settings === undefined) return 'settings service is unavailable'
+        const response = await settings.update('agent-team-human', { name }, undefined)
+        return response.ok ? undefined : (response.error?.message ?? 'settings write failed')
+      },
+      uploadAvatar: async (file: File) => {
+        const put = await ctx.remote.agentTeam.putHumanAvatar({
+          name: file.name,
+          ...(file.type === '' ? {} : { mediaType: file.type }),
+          bytesBase64: bytesToBase64(new Uint8Array(await file.arrayBuffer())),
+        })
+        if (!put.ok) return put.error.message
+        const settings = (ctx.remote as unknown as { settings?: { update: (ns: string, patch: Record<string, unknown>, revision: number | undefined) => Promise<{ ok: boolean; error?: { message: string } }> } }).settings
+        if (settings === undefined) return 'settings service is unavailable'
+        const save = await settings.update('agent-team-human', { avatarRef: put.value.avatarRef }, undefined)
+        return save.ok ? undefined : (save.error?.message ?? 'settings write failed')
+      },
+      removeAvatar: async () => {
+        const profile = await ctx.remote.agentTeam.humanProfile({})
+        if (profile.ok && profile.value.avatarRef !== undefined) {
+          await ctx.remote.agentTeam.removeHumanAvatar({ avatarRef: profile.value.avatarRef })
+          // Replace drops avatarRef back to inherited-absent; a merge patch
+          // cannot express field removal, so wholesale replace is the clear.
+          const settings = (ctx.remote as unknown as { settings?: { replace: (ns: string, section: Record<string, unknown>, revision: number | undefined) => Promise<{ ok: boolean; error?: { message: string } }> } }).settings
+          if (settings === undefined) return 'settings service is unavailable'
+          const save = await settings.replace('agent-team-human', { name: profile.value.name }, undefined)
+          return save.ok ? undefined : (save.error?.message ?? 'settings write failed')
+        }
+        return undefined
+      },
+      loadAvatarUrl: async (avatarRef: string) => {
+        // Avatar bytes ride the dedicated avatar Remote (never the TTL cache);
+        // the data-URL preview shape mirrors message attachments.
+        const result = await ctx.remote.agentTeam.getHumanAvatar({ avatarRef })
+        if (!result.ok || !result.value.mediaType.startsWith('image/')) return null
+        return `data:${result.value.mediaType};base64,${result.value.bytesBase64}`
+      },
+    }),
+  }, HumanSettingsSection as never))
 }
 
 export async function apply(ctx: ClientContext): Promise<void> {
