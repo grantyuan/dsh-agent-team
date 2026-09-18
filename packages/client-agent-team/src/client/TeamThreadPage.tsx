@@ -24,8 +24,9 @@ import { TeamStateDot } from './TeamStateDot.tsx'
 import { mintRequestId, uploadComposerFiles } from './requests.ts'
 import { daySeparatorLabel, isRunGap, timelineDayKey } from './team-separators.ts'
 import { useTimelineScroll } from './timeline-scroll.ts'
-import { hostTaskRefLookup, jumpToTaskThread } from './task-refs.ts'
-import { hostThreadRefLookup, jumpToThread } from './thread-refs.ts'
+import { hostTaskRefLookup, jumpToTaskThread } from './refs.ts'
+import { hostThreadRefLookup, jumpToThread } from './refs.ts'
+import { rosterChannelName, rosterMember } from './refs.ts'
 import css from './conversation.module.css'
 import threadCss from './thread.module.css'
 
@@ -52,6 +53,7 @@ interface TeamThreadPageProps {
   readonly selectThread: TeamConversationProps['selectThread']
   readonly resolveTaskRefs: TeamConversationProps['resolveTaskRefs']
   readonly resolveThreadRefs: TeamConversationProps['resolveThreadRefs']
+  readonly openMemberSession: TeamConversationProps['openMemberSession']
   readonly t: TeamConversationProps['t']
 }
 
@@ -102,7 +104,7 @@ function readMeta(facts: readonly AgentTeamThreadReadFact[]): ReadonlyMap<Thread
 
 export function TeamThreadPage(props: TeamThreadPageProps) {
   const {
-    workspaceId, channelRef, taskRef, threadRef, taskNumber, backToWorkspace, selectChannel, selectThread, resolveTaskRefs, resolveThreadRefs, putAttachment,
+    workspaceId, channelRef, taskRef, threadRef, taskNumber, backToWorkspace, selectChannel, selectThread, resolveTaskRefs, resolveThreadRefs, openMemberSession, putAttachment,
     loadChannels, readThread, loadThreadHistory, threadObservations,
     subscribeChanges, loadMembers, drafts, getAttachment, reply, changeTask, promoteThread, t,
   } = props
@@ -471,6 +473,26 @@ export function TeamThreadPage(props: TeamThreadPageProps) {
 
   const lookupTaskRefs = useMemo(() => hostTaskRefLookup(resolveTaskRefs, workspaceId), [resolveTaskRefs, workspaceId])
   const lookupThreadRefs = useMemo(() => hostThreadRefLookup(resolveThreadRefs, workspaceId), [resolveThreadRefs, workspaceId])
+  // Roster chips resolve synchronously from loaded data: channel names from
+  // the Channel view, member facts from the member list. Anything outside the
+  // loaded window stays plain text — the same rule unresolvable Task/Thread
+  // refs follow. The lookups key on roster content, not array identity: every
+  // refresh hands over fresh arrays, and the memoized rows must survive
+  // change bursts that leave the roster itself untouched.
+  const rosterKey = useMemo(() => [
+    (channelView?.channels ?? []).map(channel => `${channel.channelRef}=${channel.name}=${channel.state}`).join(','),
+    members.map(status => `${status.member.memberId}=${status.member.handle}=${status.member.sessionId}=${status.availability}`).join(','),
+    channelView?.humanMemberId ?? '',
+  ].join(';'), [channelView, members])
+  const channelNameOf = useMemo(() => {
+    const channels = channelView?.channels ?? []
+    return (ref: AgentTeamChannelRef): string | undefined => rosterChannelName(channels, ref)
+  }, [rosterKey])
+  const memberOf = useMemo(() => {
+    const humanMemberId = channelView?.humanMemberId
+    const humanHandle = t('human')
+    return (ref: AgentTeamMemberId) => rosterMember(members, humanMemberId, humanHandle, ref)
+  }, [rosterKey])
 
   const renderFact = (fact: AgentTeamThreadFact, grouped = false) => {
     if (fact.kind === 'message') {
@@ -490,6 +512,9 @@ export function TeamThreadPage(props: TeamThreadPageProps) {
         onOpenRef={openRef}
         onResolveTaskRefs={lookupTaskRefs}
         onResolveThreadRefs={lookupThreadRefs}
+        channelNameOf={channelNameOf}
+        memberOf={memberOf}
+        onOpenMemberSession={openMemberSession}
         grouped={grouped}
         {...(senderStatus === undefined ? {} : { senderTitle: senderStatus.member.description })}
       />

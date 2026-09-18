@@ -47,14 +47,15 @@ export function memberHue(memberId: string): number {
 /** One branded-ref occurrence inside a literal body segment. */
 export interface RefSegment {
   readonly text: string
-  /** The full `task:`/`channel:`/`thread:` ref when this segment is a link. */
+  /** The full `task:`/`channel:`/`thread:`/`member:` ref when this segment is a link. */
   readonly ref?: string
 }
 
 // Full UUIDs and abbreviated forms (prefix plus the first 6+ hex chars, with
 // or without the original hyphens) both match; resolution decides whether an
-// abbreviation is real, so unresolvable matches stay plain text.
-const BRANDED_REF_PATTERN = /\b(task|channel|thread):{1,2}[0-9a-f]{6,}(?:-[0-9a-f]{1,})*\b/gi
+// abbreviation is real, so unresolvable matches stay plain text. Member refs
+// match the same shape; the roster map decides whether one names a member.
+const BRANDED_REF_PATTERN = /\b(task|channel|thread|member):{1,2}[0-9a-f]{6,}(?:-[0-9a-f]{1,})*\b/gi
 
 /**
  * Canonical form of one matched ref: models occasionally double the colon or

@@ -2234,7 +2234,10 @@ it('keeps four same-origin Team pages responsive and independently subscribed', 
  */
 it('opens a taskless thread from its ref chip in real Web', async () => {
   await installLocalBundle()
-  scaffold = await launchWebScaffold({ extraOverlayPath: OVERLAY, harnessHome: HOME, extraInstallAnchors: [TEAM_INSTALL_ANCHOR] })
+  // Same install flow as the other journeys: installLocalBundle stages the
+  // bundle, so no extra install anchor is needed (an undefined anchor
+  // identifier here failed the whole journey with a ReferenceError).
+  scaffold = await launchWebScaffold({ extraOverlayPath: OVERLAY, harnessHome: HOME })
   browser = await chromium.launch({ headless: true, executablePath: CHROME })
   const page = await browser.newPage({ viewport: { width: 1440, height: 960 }, locale: 'zh-CN' })
   const consoleWatch = watchConsole(page)
@@ -2265,7 +2268,9 @@ it('opens a taskless thread from its ref chip in real Web', async () => {
   await betaArticle.waitFor()
   const chip = betaArticle.locator(`button[title="${alphaShort}"]`)
   await chip.waitFor()
-  await expect.poll(() => chip.textContent()).toMatch(/alpha discussion opens here/)
+  // Chip titles cap at 40 characters (boundedThreadTitle): the 43-char
+  // anchor below renders truncated, and navigation still proves identity.
+  await expect.poll(() => chip.textContent()).toMatch(/ALPHA-ROOT-MARKER alpha discussion open…/)
   await page.screenshot({ path: join(UI02_SHOTS, 'thread-ref-chip.png'), fullPage: true })
   await chip.click()
   // Split "never navigated" from "navigated but failed to render": the

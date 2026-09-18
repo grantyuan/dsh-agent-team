@@ -156,6 +156,8 @@ export type TeamConversationProps = PropsRuntime<'main'> & PropsLocale<'team'> &
   loadInbox: (request: AgentTeamInboxRequest) => Promise<RemoteResult<AgentTeamInbox>>
   /** Human-only Thread Attention observations; the Thread composer ranks the returned followers first. */
   threadObservations: (request: AgentTeamThreadObservationsRequest) => Promise<RemoteResult<AgentTeamThreadObservations>>
+  /** Agent-card session jump, shared by every slot; message member chips reuse it. */
+  openMemberSession: (sessionId: AgentTeamClientMemberStatus['member']['sessionId']) => void
 }
 
 export type TeamSettingsProps = PropsRuntime<'sidebar.settings'> & PropsLocale<'team'> & {

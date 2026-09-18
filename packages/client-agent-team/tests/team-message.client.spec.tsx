@@ -4,7 +4,7 @@ import { cleanup, fireEvent, render } from '@testing-library/react'
 import type { AgentTeamChannelRef, AgentTeamMemberId, AgentTeamThreadRef } from '@wowyuarm/dsh-agent-team/types'
 import { zh } from '../src/client/locales.ts'
 import type { TeamConversationProps } from '../src/client/slots.ts'
-import { rememberResolvedThreadRef, type ResolvedThreadRef } from '../src/client/thread-refs.ts'
+import { rememberResolvedThreadRef, type ResolvedThreadRef } from '../src/client/refs.ts'
 import { TeamMessage } from '../src/client/TeamMessage.tsx'
 
 const t = ((key: keyof typeof zh, params?: Record<string, string | number>) => {
@@ -167,6 +167,63 @@ describe('TeamMessage structured mention rendering', () => {
     // becoming links, so no button may appear.
     await new Promise(resolve => setTimeout(resolve, 0))
     expect(container.querySelector('button')).toBeNull()
+    expect(container.textContent).toContain(unknownRef)
+  })
+
+  it('names known channel refs and leaves unknown ones as plain text', async () => {
+    const knownRef = 'channel:11111111-2222-4333-8333-111111111111' as AgentTeamChannelRef
+    const unknownRef = 'channel:99999999-2222-4333-8333-999999999999' as AgentTeamChannelRef
+    const opened: string[] = []
+    const { container, findByRole } = render(
+      <TeamMessage
+        senderName="Builder"
+        memberId={'member:builder' as AgentTeamMemberId}
+        human={false}
+        body={`见 ${knownRef} 和 ${unknownRef} 定夺`}
+        onOpenRef={ref => { opened.push(ref) }}
+        channelNameOf={ref => ref === knownRef ? '工程' : undefined}
+        t={t}
+      />,
+    )
+    const chip = await findByRole('button', { name: '频道 · 工程' })
+    expect(chip.getAttribute('title')).toBe(knownRef)
+    fireEvent.click(chip)
+    expect(opened).toEqual([knownRef])
+    // The unknown ref never becomes a link: exactly one button exists and the
+    // raw spelling stays in the prose.
+    expect(container.querySelectorAll('button')).toHaveLength(1)
+    expect(container.textContent).toContain(unknownRef)
+  })
+
+  it('opens openable member chips in their session and labels the rest without linking', async () => {
+    const activeRef = 'member:6e8a5b10-df16-4ec0-943a-63738010953f' as AgentTeamMemberId
+    const suspendedRef = 'member:129366fb-d55a-40a0-b931-9f5b563feeba' as AgentTeamMemberId
+    const unknownRef = 'member:00000000-0000-4000-8000-000000000000' as AgentTeamMemberId
+    const sessions: string[] = []
+    const { container, findByRole } = render(
+      <TeamMessage
+        senderName="Builder"
+        memberId={'member:builder' as AgentTeamMemberId}
+        human={false}
+        body={`问 ${activeRef} 和 ${suspendedRef} 以及 ${unknownRef} 定夺`}
+        onOpenRef={() => {}}
+        memberOf={ref => {
+          if (ref === activeRef) return { memberId: ref, handle: 'tars', sessionId: 'session-active' as never, openable: true }
+          if (ref === suspendedRef) return { memberId: ref, handle: 'ferry', openable: false }
+          return undefined
+        }}
+        onOpenMemberSession={sessionId => { sessions.push(String(sessionId)) }}
+        t={t}
+      />,
+    )
+    const chip = await findByRole('button', { name: '成员 · @tars' })
+    expect(chip.getAttribute('title')).toBe(activeRef)
+    fireEvent.click(chip)
+    expect(sessions).toEqual(['session-active'])
+    // Suspended members keep a labelled span — informative, never a link —
+    // and unknown refs stay raw prose.
+    expect(container.querySelectorAll('button')).toHaveLength(1)
+    expect(container.textContent).toContain('成员 · @ferry')
     expect(container.textContent).toContain(unknownRef)
   })
 })

@@ -1,4 +1,4 @@
-import { Fragment, useCallback, useEffect, useRef, useState } from 'react'
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { AgentTeamClientMemberStatus, AgentTeamChannelRef, AgentTeamInbox, AgentTeamMemberId, AgentTeamSendMessageRequest, AgentTeamTask, AgentTeamView, AgentTeamViewItem,
   AgentTeamTaskRef, AgentTeamThreadRef,
 } from '@wowyuarm/dsh-agent-team/types'
@@ -17,8 +17,9 @@ import { claimersLabel, formatAbsoluteTime, formatInboxTime, formatTaskStatus, t
 import { TeamStateDot } from './TeamStateDot.tsx'
 import { useChannelMembership } from './team-membership.ts'
 import { useTimelineScroll } from './timeline-scroll.ts'
-import { hostTaskRefLookup, jumpToTaskThread } from './task-refs.ts'
-import { hostThreadRefLookup, jumpToThread } from './thread-refs.ts'
+import { hostTaskRefLookup, jumpToTaskThread } from './refs.ts'
+import { hostThreadRefLookup, jumpToThread } from './refs.ts'
+import { rosterChannelName, rosterMember } from './refs.ts'
 import { chunkRunsWithDays, isRunGap } from './team-separators.ts'
 import channelCss from './channel.module.css'
 import css from './conversation.module.css'
@@ -42,6 +43,7 @@ interface TeamChannelPageProps {
   readonly selectChannel: TeamConversationProps['selectChannel']
   readonly resolveTaskRefs: TeamConversationProps['resolveTaskRefs']
   readonly resolveThreadRefs: TeamConversationProps['resolveThreadRefs']
+  readonly openMemberSession: TeamConversationProps['openMemberSession']
   readonly backToChannels: TeamConversationProps['backToChannels']
   readonly t: TeamConversationProps['t']
 }
@@ -80,7 +82,7 @@ function unreadCounts(inbox: AgentTeamInbox): ReadonlyMap<AgentTeamThreadRef, nu
   return new Map(inbox.items.filter(item => item.unreadCount > 0).map(item => [item.thread.threadRef, item.unreadCount]))
 }
 
-export function TeamChannelPage({ workspaceId, channelRef, loadChannels, subscribeChanges, loadMembers, loadInbox, drafts, putAttachment, getAttachment, sendMessage, joinChannel, removeChannelMember, selectThread, selectChannel, backToChannels, resolveTaskRefs, resolveThreadRefs, t }: TeamChannelPageProps) {
+export function TeamChannelPage({ workspaceId, channelRef, loadChannels, subscribeChanges, loadMembers, loadInbox, drafts, putAttachment, getAttachment, sendMessage, joinChannel, removeChannelMember, selectThread, selectChannel, backToChannels, resolveTaskRefs, resolveThreadRefs, openMemberSession, t }: TeamChannelPageProps) {
   const [view, setView] = useState<AgentTeamView>()
   const [members, setMembers] = useState<readonly AgentTeamClientMemberStatus[]>([])
   const [unreadByThread, setUnreadByThread] = useState<ReadonlyMap<AgentTeamThreadRef, number>>(new Map())
@@ -142,6 +144,26 @@ export function TeamChannelPage({ workspaceId, channelRef, loadChannels, subscri
 
   const lookupTaskRefs = hostTaskRefLookup(resolveTaskRefs, workspaceId)
   const lookupThreadRefs = hostThreadRefLookup(resolveThreadRefs, workspaceId)
+  // Roster chips resolve synchronously from loaded data: channel names from
+  // the loaded feed windows, member facts from the member list. Anything
+  // outside stays plain text — the same rule unresolvable refs follow. The
+  // lookups key on roster content, not array identity: every refresh hands
+  // over fresh arrays, and the memoized rows must survive change bursts that
+  // leave the roster itself untouched.
+  const rosterKey = useMemo(() => [
+    (view?.channels ?? []).map(channel => `${channel.channelRef}=${channel.name}=${channel.state}`).join(','),
+    members.map(status => `${status.member.memberId}=${status.member.handle}=${status.member.sessionId}=${status.availability}`).join(','),
+    view?.humanMemberId ?? '',
+  ].join(';'), [view, members])
+  const channelNameOf = useMemo(() => {
+    const channels = view?.channels ?? []
+    return (ref: AgentTeamChannelRef): string | undefined => rosterChannelName(channels, ref)
+  }, [rosterKey])
+  const memberOf = useMemo(() => {
+    const humanMemberId = view?.humanMemberId
+    const humanHandle = t('human')
+    return (ref: AgentTeamMemberId) => rosterMember(members, humanMemberId, humanHandle, ref)
+  }, [rosterKey])
 
   const timeline = useTimelineScroll(`${view?.items.length ?? 0}:${channelLastItem?.message.messageRef ?? ''}`)
   const channel = view?.channels.find(item => item.channelRef === channelRef)
@@ -410,6 +432,9 @@ export function TeamChannelPage({ workspaceId, channelRef, loadChannels, subscri
                 onOpenRef={openRef}
                 onResolveTaskRefs={lookupTaskRefs}
                 onResolveThreadRefs={lookupThreadRefs}
+                channelNameOf={channelNameOf}
+                memberOf={memberOf}
+                onOpenMemberSession={openMemberSession}
                 grouped={index > 0}
                 showGroupedTime={item.message.topLevel === true && !turnGap}
                 {...(senderStatus === undefined ? {} : { senderTitle: senderStatus.member.description })}

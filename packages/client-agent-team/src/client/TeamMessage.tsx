@@ -1,11 +1,13 @@
 import { Fragment, memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from 'react'
 import { MarkdownText, Modal } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { MarkdownLabels } from '@deepseek-ai/dsh-client-ui-primitives'
-import type { AgentTeamMemberId, AgentTeamMessageAttachment, AgentTeamTaskRef, AgentTeamThreadRef } from '@wowyuarm/dsh-agent-team/types'
+import type { SessionId } from '@deepseek-ai/dsh-session'
+import type { AgentTeamChannelRef, AgentTeamMemberId, AgentTeamMessageAttachment, AgentTeamTaskRef, AgentTeamThreadRef } from '@wowyuarm/dsh-agent-team/types'
 import type { TeamConversationProps } from './slots.ts'
+import type { ResolvedMemberRef } from './refs.ts'
 import { cachedAttachmentDataUrl, formatByteSize, loadAttachmentDataUrl } from './attachment-preview.ts'
-import { cachedResolvedTaskRef, resolveUnknownTaskRefs, useResolvedTaskRefVersion, type ResolvedTaskRef } from './task-refs.ts'
-import { cachedResolvedThreadRef, resolveUnknownThreadRefs, useResolvedThreadRefVersion, type ResolvedThreadRef } from './thread-refs.ts'
+import { cachedResolvedTaskRef, resolveUnknownTaskRefs, useResolvedTaskRefVersion, type ResolvedTaskRef } from './refs.ts'
+import { cachedResolvedThreadRef, resolveUnknownThreadRefs, useResolvedThreadRefVersion, type ResolvedThreadRef } from './refs.ts'
 import { formatMessageTime, isSingleBrandedRef, memberHue, planMessageBody, shouldClampMessage, splitBrandedRefs, splitMentionNames } from './team-formatters.ts'
 import css from './conversation.module.css'
 
@@ -34,6 +36,12 @@ export interface TeamMessageProps {
   readonly onResolveTaskRefs?: ((taskRefs: readonly AgentTeamTaskRef[]) => Promise<readonly ResolvedTaskRef[]>) | undefined
   /** Host lookup turning thread refs into titled chips; absent keeps raw refs. */
   readonly onResolveThreadRefs?: ((threadRefs: readonly AgentTeamThreadRef[]) => Promise<readonly ResolvedThreadRef[]>) | undefined
+  /** Roster name for one authored channel ref; absent or unknown keeps plain text. */
+  readonly channelNameOf?: ((ref: AgentTeamChannelRef) => string | undefined) | undefined
+  /** Roster facts for one authored member ref; absent or unknown keeps plain text. */
+  readonly memberOf?: ((ref: AgentTeamMemberId) => ResolvedMemberRef | undefined) | undefined
+  /** Agent-card session jump for member chips; absent renders them as plain text. */
+  readonly onOpenMemberSession?: ((sessionId: SessionId) => void) | undefined
   readonly children?: ReactNode
 }
 
@@ -45,7 +53,7 @@ export interface TeamMessageProps {
  * skipping a render here never detaches it. Callers must therefore keep the
  * props they derive per render (mention names, ref callbacks) identity-stable.
  */
-export const TeamMessage = memo(function TeamMessage({ senderName, memberId, human, body, occurredAt, mentionNames, senderTitle, grouped, showGroupedTime, attachments, loadAttachment, t, onOpenRef, onResolveTaskRefs, onResolveThreadRefs, children }: TeamMessageProps) {
+export const TeamMessage = memo(function TeamMessage({ senderName, memberId, human, body, occurredAt, mentionNames, senderTitle, grouped, showGroupedTime, attachments, loadAttachment, t, onOpenRef, onResolveTaskRefs, onResolveThreadRefs, channelNameOf, memberOf, onOpenMemberSession, children }: TeamMessageProps) {
   const avatarStyle = human ? undefined : { '--team-avatar-hue': memberHue(memberId) } as CSSProperties
   // Literal bodies carry mention chips inline — Human input always, and
   // plain-prose Agent bodies where literal rendering loses nothing. Rich
@@ -77,7 +85,10 @@ export const TeamMessage = memo(function TeamMessage({ senderName, memberId, hum
     const base = t?.('threadLabel') ?? 'Thread'
     return title === '' ? base : `${base} · ${title}`
   }, [t])
-  const refLabel = useCallback((ref: string): string => ref.startsWith('channel:') ? (t?.('channels') ?? 'Channels') : ref, [t])
+  // Channel chips name the cited Channel; member chips name the cited Member
+  // with a handle — deliberately distinct from `@mention` chips, which notify.
+  const channelChipLabel = useCallback((name: string): string => t?.('channelLabel', { name }) ?? `Channel · ${name}`, [t])
+  const memberChipLabel = useCallback((name: string): string => t?.('memberLabel', { name }) ?? `Member · @${name}`, [t])
   // Markdown chrome (code-copy buttons, footnotes heading) is locale copy the
   // cordis-free primitive receives via props. Stable per locale revision — a
   // fresh object per render would rebuild the component table every chunk.
@@ -107,8 +118,8 @@ export const TeamMessage = memo(function TeamMessage({ senderName, memberId, hum
         .map(segment => segment.ref as AgentTeamThreadRef)))]
     if (onResolveTaskRefs !== undefined && taskRefs.length > 0) void resolveUnknownTaskRefs(taskRefs, onResolveTaskRefs)
     if (onResolveThreadRefs !== undefined && threadRefs.length > 0) void resolveUnknownThreadRefs(threadRefs, onResolveThreadRefs)
-    for (const code of styledRefCodes) renderResolvedMarkdownCodeRef(code, taskLabel, threadChipLabel, refLabel)
-    for (const node of textNodes) renderResolvedMarkdownText(node, mentionNames ?? [], taskLabel, threadChipLabel, refLabel)
+    for (const code of styledRefCodes) renderResolvedMarkdownCodeRef(code, taskLabel, threadChipLabel, channelChipLabel, memberChipLabel, channelNameOf, memberOf)
+    for (const node of textNodes) renderResolvedMarkdownText(node, mentionNames ?? [], taskLabel, threadChipLabel, channelChipLabel, memberChipLabel, channelNameOf, memberOf)
     for (const button of root.querySelectorAll<HTMLButtonElement>('button[data-task-ref]')) {
       const taskRef = button.dataset.taskRef as AgentTeamTaskRef | undefined
       const hit = taskRef === undefined ? undefined : cachedResolvedTaskRef(taskRef)
@@ -119,29 +130,38 @@ export const TeamMessage = memo(function TeamMessage({ senderName, memberId, hum
       const hit = threadRef === undefined ? undefined : cachedResolvedThreadRef(threadRef)
       if (threadRef !== undefined && hit !== undefined) button.textContent = threadChipLabel(hit.title)
     }
-  }, [richAgentBody, onOpenRef, onResolveTaskRefs, onResolveThreadRefs, taskRefVersion, threadRefVersion, taskLabel, threadChipLabel, refLabel, mentionNames])
+  }, [richAgentBody, onOpenRef, onResolveTaskRefs, onResolveThreadRefs, taskRefVersion, threadRefVersion, taskLabel, threadChipLabel, channelChipLabel, memberChipLabel, channelNameOf, memberOf, mentionNames])
   useEffect(() => {
     const root = markdownRef.current
     if (!richAgentBody || root === null || onOpenRef === undefined) return
     const openTask = (event: Event): void => {
       const target = event.target
       if (!(target instanceof Element)) return
-      const button = target.closest('button[data-ref], button[data-task-ref], button[data-thread-ref]')
+      const button = target.closest('button[data-ref], button[data-task-ref], button[data-thread-ref], button[data-member-session]')
       if (button === null || !root.contains(button)) return
-      const ref = button instanceof HTMLElement ? button.dataset.ref ?? button.dataset.taskRef ?? button.dataset.threadRef : undefined
-      if (ref !== undefined) onOpenRef(ref)
+      if (button instanceof HTMLElement) {
+        // Member chips carry their session, not a Team ref: the same jump
+        // the agent card performs. Every other chip resolves to onOpenRef.
+        const sessionId = button.dataset.memberSession as SessionId | undefined
+        if (sessionId !== undefined) {
+          onOpenMemberSession?.(sessionId)
+          return
+        }
+        const ref = button.dataset.ref ?? button.dataset.taskRef ?? button.dataset.threadRef
+        if (ref !== undefined) onOpenRef(ref)
+      }
     }
     root.addEventListener('click', openTask)
     return () => { root.removeEventListener('click', openTask) }
-  }, [richAgentBody, onOpenRef])
+  }, [richAgentBody, onOpenRef, onOpenMemberSession])
   const bodyNode = plan.render === 'inline' && plan.inline !== undefined
     ? <div className={css.messageText}>
         {plan.inline.segments.map((segment, index) => segment.mention
           ? <span key={index} className={css.mention}>{segment.text}</span>
-          : <Fragment key={index}>{renderRefs(segment.text, onOpenRef, taskLabel, threadChipLabel, refLabel)}</Fragment>)}
+          : <Fragment key={index}>{renderRefs(segment.text, onOpenRef, onOpenMemberSession, taskLabel, threadChipLabel, channelChipLabel, memberChipLabel, channelNameOf, memberOf)}</Fragment>)}
       </div>
     : plan.render === 'literal'
-      ? <div className={css.messageText}>{onOpenRef === undefined ? displayBody : renderRefs(displayBody, onOpenRef, taskLabel, threadChipLabel, refLabel)}</div>
+      ? <div className={css.messageText}>{onOpenRef === undefined ? displayBody : renderRefs(displayBody, onOpenRef, onOpenMemberSession, taskLabel, threadChipLabel, channelChipLabel, memberChipLabel, channelNameOf, memberOf)}</div>
       : <div ref={markdownRef} className={css.messageMarkdown}><MarkdownText key={`${displayBody}:${onOpenRef === undefined ? 'literal' : 'refs'}`} text={displayBody} labels={markdownLabels} /></div>
   return (
     <article className={css.messageRow} data-human={human || undefined} data-grouped={grouped || undefined}>
@@ -233,14 +253,47 @@ function resolvedThreadRefButton(threadRef: AgentTeamThreadRef, label: string): 
   return button
 }
 
+/** One roster-resolved Channel chip built outside React, matching the styled ref link. */
+function resolvedChannelRefButton(channelRef: AgentTeamChannelRef, label: string): HTMLButtonElement {
+  const button = document.createElement('button')
+  button.type = 'button'
+  if (css.refLink !== undefined) button.className = css.refLink
+  button.dataset.ref = channelRef
+  button.title = channelRef
+  button.textContent = label
+  return button
+}
+
+/**
+ * One roster-resolved Member chip built outside React. Openable Members jump
+ * to their session through the delegated click listener; everyone else gets
+ * a labelled but inert span, never a link-shaped misfire.
+ */
+function resolvedMemberRefChip(memberRef: AgentTeamMemberId, label: string, sessionId?: SessionId): HTMLElement {
+  if (sessionId === undefined) {
+    const span = document.createElement('span')
+    span.title = memberRef
+    span.textContent = label
+    return span
+  }
+  const button = document.createElement('button')
+  button.type = 'button'
+  if (css.refLink !== undefined) button.className = css.refLink
+  button.dataset.memberSession = sessionId
+  button.title = memberRef
+  button.textContent = label
+  return button
+}
+
 /** Replace a whole-ref code span with its resolved chip once known. */
-function renderResolvedMarkdownCodeRef(code: HTMLElement, taskLabel: (taskNumber: number) => string, threadChipLabel: (title: string) => string, refLabel: (ref: string) => string): void {
+function renderResolvedMarkdownCodeRef(code: HTMLElement, taskLabel: (taskNumber: number) => string, threadChipLabel: (title: string) => string, channelChipLabel: (name: string) => string, memberChipLabel: (name: string) => string, channelNameOf: ((ref: AgentTeamChannelRef) => string | undefined) | undefined, memberOf: ((ref: AgentTeamMemberId) => ResolvedMemberRef | undefined) | undefined): void {
   const segments = splitBrandedRefs((code.textContent ?? '').trim())
   const segment = segments.length === 1 ? segments[0]! : undefined
   const ref = segment?.ref
   if (ref === undefined) return
   // Task and Thread refs need Host resolution before becoming human-readable
-  // links; channel refs have no resolver and link at the authored position.
+  // links; Channel and Member refs resolve against the loaded rosters, and
+  // anything the roster does not know stays untouched plain text.
   if (ref.startsWith('task:')) {
     const resolved = cachedResolvedTaskRef(ref as AgentTeamTaskRef)
     if (resolved === undefined) return
@@ -253,17 +306,21 @@ function renderResolvedMarkdownCodeRef(code: HTMLElement, taskLabel: (taskNumber
     code.replaceWith(resolvedThreadRefButton(ref as AgentTeamThreadRef, threadChipLabel(resolved.title)))
     return
   }
-  const button = document.createElement('button')
-  button.type = 'button'
-  if (css.refLink !== undefined) button.className = css.refLink
-  button.dataset.ref = ref
-  button.title = ref
-  button.textContent = refLabel(ref)
-  code.replaceWith(button)
+  if (ref.startsWith('channel:')) {
+    const name = channelNameOf?.(ref as AgentTeamChannelRef)
+    if (name === undefined) return
+    code.replaceWith(resolvedChannelRefButton(ref as AgentTeamChannelRef, channelChipLabel(name)))
+    return
+  }
+  if (ref.startsWith('member:')) {
+    const resolved = memberOf?.(ref as AgentTeamMemberId)
+    if (resolved === undefined) return
+    code.replaceWith(resolvedMemberRefChip(ref as AgentTeamMemberId, memberChipLabel(resolved.handle), resolved.openable ? resolved.sessionId : undefined))
+  }
 }
 
-/** Replace resolved Task/Thread refs and structured mention handles in one prose text node without changing Markdown structure. */
-function renderResolvedMarkdownText(node: Text, mentionNames: readonly string[], taskLabel: (taskNumber: number) => string, threadChipLabel: (title: string) => string, refLabel: (ref: string) => string): void {
+/** Replace resolved Task/Thread/Channel/Member refs and structured mention handles in one prose text node without changing Markdown structure. */
+function renderResolvedMarkdownText(node: Text, mentionNames: readonly string[], taskLabel: (taskNumber: number) => string, threadChipLabel: (title: string) => string, channelChipLabel: (name: string) => string, memberChipLabel: (name: string) => string, channelNameOf: ((ref: AgentTeamChannelRef) => string | undefined) | undefined, memberOf: ((ref: AgentTeamMemberId) => ResolvedMemberRef | undefined) | undefined): void {
   let changed = false
   const fragment = document.createDocumentFragment()
   for (const refSegment of splitBrandedRefs(node.data)) {
@@ -282,9 +339,8 @@ function renderResolvedMarkdownText(node: Text, mentionNames: readonly string[],
       continue
     }
     // Task and Thread refs need Host resolution before becoming human-readable
-    // links; channel refs already have their canonical display text and can be
-    // linked immediately at the authored position. Unresolvable refs stay plain
-    // text so prose never misfires as a link.
+    // links; Channel and Member refs resolve against the loaded rosters.
+    // Unresolvable refs stay plain text so prose never misfires as a link.
     if (refSegment.ref.startsWith('task:')) {
       const resolved = cachedResolvedTaskRef(refSegment.ref as AgentTeamTaskRef)
       if (resolved === undefined) {
@@ -301,28 +357,37 @@ function renderResolvedMarkdownText(node: Text, mentionNames: readonly string[],
       }
       changed = true
       fragment.append(resolvedThreadRefButton(refSegment.ref as AgentTeamThreadRef, threadChipLabel(resolved.title)))
-    } else {
+    } else if (refSegment.ref.startsWith('channel:')) {
+      const name = channelNameOf?.(refSegment.ref as AgentTeamChannelRef)
+      if (name === undefined) {
+        fragment.append(refSegment.text)
+        continue
+      }
       changed = true
-      const button = document.createElement('button')
-      button.type = 'button'
-      if (css.refLink !== undefined) button.className = css.refLink
-      button.dataset.ref = refSegment.ref
-      button.title = refSegment.ref
-      button.textContent = refLabel(refSegment.ref)
-      fragment.append(button)
+      fragment.append(resolvedChannelRefButton(refSegment.ref as AgentTeamChannelRef, channelChipLabel(name)))
+    } else if (refSegment.ref.startsWith('member:')) {
+      const resolved = memberOf?.(refSegment.ref as AgentTeamMemberId)
+      if (resolved === undefined) {
+        fragment.append(refSegment.text)
+        continue
+      }
+      changed = true
+      fragment.append(resolvedMemberRefChip(refSegment.ref as AgentTeamMemberId, memberChipLabel(resolved.handle), resolved.openable ? resolved.sessionId : undefined))
+    } else {
+      fragment.append(refSegment.text)
     }
   }
   if (changed) node.replaceWith(fragment)
 }
 
 /** Render one literal text run, linkifying branded refs when navigation is available. */
-function renderRefs(text: string, onOpenRef: ((ref: string) => void) | undefined, taskLabel: (taskNumber: number) => string, threadChipLabel: (title: string) => string, refLabel: (ref: string) => string): ReactNode {
+function renderRefs(text: string, onOpenRef: ((ref: string) => void) | undefined, onOpenMemberSession: ((sessionId: SessionId) => void) | undefined, taskLabel: (taskNumber: number) => string, threadChipLabel: (title: string) => string, channelChipLabel: (name: string) => string, memberChipLabel: (name: string) => string, channelNameOf: ((ref: AgentTeamChannelRef) => string | undefined) | undefined, memberOf: ((ref: AgentTeamMemberId) => ResolvedMemberRef | undefined) | undefined): ReactNode {
   if (onOpenRef === undefined) return text
   return splitBrandedRefs(text).map((segment, index) => {
     if (segment.ref === undefined) return <Fragment key={index}>{segment.text}</Fragment>
-    // Task and Thread refs link only once the Host confirms them; abbreviated
-    // or unknown refs stay plain text so prose never misfires as a link.
-    // Channel refs have no resolver and link at the authored position.
+    // Task and Thread refs link only once the Host confirms them; Channel and
+    // Member refs link once the loaded roster knows them. Anything unknown
+    // stays plain text so prose never misfires as a link.
     if (segment.ref.startsWith('task:')) {
       const resolved = cachedResolvedTaskRef(segment.ref as AgentTeamTaskRef)
       if (resolved === undefined) return <Fragment key={index}>{segment.text}</Fragment>
@@ -333,7 +398,23 @@ function renderRefs(text: string, onOpenRef: ((ref: string) => void) | undefined
       if (resolved === undefined) return <Fragment key={index}>{segment.text}</Fragment>
       return <button key={index} type="button" className={css.refLink} title={segment.ref} onClick={() => { onOpenRef(segment.ref!) }}>{threadChipLabel(resolved.title)}</button>
     }
-    return <button key={index} type="button" className={css.refLink} title={segment.ref} onClick={() => { onOpenRef(segment.ref!) }}>{refLabel(segment.ref)}</button>
+    if (segment.ref.startsWith('channel:')) {
+      const name = channelNameOf?.(segment.ref as AgentTeamChannelRef)
+      if (name === undefined) return <Fragment key={index}>{segment.text}</Fragment>
+      return <button key={index} type="button" className={css.refLink} title={segment.ref} onClick={() => { onOpenRef(segment.ref!) }}>{channelChipLabel(name)}</button>
+    }
+    if (segment.ref.startsWith('member:')) {
+      const resolved = memberOf?.(segment.ref as AgentTeamMemberId)
+      if (resolved === undefined) return <Fragment key={index}>{segment.text}</Fragment>
+      // Known but not openable (suspended Members, the Human): a labelled
+      // span, informative without promising a jump that cannot happen.
+      if (!resolved.openable || resolved.sessionId === undefined || onOpenMemberSession === undefined) {
+        return <span key={index} title={segment.ref}>{memberChipLabel(resolved.handle)}</span>
+      }
+      const sessionId = resolved.sessionId
+      return <button key={index} type="button" className={css.refLink} title={segment.ref} onClick={() => { onOpenMemberSession(sessionId) }}>{memberChipLabel(resolved.handle)}</button>
+    }
+    return <Fragment key={index}>{segment.text}</Fragment>
   })
 }
 

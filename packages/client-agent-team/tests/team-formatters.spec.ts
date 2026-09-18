@@ -160,6 +160,14 @@ describe('Team presentation formatters', () => {
     expect(splitBrandedRefs('task:cafe 是咖啡')).toEqual([
       { text: 'task:cafe 是咖啡' },
     ])
+    // Member refs match the same shape; the roster map decides existence.
+    expect(splitBrandedRefs('问 member:6e8a5b10-df16-4ec0-943a-63738010953f').slice(1)).toEqual([
+      { text: 'member:6e8a5b10-df16-4ec0-943a-63738010953f', ref: 'member:6e8a5b10-df16-4ec0-943a-63738010953f' },
+    ])
+    // The Human id is not hex-shaped, so it never becomes a ref candidate.
+    expect(splitBrandedRefs('问 member:human')).toEqual([
+      { text: '问 member:human' },
+    ])
   })
 
   it('detects strings whose whole content is one branded ref', () => {
