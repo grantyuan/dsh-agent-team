@@ -59,6 +59,9 @@ describe('Human profile page', () => {
     expect(loadProfile).toHaveBeenCalledTimes(1)
     expect(screen.getByText('版本 0.1.13')).not.toBeNull()
     expect((screen.getByRole('link', { name: 'GitHub' }) as HTMLAnchorElement).href).toBe(PROFILE.repoUrl)
+    // The page names what owns it, so the reader never has to guess whose
+    // profile this is among the Harness's own settings pages.
+    expect(screen.getByText(zh.humanSettingsIntro)).not.toBeNull()
     // Nothing to update: the footnote stays the two facts it promised.
     expect(screen.queryByText(/有新版本/)).toBeNull()
   })
@@ -71,6 +74,8 @@ describe('Human profile page', () => {
     })
     renderSection({ identity })
     expect(screen.getByRole('status').textContent).toBe('正在载入资料…')
+    // Every state answers the same question: this line is not part of the read.
+    expect(screen.getByText(zh.humanSettingsIntro)).not.toBeNull()
     settle?.({ ok: true, value: PROFILE })
     await waitFor(() => { expect(screen.getByLabelText('名字')).not.toBeNull() })
   })
@@ -80,6 +85,8 @@ describe('Human profile page', () => {
     const identity = new TeamHumanIdentity({ loadProfile, loadAvatarUrl: async () => null })
     renderSection({ identity })
     await waitFor(() => { expect(screen.getByRole('alert').textContent).toBe('资料读不出来：host offline') })
+    // A failed read still says what the page is, next to why it is empty.
+    expect(screen.getByText(zh.humanSettingsIntro)).not.toBeNull()
     loadProfile.mockImplementation(async (): Promise<RemoteResult<AgentTeamHumanProfileResult>> => ({ ok: true, value: PROFILE }))
     fireEvent.click(screen.getByRole('button', { name: '重试' }))
     await waitFor(() => { expect(screen.getByLabelText('名字')).not.toBeNull() })

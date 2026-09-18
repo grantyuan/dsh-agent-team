@@ -106,16 +106,25 @@ export function HumanSettingsSection(props: HumanSettingsSectionProps) {
     if (failure !== undefined) setNotice(t('humanSettingsAvatarFailed', { message: failure }))
   }
 
+  // The page says what it is before it says what happened: the settings nav
+  // lists it beside the Harness's own pages, so the title alone leaves "whose
+  // profile is this, and where does it apply?" unanswered — and every state,
+  // including a failed read, has to answer it.
+  const pageHeader = <>
+    <h2 className={css.heading}>{t('humanSettingsTitle')}</h2>
+    <p className={css.intro}>{t('humanSettingsIntro')}</p>
+  </>
+
   if (profile.status === 'loading' && profile.name === undefined) {
     return <div className={css.section}>
-      <h2 className={css.heading}>{t('humanSettingsTitle')}</h2>
+      {pageHeader}
       <p className={css.state} role="status">{t('humanSettingsLoading')}</p>
     </div>
   }
 
   if (profile.name === undefined) {
     return <div className={css.section}>
-      <h2 className={css.heading}>{t('humanSettingsTitle')}</h2>
+      {pageHeader}
       <p className={css.state} role="alert">{t('humanSettingsUnavailable', { message: profile.error ?? '' })}</p>
       <div className={css.stateAction}>
         <Button variant="outline" onClick={() => { void identity.refresh() }}>{t('retry')}</Button>
@@ -125,7 +134,7 @@ export function HumanSettingsSection(props: HumanSettingsSectionProps) {
 
   return (
     <div className={css.section}>
-      <h2 className={css.heading}>{t('humanSettingsTitle')}</h2>
+      {pageHeader}
       <div className={css.rows}>
         <div className={css.row}>
           <div className={css.rowText}>

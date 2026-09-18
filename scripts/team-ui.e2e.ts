@@ -2342,6 +2342,9 @@ it('configures the Human profile from Settings in real Web', async () => {
   // The Host has no override stored yet, so the page shows the historic default
   // and the version footnote's two facts: the bundle version and the repo link.
   expect(await nameField.inputValue()).toBe('human')
+  // The page states what owns it before anything else: among the Harness's own
+  // settings pages, a bare 「我的资料」 leaves the reader guessing.
+  expect(await panel.textContent()).toContain('这是 Agent Team 的资料页')
   expect(await panel.textContent()).toMatch(/版本 \d+\.\d+\.\d+/)
   expect(await panel.getByRole('link', { name: 'GitHub' }).getAttribute('href')).toBe('https://github.com/wowyuarm/dsh-agent-team')
   expect(await panel.getByRole('button', { name: '移除头像' }).count()).toBe(0)

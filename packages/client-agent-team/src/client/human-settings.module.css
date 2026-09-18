@@ -19,6 +19,16 @@
   font-weight: 600;
 }
 
+/* The page names what owns it: the settings nav lists it among the Harness's
+ * own pages, where a bare 「我的资料」 leaves the reader guessing whose profile
+ * this is and where a change would apply. Shipped rate for a page intro. */
+.intro {
+  margin: 0;
+  font-size: 13px;
+  line-height: 20px;
+  color: var(--dsw-alias-label-tertiary);
+}
+
 .rows {
   display: flex;
   flex-direction: column;
