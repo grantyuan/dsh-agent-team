@@ -19,7 +19,7 @@ import { TeamComposer } from './TeamComposer.tsx'
 import { diagnosticText, TeamPresenceDot } from './TeamPresenceDot.tsx'
 import { TeamMessage } from './TeamMessage.tsx'
 import { TeamRunDivider } from './TeamRunDivider.tsx'
-import { formatActivity, formatClaimState, formatTaskStatus, formatTaskTitle, mentionNamesOf, mentionedMemberIds, taskStatusDot } from './team-formatters.ts'
+import { formatActivity, formatClaimState, formatTaskStatus, formatTaskTitle, mentionNameOf, mentionNamesOf, mentionedMemberIds, taskStatusDot, type MentionHandle } from './team-formatters.ts'
 import { TeamStateDot } from './TeamStateDot.tsx'
 import { mintRequestId, uploadComposerFiles } from './requests.ts'
 import { daySeparatorLabel, isRunGap, timelineDayKey } from './team-separators.ts'
@@ -81,12 +81,12 @@ function messageFact(message: ReadProjection['anchor'], mentions: readonly Agent
  * map identity: identity stays stable while the names are unchanged, which is
  * what keeps a memoized row from re-rendering on every refresh.
  */
-const mentionNamesCache = new WeakMap<readonly AgentTeamMemberId[], readonly string[]>()
+const mentionNamesCache = new WeakMap<readonly AgentTeamMemberId[], readonly MentionHandle[]>()
 
-function stableMentionNames(mentions: readonly AgentTeamMemberId[], handles: ReadonlyMap<AgentTeamMemberId, string>, humanName: string): readonly string[] {
+function stableMentionNames(mentions: readonly AgentTeamMemberId[], handles: ReadonlyMap<AgentTeamMemberId, string>, humanName: string): readonly MentionHandle[] {
   const names = mentionNamesOf(mentions, handles, humanName)
   const cached = mentionNamesCache.get(mentions)
-  if (cached !== undefined && cached.length === names.length && cached.every((name, index) => name === names[index])) return cached
+  if (cached !== undefined && cached.length === names.length && cached.every((name, index) => mentionNameOf(name) === mentionNameOf(names[index]!))) return cached
   mentionNamesCache.set(mentions, names)
   return names
 }

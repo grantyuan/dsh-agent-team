@@ -1,9 +1,10 @@
 import { describe, expect, it } from 'vitest'
 import type { AgentTeamActivity, AgentTeamClaim, AgentTeamClientMemberStatus, AgentTeamMemberId } from '@wowyuarm/dsh-agent-team/types'
+import { AGENT_TEAM_HUMAN_HANDLE } from '@wowyuarm/dsh-agent-team/host'
 import { MENTION_BODY_FIXTURE } from '../../agent-team/tests/fixtures/mention-bodies.ts'
 import { zh } from '../src/client/locales.ts'
 import type { TeamConversationProps } from '../src/client/slots.ts'
-import { allMentionMembers, containsAllMention, containsMention, formatAbsoluteTime, formatActivity, formatClaimState, formatInboxTime, formatMessageTime, formatTaskStatus, isPlainTextBody, isSingleBrandedRef, mentionNamesOf, mentionedMemberIds, planMessageBody, shouldClampMessage, splitBrandedRefs, splitMentionNames, taskStatusDot } from '../src/client/team-formatters.ts'
+import { allMentionMembers, containsAllMention, containsMention, formatAbsoluteTime, formatActivity, formatClaimState, formatInboxTime, formatMessageTime, formatTaskStatus, HUMAN_HISTORIC_HANDLE, isPlainTextBody, isSingleBrandedRef, mentionNamesOf, mentionedMemberIds, planMessageBody, shouldClampMessage, splitBrandedRefs, splitMentionNames, taskStatusDot } from '../src/client/team-formatters.ts'
 
 const t = ((key: keyof typeof zh, params?: Record<string, string | number>) => {
   let value: string = zh[key]
@@ -189,7 +190,37 @@ describe('Team presentation formatters', () => {
 
   it('names the Human mention from the profile when the Agent roster omits it', () => {
     const handles = new Map([['member:builder' as AgentTeamMemberId, 'builder']])
-    expect(mentionNamesOf(['member:human' as AgentTeamMemberId, 'member:builder' as AgentTeamMemberId], handles, 'Ada')).toEqual(['Ada', 'builder'])
+    expect(mentionNamesOf(['member:human' as AgentTeamMemberId, 'member:builder' as AgentTeamMemberId], handles, 'human')).toEqual(['human', 'builder'])
+  })
+
+  it('keeps the historic handle on a renamed Human mention', () => {
+    const handles = new Map([['member:builder' as AgentTeamMemberId, 'builder']])
+    expect(mentionNamesOf(['member:human' as AgentTeamMemberId, 'member:builder' as AgentTeamMemberId], handles, 'Ada'))
+      .toEqual([{ name: 'Ada', also: ['human'] }, 'builder'])
+    // The Host owns that string; the two halves must agree on it.
+    expect(HUMAN_HISTORIC_HANDLE).toBe(AGENT_TEAM_HUMAN_HANDLE)
+  })
+
+  it('chips a mention written with the historic handle under the renamed Human', () => {
+    const human = { name: 'Ada', also: [HUMAN_HISTORIC_HANDLE] }
+    // Whatever handle the body authored, the chip names the person as they are
+    // called today — the same rule member refs follow. The body itself is not
+    // rewritten anywhere the match did not land.
+    const chipText = (body: string): readonly string[] =>
+      splitMentionNames(body, [human, 'builder']).segments.filter(segment => segment.mention).map(segment => segment.text)
+    expect(chipText('请看 @human 这条')).toEqual(['@Ada'])
+    expect(chipText('请看 @Human 这条')).toEqual(['@Ada'])
+    expect(chipText('请看 @Ada 这条')).toEqual(['@Ada'])
+    for (const body of ['请看 @human 这条', '请看 @Human 这条', '请看 @Ada 这条']) {
+      expect(splitMentionNames(body, [human]).unmatched).toEqual([])
+    }
+    // An Agent's chip keeps the canonical spelling the roster carries, which is
+    // what it always did; only the Human's older handle resolves onto the name.
+    expect(chipText('@Builder 请看')).toEqual(['@builder'])
+    // One person, one chip: a body hitting the alias never also lands in the
+    // trailing fallback row under the current name.
+    expect(splitMentionNames('@human 和 @builder', [human, 'builder']).unmatched).toEqual([])
+    expect(splitMentionNames('@builder 只看这个', [human, 'builder']).unmatched).toEqual(['Ada'])
   })
 
   it('reads one handle only when the draft writes it as an authored mention', () => {

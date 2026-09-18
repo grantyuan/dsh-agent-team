@@ -146,6 +146,24 @@ describe('Human profile page', () => {
     await waitFor(() => { expect(removeAvatar).toHaveBeenCalledTimes(1) })
   })
 
+  it('keeps the initial when the stored avatar cannot be decoded', async () => {
+    const identity = new TeamHumanIdentity({
+      loadProfile: async () => ({ ok: true, value: { ...PROFILE, name: 'Ada', avatarRef: 'avatar:1' } }),
+      loadAvatarUrl: async () => 'data:image/png;base64,AAAA',
+    })
+    renderSection({ identity })
+    const image = await waitFor(() => {
+      const node = document.querySelector('[data-avatar="image"]')
+      if (node === null) throw new Error('avatar image not mounted')
+      return node
+    })
+    // The Host stores any `image/…` payload without decoding it, so a stored
+    // reference is not evidence of a picture — the seat decides.
+    fireEvent.error(image)
+    await waitFor(() => { expect(document.querySelector('[data-avatar="initial"]')?.textContent).toBe('A') })
+    expect(document.querySelector('img')).toBeNull()
+  })
+
   it('falls back to the initial when the avatar bytes cannot be read', async () => {
     const identity = new TeamHumanIdentity({
       loadProfile: async () => ({ ok: true, value: { ...PROFILE, name: 'zoe', avatarRef: 'avatar:gone' } }),

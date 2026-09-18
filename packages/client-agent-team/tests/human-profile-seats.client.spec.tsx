@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { cleanup, fireEvent, waitFor, within } from '@testing-library/react'
+import type { AgentTeamMemberId } from '@wowyuarm/dsh-agent-team/types'
 import { usePinnedBrowserLanguages } from '@deepseek-ai/dsh-client-test-runtime'
 import { runtimeWithTeam } from './harness.tsx'
 
@@ -42,5 +43,36 @@ describe('Human identity in the Team surfaces', () => {
     const { b, page } = await openSeededChannel({ humanProfile: { name: 'Ada', avatarRef: 'avatar:1' } })
     await waitFor(() => { expect(page.querySelector('img')?.getAttribute('src')).toBe('data:image/png;base64,AAAA') })
     expect(b.getHumanAvatar).toHaveBeenCalledWith({ avatarRef: 'avatar:1' })
+  })
+
+  it('keeps the initial in the message seat when those bytes do not decode', async () => {
+    const { page } = await openSeededChannel({ humanProfile: { name: 'Ada', avatarRef: 'avatar:1' } })
+    const image = await waitFor(() => {
+      const node = page.querySelector('[data-avatar="image"]')
+      if (node === null) throw new Error('message avatar not mounted')
+      return node
+    })
+    fireEvent.error(image)
+    await waitFor(() => { expect(page.querySelector('[data-avatar="initial"]')?.textContent).toBe('A') })
+    expect(page.querySelector('img')).toBeNull()
+  })
+
+  it('chips an agent message that wrote the historic human handle as the renamed Human', async () => {
+    const { page } = await openSeededChannel({
+      humanProfile: { name: 'Ada' },
+      seededMessages: [{
+        body: 'ping @human please look',
+        occurredAt: '2026-08-21T10:00:00.000Z',
+        sender: 'agent',
+        mentions: ['member:human' as AgentTeamMemberId],
+      }],
+    })
+    // The chip lands where the body authored the mention and names the reader
+    // as they are called today; the trailing row must not repeat the same
+    // person under the name the body already carries.
+    await waitFor(() => { expect(within(page).getByText('@Ada')).toBeTruthy() })
+    expect(page.textContent).toContain('ping @Ada please look')
+    expect(within(page).queryByText('@human')).toBeNull()
+    expect(within(page).getAllByText('@Ada').length).toBe(1)
   })
 })

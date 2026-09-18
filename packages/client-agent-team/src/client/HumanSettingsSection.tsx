@@ -2,6 +2,7 @@ import { useRef, useState } from 'react'
 import type { PropsLocale, PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
 import { Button, Input } from '@deepseek-ai/dsh-client-ui-primitives'
 import { useHumanIdentity, type TeamHumanIdentityFace } from './human-identity.ts'
+import { useAvatarImage } from './avatar-image.ts'
 import css from './human-settings.module.css'
 
 /**
@@ -69,6 +70,10 @@ export function HumanSettingsSection(props: HumanSettingsSectionProps) {
   const dirty = draft !== undefined && draft.trim() !== (profile.name ?? '')
   const emptyName = draft !== undefined && draft.trim() === ''
   const hasAvatar = profile.avatarRef !== undefined
+  // The circle answers to decoded bytes, not to a stored reference: the Host
+  // accepts any `image/…` payload, so a file this browser cannot read has to
+  // fall back to the initial exactly as a removed one does.
+  const avatar = useAvatarImage(profile.avatarUrl)
 
   const submitName = async (): Promise<void> => {
     if (!dirty || emptyName || saving) return
@@ -167,9 +172,9 @@ export function HumanSettingsSection(props: HumanSettingsSectionProps) {
             <div className={css.desc}>{t('humanSettingsAvatarHint')}</div>
           </div>
           <div className={css.controls}>
-            {profile.avatarUrl === undefined
-              ? <span className={`${css.identity} ${css.identityFallback}`} aria-hidden="true">{avatarInitial(profile.name)}</span>
-              : <img className={`${css.identity} ${css.identityImage}`} src={profile.avatarUrl} alt="" />}
+            {avatar.src === undefined
+              ? <span className={`${css.identity} ${css.identityFallback}`} data-avatar="initial" aria-hidden="true">{avatarInitial(profile.name)}</span>
+              : <img className={`${css.identity} ${css.identityImage}`} data-avatar="image" src={avatar.src} alt="" onError={avatar.failed} />}
             <input
               ref={filePicker}
               type="file"

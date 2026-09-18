@@ -8,7 +8,8 @@ import type { ResolvedMemberRef } from './refs.ts'
 import { cachedAttachmentDataUrl, formatByteSize, loadAttachmentDataUrl } from './attachment-preview.ts'
 import { cachedResolvedTaskRef, resolveUnknownTaskRefs, useResolvedTaskRefVersion, type ResolvedTaskRef } from './refs.ts'
 import { cachedResolvedThreadRef, resolveUnknownThreadRefs, useResolvedThreadRefVersion, type ResolvedThreadRef } from './refs.ts'
-import { formatMessageTime, isSingleBrandedRef, memberHue, planMessageBody, shouldClampMessage, splitBrandedRefs, splitMentionNames } from './team-formatters.ts'
+import { formatMessageTime, isSingleBrandedRef, memberHue, planMessageBody, shouldClampMessage, splitBrandedRefs, splitMentionNames, type MentionHandle } from './team-formatters.ts'
+import { useAvatarImage } from './avatar-image.ts'
 import css from './conversation.module.css'
 
 export interface TeamMessageProps {
@@ -19,7 +20,7 @@ export interface TeamMessageProps {
   readonly body: string
   readonly occurredAt?: string
   /** Structured mention handles of this Message; the only names that render as chips. */
-  readonly mentionNames?: readonly string[]
+  readonly mentionNames?: readonly MentionHandle[]
   readonly senderTitle?: string
   /** Continuation of one same-sender run: suppress repeated identity chrome. */
   readonly grouped?: boolean
@@ -57,6 +58,9 @@ export interface TeamMessageProps {
  */
 export const TeamMessage = memo(function TeamMessage({ senderName, memberId, human, avatarUrl, body, occurredAt, mentionNames, senderTitle, grouped, showGroupedTime, attachments, loadAttachment, t, onOpenRef, onResolveTaskRefs, onResolveThreadRefs, channelNameOf, memberOf, onOpenMemberSession, children }: TeamMessageProps) {
   const avatarStyle = human ? undefined : { '--team-avatar-hue': memberHue(memberId) } as CSSProperties
+  // A seat draws the sender's picture only while those bytes decode; anything
+  // else keeps the initial, which is what the fallback promises.
+  const identityImage = useAvatarImage(avatarUrl)
   // Literal bodies carry mention chips inline — Human input always, and
   // plain-prose Agent bodies where literal rendering loses nothing. Rich
   // Markdown keeps unmatched structured mentions in the trailing row.
@@ -167,9 +171,9 @@ export const TeamMessage = memo(function TeamMessage({ senderName, memberId, hum
       : <div ref={markdownRef} className={css.messageMarkdown}><MarkdownText key={`${displayBody}:${onOpenRef === undefined ? 'literal' : 'refs'}`} text={displayBody} labels={markdownLabels} /></div>
   return (
     <article className={css.messageRow} data-human={human || undefined} data-grouped={grouped || undefined}>
-      {avatarUrl === undefined
-        ? <div className={css.messageIdentity} style={avatarStyle} aria-hidden="true">{senderName.replace('@', '').slice(0, 1).toUpperCase()}</div>
-        : <img className={css.messageIdentityImage} src={avatarUrl} alt="" aria-hidden="true" />}
+      {identityImage.src === undefined
+        ? <div className={css.messageIdentity} data-avatar="initial" style={avatarStyle} aria-hidden="true">{senderName.replace('@', '').slice(0, 1).toUpperCase()}</div>
+        : <img className={css.messageIdentityImage} data-avatar="image" src={identityImage.src} alt="" aria-hidden="true" onError={identityImage.failed} />}
       <div className={css.messageBody}>
         {(!grouped || showGroupedTime === true) && (
           <div className={css.nameRow}>
@@ -324,7 +328,7 @@ function renderResolvedMarkdownCodeRef(code: HTMLElement, taskLabel: (taskNumber
 }
 
 /** Replace resolved Task/Thread/Channel/Member refs and structured mention handles in one prose text node without changing Markdown structure. */
-function renderResolvedMarkdownText(node: Text, mentionNames: readonly string[], taskLabel: (taskNumber: number) => string, threadChipLabel: (title: string) => string, channelChipLabel: (name: string) => string, memberChipLabel: (name: string) => string, channelNameOf: ((ref: AgentTeamChannelRef) => string | undefined) | undefined, memberOf: ((ref: AgentTeamMemberId) => ResolvedMemberRef | undefined) | undefined): void {
+function renderResolvedMarkdownText(node: Text, mentionNames: readonly MentionHandle[], taskLabel: (taskNumber: number) => string, threadChipLabel: (title: string) => string, channelChipLabel: (name: string) => string, memberChipLabel: (name: string) => string, channelNameOf: ((ref: AgentTeamChannelRef) => string | undefined) | undefined, memberOf: ((ref: AgentTeamMemberId) => ResolvedMemberRef | undefined) | undefined): void {
   let changed = false
   const fragment = document.createDocumentFragment()
   for (const refSegment of splitBrandedRefs(node.data)) {

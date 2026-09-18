@@ -106,27 +106,57 @@ export interface MentionSegment {
   readonly name?: string
 }
 
+/** The Human's handle before they could rename themselves; the Host keeps it as an alias. */
+export const HUMAN_HISTORIC_HANDLE = 'human'
+
+/**
+ * One mentioned Member as a Message renders them: the display name the seat
+ * prints, plus every older handle that still addresses the same person. A
+ * rename must not orphan the mentions written before it — the bodies say
+ * `@human`, the roster says the new name, and both are the Human.
+ */
+export type MentionHandle = string | { readonly name: string; readonly also: readonly string[] }
+
+/** Normalize one mention entry into its printed name and every handle that matches it. */
+function mentionHandlesOf(mention: MentionHandle): { name: string; handles: readonly string[] } {
+  return typeof mention === 'string' ? { name: mention, handles: [mention] } : { name: mention.name, handles: [mention.name, ...mention.also] }
+}
+
+/** The printed name of one mention entry; its aliases follow that name, never the body. */
+export function mentionNameOf(mention: MentionHandle): string {
+  return typeof mention === 'string' ? mention : mention.name
+}
+
 /**
  * Locate one Message's delivered mention names inside its literal body. Matching
  * is the shared Host delivery scan — an authored `@`, case-insensitive on Unicode
  * word boundaries, longest handle first, code quoted rather than called — so a chip
- * never lands where delivery would not reach. Mention segments render the canonical
- * `@Handle`; names absent from the body come back unmatched so the consumer can
- * append them as a fallback chip row.
+ * never lands where delivery would not reach. A chip names the person by their
+ * current name, the way member refs do: a body that wrote an older handle of a
+ * renamed Human chips as the name they answer to today. A person whose entry
+ * matched through any of their handles counts as matched, so the fallback row
+ * never repeats someone already chipped inline; names absent from the body come
+ * back unmatched so the consumer can append them as a fallback chip row.
  */
-export function splitMentionNames(text: string, names: readonly string[]): { segments: MentionSegment[]; unmatched: readonly string[] } {
-  if (names.length === 0) return { segments: [{ text, mention: false }], unmatched: [] }
+export function splitMentionNames(text: string, mentions: readonly MentionHandle[]): { segments: MentionSegment[]; unmatched: readonly string[] } {
+  if (mentions.length === 0) return { segments: [{ text, mention: false }], unmatched: [] }
+  const entries = mentions.map(mentionHandlesOf)
   const segments: MentionSegment[] = []
   const matched = new Set<string>()
   let cursor = 0
-  for (const match of scanBodyHandles(text, names)) {
+  for (const match of scanBodyHandles(text, entries.flatMap(entry => entry.handles))) {
     if (match.start > cursor) segments.push({ text: text.slice(cursor, match.start), mention: false })
-    segments.push({ text: `@${match.handle}`, mention: true, name: match.handle })
-    matched.add(match.handle.toLowerCase())
+    const handle = match.handle.toLowerCase()
+    const owner = entries.find(entry => entry.handles.some(candidate => candidate.toLowerCase() === handle))
+    // The scan hands back the entry's own spelling; only an entry matched
+    // through another handle prints the name it answers to today.
+    const printed = owner === undefined || owner.name.toLowerCase() === handle ? match.handle : owner.name
+    segments.push({ text: `@${printed}`, mention: true, name: printed })
+    if (owner !== undefined) matched.add(owner.name.toLowerCase())
     cursor = match.end
   }
   if (cursor < text.length) segments.push({ text: text.slice(cursor), mention: false })
-  return { segments, unmatched: names.filter(name => !matched.has(name.toLowerCase())) }
+  return { segments, unmatched: entries.map(entry => entry.name).filter(name => !matched.has(name.toLowerCase())) }
 }
 
 /**
@@ -180,15 +210,22 @@ export function mentionedMemberIds(body: string, members: readonly AgentTeamClie
  * is Team authority, not an Agent projection, so `members()` does not include
  * it: the caller hands over the profile name every seat names them by, so a
  * rename reaches old mention chips the same way it reaches the roster.
+ *
+ * A renamed Human also keeps the historic `human` handle, because the Host
+ * accepts it as an alias and Message bodies written before the rename say
+ * exactly that: without the alias those mentions would stop chipping inline and
+ * reappear as a trailing chip under a name the body never used.
  */
 export function mentionNamesOf(
   mentions: readonly AgentTeamMemberId[],
   handles: ReadonlyMap<AgentTeamMemberId, string>,
   humanName: string,
-): string[] {
+): MentionHandle[] {
   return mentions
-    .map(memberId => memberId === 'member:human' ? humanName : handles.get(memberId))
-    .filter((name): name is string => name !== undefined)
+    .map((memberId): MentionHandle | undefined => memberId === 'member:human'
+      ? (humanName.toLowerCase() === HUMAN_HISTORIC_HANDLE ? humanName : { name: humanName, also: [HUMAN_HISTORIC_HANDLE] })
+      : handles.get(memberId))
+    .filter((name): name is MentionHandle => name !== undefined)
 }
 
 /** Accessible label for one "who is on this work" stack: its owners' handles, comma-separated. */
@@ -334,7 +371,7 @@ export interface PlannedMessageBody {
  */
 export function planMessageBody(body: string, options: {
   readonly human: boolean
-  readonly mentionNames?: readonly string[]
+  readonly mentionNames?: readonly MentionHandle[]
   readonly canOpenRefs: boolean
 }): PlannedMessageBody {
   const stripped = stripAttachmentLines(body)
@@ -346,7 +383,7 @@ export function planMessageBody(body: string, options: {
   const fallbackNames = inline !== undefined ? inline.unmatched
     : richAgentBody && options.canOpenRefs && options.mentionNames !== undefined
       ? splitMentionNames(displayBody, options.mentionNames).unmatched
-      : options.mentionNames ?? []
+      : (options.mentionNames ?? []).map(mentionNameOf)
   const refs = splitBrandedRefs(displayBody).flatMap(segment => segment.ref === undefined ? [] : [segment.ref])
   const render: MessageBodyRender = inline !== undefined ? 'inline'
     : options.human || (options.canOpenRefs && !richAgentBody && refs.length > 0) ? 'literal'

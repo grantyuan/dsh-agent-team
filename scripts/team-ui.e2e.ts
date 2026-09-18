@@ -2395,6 +2395,16 @@ it('configures the Human profile from Settings in real Web', async () => {
   await page.setViewportSize({ width: 1440, height: 960 })
   await settleLayout(page)
 
+  // Bytes this browser cannot decode fall back to the initial, exactly like a
+  // removed avatar. The Host accepts them — it checks the declared media type,
+  // not the payload — so this is also the state a phone photo in HEIC lands in,
+  // and the page's own copy promises the initial for it.
+  await panel.locator('input[type="file"]').setInputFiles([{ name: 'broken.png', mimeType: 'image/png', buffer: Buffer.from('this is not a PNG') }])
+  await expect.poll(() => scaffold!.ctx.agentTeam.humanProfile().avatarRef !== undefined).toBe(true)
+  await expect.poll(async () => await panel.locator('[data-avatar="initial"]').textContent()).toBe('A')
+  expect(await panel.locator('img').count()).toBe(0)
+  await page.screenshot({ path: join(UI09_SHOTS, 'human-profile-undecodable-avatar.png'), fullPage: true })
+
   // Removal returns the identity to the initial while the rename stands.
   await panel.getByRole('button', { name: '移除头像' }).click()
   await expect.poll(async () => await panel.locator('img').count()).toBe(0)
