@@ -1,4 +1,4 @@
-import type { AgentTeamActivity, AgentTeamClaim, AgentTeamClientMemberStatus, AgentTeamMemberId, AgentTeamTask, AgentTeamTaskRef } from '@wowyuarm/dsh-agent-team/types'
+import type { AgentTeamActivity, AgentTeamClaim, AgentTeamClientMemberStatus, AgentTeamMemberId, AgentTeamTask, AgentTeamTaskRef, AgentTeamThreadRef } from '@wowyuarm/dsh-agent-team/types'
 import { hasAllMarker, resolveBodyMentions, scanBodyHandles } from '@wowyuarm/dsh-agent-team/mentions'
 import type { TeamConversationProps } from './slots.ts'
 import type { TeamStateDotState } from './TeamStateDot.tsx'
@@ -312,6 +312,8 @@ export interface PlannedMessageBody {
   readonly fallbackRefs: readonly string[]
   /** Task refs authored in a literal body; resolved labels replace them in place. */
   readonly taskRefs: readonly AgentTeamTaskRef[]
+  /** Thread refs authored in a literal body; resolved titles replace them in place. */
+  readonly threadRefs: readonly AgentTeamThreadRef[]
 }
 
 /**
@@ -353,6 +355,9 @@ export function planMessageBody(body: string, options: {
     fallbackRefs: richAgentBody && !options.canOpenRefs ? refs : [],
     taskRefs: options.canOpenRefs && !richAgentBody
       ? refs.filter(ref => ref.startsWith('task:')).map(ref => ref as AgentTeamTaskRef)
+      : [],
+    threadRefs: options.canOpenRefs && !richAgentBody
+      ? refs.filter(ref => ref.startsWith('thread:')).map(ref => ref as AgentTeamThreadRef)
       : [],
   }
 }

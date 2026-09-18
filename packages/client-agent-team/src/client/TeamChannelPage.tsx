@@ -18,6 +18,7 @@ import { TeamStateDot } from './TeamStateDot.tsx'
 import { useChannelMembership } from './team-membership.ts'
 import { useTimelineScroll } from './timeline-scroll.ts'
 import { hostTaskRefLookup, jumpToTaskThread } from './task-refs.ts'
+import { hostThreadRefLookup, jumpToThread } from './thread-refs.ts'
 import { chunkRunsWithDays, isRunGap } from './team-separators.ts'
 import channelCss from './channel.module.css'
 import css from './conversation.module.css'
@@ -40,6 +41,7 @@ interface TeamChannelPageProps {
   readonly selectThread: TeamConversationProps['selectThread']
   readonly selectChannel: TeamConversationProps['selectChannel']
   readonly resolveTaskRefs: TeamConversationProps['resolveTaskRefs']
+  readonly resolveThreadRefs: TeamConversationProps['resolveThreadRefs']
   readonly backToChannels: TeamConversationProps['backToChannels']
   readonly t: TeamConversationProps['t']
 }
@@ -78,7 +80,7 @@ function unreadCounts(inbox: AgentTeamInbox): ReadonlyMap<AgentTeamThreadRef, nu
   return new Map(inbox.items.filter(item => item.unreadCount > 0).map(item => [item.thread.threadRef, item.unreadCount]))
 }
 
-export function TeamChannelPage({ workspaceId, channelRef, loadChannels, subscribeChanges, loadMembers, loadInbox, drafts, putAttachment, getAttachment, sendMessage, joinChannel, removeChannelMember, selectThread, selectChannel, backToChannels, resolveTaskRefs, t }: TeamChannelPageProps) {
+export function TeamChannelPage({ workspaceId, channelRef, loadChannels, subscribeChanges, loadMembers, loadInbox, drafts, putAttachment, getAttachment, sendMessage, joinChannel, removeChannelMember, selectThread, selectChannel, backToChannels, resolveTaskRefs, resolveThreadRefs, t }: TeamChannelPageProps) {
   const [view, setView] = useState<AgentTeamView>()
   const [members, setMembers] = useState<readonly AgentTeamClientMemberStatus[]>([])
   const [unreadByThread, setUnreadByThread] = useState<ReadonlyMap<AgentTeamThreadRef, number>>(new Map())
@@ -106,8 +108,10 @@ export function TeamChannelPage({ workspaceId, channelRef, loadChannels, subscri
   const refreshSequenceRef = useRef(0)
   const channelLastItem = view?.items[view.items.length - 1]
   // Branded-ref navigation for message bodies: channel refs hop directly,
-  // task refs resolve against this Channel's loaded timeline and degrade to a
-  // no-op when the target is not reachable from here.
+  // task and thread refs resolve against this Channel's loaded timeline and
+  // fall back to the Host resolver, which also accepts abbreviated spellings.
+  // Unresolvable refs never become links (see TeamMessage), so this path only
+  // fires for refs the Host already confirmed.
   const openRef = (ref: string): void => {
     if (ref.startsWith('channel:')) {
       if (ref !== channelRef) selectChannel(ref as AgentTeamChannelRef)
@@ -119,16 +123,9 @@ export function TeamChannelPage({ workspaceId, channelRef, loadChannels, subscri
         selectThread(match.thread.threadRef, channelRef, match.task?.taskRef, match.taskNumber)
         return
       }
-      // A ref may point outside the currently loaded Channel window. Ask the
-      // Host for the bounded Thread view so it can provide the home Channel.
-      void loadChannels({ workspaceId, threadRef: ref as AgentTeamThreadRef, includeActivities: false, limit: 1 }).then(result => {
-        if (!result.ok) return
-        const target = result.value.items[0]
-        if (target !== undefined) {
-          const targetChannel = result.value.channels.find(channel => channel.channelRef === target.message.channelRef)
-          if (targetChannel !== undefined) selectThread(target.thread.threadRef, targetChannel.channelRef, target.task?.taskRef, target.taskNumber)
-        }
-      })
+      // Not in the loaded timeline (or cited by abbreviation): resolve through
+      // the Host and jump to the Thread's home Channel.
+      jumpToThread(resolveThreadRefs, workspaceId, ref as AgentTeamThreadRef, selectThread)
       return
     }
     if (ref.startsWith('task:')) {
@@ -144,6 +141,7 @@ export function TeamChannelPage({ workspaceId, channelRef, loadChannels, subscri
   }
 
   const lookupTaskRefs = hostTaskRefLookup(resolveTaskRefs, workspaceId)
+  const lookupThreadRefs = hostThreadRefLookup(resolveThreadRefs, workspaceId)
 
   const timeline = useTimelineScroll(`${view?.items.length ?? 0}:${channelLastItem?.message.messageRef ?? ''}`)
   const channel = view?.channels.find(item => item.channelRef === channelRef)
@@ -411,6 +409,7 @@ export function TeamChannelPage({ workspaceId, channelRef, loadChannels, subscri
                 mentionNames={mentionNamesOf(item.mentions, handleByMember)}
                 onOpenRef={openRef}
                 onResolveTaskRefs={lookupTaskRefs}
+                onResolveThreadRefs={lookupThreadRefs}
                 grouped={index > 0}
                 showGroupedTime={item.message.topLevel === true && !turnGap}
                 {...(senderStatus === undefined ? {} : { senderTitle: senderStatus.member.description })}

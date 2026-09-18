@@ -268,9 +268,15 @@ describe('Team presentation formatters', () => {
     const task = planMessageBody('请看 task:0123abcd-0000-0000-0000-000000000000', { human: false, canOpenRefs: true })
     expect(task.render).toBe('literal')
     expect(task.taskRefs).toEqual(['task:0123abcd-0000-0000-0000-000000000000'])
+    expect(task.threadRefs).toEqual([])
     const abbreviated = planMessageBody('请看 task:0123abcd', { human: false, canOpenRefs: true })
     expect(abbreviated.render).toBe('literal')
     expect(abbreviated.taskRefs).toEqual(['task:0123abcd'])
+    // Thread refs take the same literal path so their chips resolve in place.
+    const thread = planMessageBody('见 thread:0f0ad7ce', { human: false, canOpenRefs: true })
+    expect(thread.render).toBe('literal')
+    expect(thread.threadRefs).toEqual(['thread:0f0ad7ce'])
+    expect(thread.taskRefs).toEqual([])
   })
 
   it('keeps rich Agent bodies on Markdown and paints their refs inline when navigation is available', () => {
@@ -283,6 +289,7 @@ describe('Team presentation formatters', () => {
     expect(plan.fallbackRefs).toEqual([])
     expect(plan.fallbackNames).toEqual(['tester'])
     expect(plan.taskRefs).toEqual([])
+    expect(plan.threadRefs).toEqual([])
   })
 
   it('keeps the full mention row and no ref links on surfaces without navigation', () => {

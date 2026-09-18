@@ -80,6 +80,7 @@ import type {
   AgentTeamReplyResult,
   AgentTeamRequestId,
   AgentTeamResolvedTaskRef,
+  AgentTeamResolvedThreadRef,
   AgentTeamMessageAttachment,
   AgentTeamSendMessageRequest,
   AgentTeamSendMessageResult,
@@ -430,6 +431,16 @@ function assertUnhandledKind(operation: never): never {
 function boundedInboxPreview(body: string): string {
   const firstLine = body.split('\n', 1)[0]?.trim() ?? ''
   return firstLine.length > 120 ? `${firstLine.slice(0, 119)}…` : firstLine
+}
+
+/**
+ * Chip title for a resolved Thread ref: the same opening-line gist as the
+ * Inbox preview, but capped at 40 characters — a chip shares its line with
+ * prose, so the 120-character row bound would crowd the message out.
+ */
+function boundedThreadTitle(body: string): string {
+  const firstLine = body.split('\n', 1)[0]?.trim() ?? ''
+  return firstLine.length > 40 ? `${firstLine.slice(0, 39)}…` : firstLine
 }
 
 /**
@@ -1738,6 +1749,30 @@ export class AgentTeamLedger {
     return this.state.claims.get(claimRef)
   }
 
+  /** Navigation facts for message-body Thread refs; unknown refs are omitted. */
+  resolveThreadRefs(workspaceId: WorkspaceId, threadRefs: readonly AgentTeamThreadRef[]): AgentTeamResolvedThreadRef[] {
+    const numbers = this.taskNumbers(workspaceId)
+    const resolved: AgentTeamResolvedThreadRef[] = []
+    for (const threadRef of threadRefs) {
+      const key = this.uniqueRefKey(this.state.threads, threadRef, 'thread')
+      const thread = key === undefined ? undefined : this.state.threads.get(key)
+      const channelRef = thread === undefined ? undefined : this.channelRefForThread(thread.threadRef)
+      const channel = channelRef === undefined ? undefined : this.state.channels.get(channelRef)
+      // Same archival rule as tasks: archived Channels do not exist on Team
+      // API surfaces, so their Threads stop resolving and message bodies
+      // render the refs as plain non-navigable text.
+      if (thread === undefined || channelRef === undefined || channel?.workspaceId !== workspaceId || channel?.state === 'archived') continue
+      const task = thread.taskRef === undefined ? undefined : this.state.tasks.get(thread.taskRef)
+      resolved.push(Object.freeze({
+        threadRef: thread.threadRef,
+        channelRef,
+        ...(task === undefined ? {} : { taskRef: task.taskRef, taskNumber: numbers.get(task.taskRef) ?? 0 }),
+        title: boundedThreadTitle(this.threadAnchor(thread.threadRef).body),
+      }))
+    }
+    return resolved
+  }
+
   /** Navigation facts for message-body Task refs; unknown refs are omitted. */
   resolveTaskRefs(workspaceId: WorkspaceId, taskRefs: readonly AgentTeamTaskRef[]): AgentTeamResolvedTaskRef[] {
     const numbers = this.taskNumbers(workspaceId)
@@ -1766,17 +1801,25 @@ export class AgentTeamLedger {
       const member = this.requireMember(memberId)
       if (!this.participatesIn(member.memberId, request.workspaceId)) throw new Error('Member cannot view another Workspace')
     }
-    if (request.channelRef !== undefined) {
-      this.requireActiveChannel(request.workspaceId, request.channelRef)
-      if (memberId !== undefined && !this.isChannelMember(request.channelRef, memberId)) throw new Error(`Agent Member '${memberId}' is not authorized for Channel '${request.channelRef}'`)
+    // Validation above accepts unique UUID abbreviations, so resolve both
+    // filters to full keys once: comparing the authored spelling in the fact
+    // filters below matches nothing and returns an empty view that every
+    // caller reads as "no such thread" (task #17).
+    const channelRefFilter = request.channelRef === undefined
+      ? undefined
+      : this.requireActiveChannel(request.workspaceId, request.channelRef).channelRef
+    if (channelRefFilter !== undefined) {
+      if (memberId !== undefined && !this.isChannelMember(channelRefFilter, memberId)) throw new Error(`Agent Member '${memberId}' is not authorized for Channel '${request.channelRef}'`)
     }
+    let threadRefFilter: AgentTeamThreadRef | undefined
     if (request.threadRef !== undefined) {
       const thread = this.requireThread(request.threadRef)
+      threadRefFilter = thread.threadRef
       const channelRef = this.channelRefForThread(thread.threadRef)
       if (channelRef === undefined) throw new Error(`unknown Thread ref '${request.threadRef}'`)
       if (this.state.channels.get(channelRef)?.workspaceId !== request.workspaceId) throw new Error(`Thread '${request.threadRef}' does not belong to Workspace '${request.workspaceId}'`)
       this.assertThreadChannelActive(channelRef)
-      if (request.channelRef !== undefined && channelRef !== request.channelRef) throw new Error(`Thread '${request.threadRef}' does not belong to Channel '${request.channelRef}'`)
+      if (channelRefFilter !== undefined && channelRef !== channelRefFilter) throw new Error(`Thread '${request.threadRef}' does not belong to Channel '${request.channelRef}'`)
       if (memberId !== undefined && !this.isChannelMember(channelRef, memberId)) throw new Error(`Agent Member '${memberId}' is not authorized for Channel '${channelRef}'`)
     }
     const channels = [...this.state.channels.values()].filter(channel => channel.workspaceId === request.workspaceId
@@ -1788,8 +1831,8 @@ export class AgentTeamLedger {
       const threadRef = fact.kind === 'message' ? fact.message.threadRef : fact.activity.threadRef
       const channelRef = this.channelRefForThread(threadRef)
       if (channelRef === undefined || !channelRefs.has(channelRef)) return false
-      if (request.channelRef !== undefined && channelRef !== request.channelRef) return false
-      if (request.threadRef !== undefined && threadRef !== request.threadRef) return false
+      if (channelRefFilter !== undefined && channelRef !== channelRefFilter) return false
+      if (threadRefFilter !== undefined && threadRef !== threadRefFilter) return false
       if (request.topLevelOnly && (fact.kind !== 'message' || !fact.message.topLevel)) return false
       if (request.includeActivities === false && fact.kind === 'activity') return false
       return direction === 'before' ? fact.sequence < before : fact.sequence > cursor
@@ -1816,8 +1859,8 @@ export class AgentTeamLedger {
       }
     }
     const visibleTasks = [...this.state.tasks.values()].filter(task => channelRefs.has(task.channelRef)
-      && (request.channelRef === undefined || task.channelRef === request.channelRef)
-      && (request.threadRef === undefined || task.threadRef === request.threadRef))
+      && (channelRefFilter === undefined || task.channelRef === channelRefFilter)
+      && (threadRefFilter === undefined || task.threadRef === threadRefFilter))
     const taskNumbers = this.taskNumbers(request.workspaceId)
     const items = selected.filter((fact): fact is Extract<AgentTeamThreadFact, { kind: 'message' }> => fact.kind === 'message').map(fact => {
       const message = fact.message
@@ -1845,8 +1888,8 @@ export class AgentTeamLedger {
       threads: Object.freeze([...this.state.threads.values()].filter(thread => {
         const channelRef = this.channelRefForThread(thread.threadRef)
         return channelRef !== undefined && channelRefs.has(channelRef)
-          && (request.channelRef === undefined || channelRef === request.channelRef)
-          && (request.threadRef === undefined || thread.threadRef === request.threadRef)
+          && (channelRefFilter === undefined || channelRef === channelRefFilter)
+          && (threadRefFilter === undefined || thread.threadRef === threadRefFilter)
       })),
       taskNumbers: Object.freeze(visibleTasks.map(task => Object.freeze({ taskRef: task.taskRef, taskNumber: taskNumbers.get(task.taskRef) ?? 0 }))),
       items: Object.freeze(items),

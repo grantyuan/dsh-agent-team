@@ -16,7 +16,7 @@ import AgentTeam, { AGENT_TEAM_HUMAN_MEMBER_ID, AGENT_TEAM_INITIALIZE_REQUEST_ID
 import { AgentTeamLedger, agentTeamHumanActor, isThreadReadSnapshot } from '../src/ledger.ts'
 import { agentTeamDomainSpec } from '../src/spec.ts'
 import * as agentTeamInvariant from '../src/invariant.ts'
-import type { AgentTeamAgentMember, AgentTeamMemberActor, AgentTeamOperation, AgentTeamOperationId, AgentTeamRequestId, AgentTeamTask, AgentTeamTaskRef, AgentTeamThreadReadData, AgentTeamThreadReadOperation, AgentTeamThreadReadReceipt, AgentTeamThreadReadResult } from '../src/types.ts'
+import type { AgentTeamAgentMember, AgentTeamMemberActor, AgentTeamOperation, AgentTeamOperationId, AgentTeamRequestId, AgentTeamTask, AgentTeamTaskRef, AgentTeamThreadReadData, AgentTeamThreadReadOperation, AgentTeamThreadReadReceipt, AgentTeamThreadReadResult, AgentTeamThreadRef } from '../src/types.ts'
 
 interface TeamHarness {
   readonly ctx: Context
@@ -512,6 +512,51 @@ describe('AgentTeam durable Thread Attention ledger', () => {
     expect(channelless.taskNumbers).toContainEqual({ taskRef: second.task.taskRef, taskNumber: 2 })
     // An unregistered workspace is rejected before any lookup.
     expect(() => test.ctx.agentTeam.resolveTaskRefs({ workspaceId: beta, taskRefs: [first.task.taskRef] })).toThrow(/unknown Workspace/)
+  })
+
+  it('resolves branded Thread refs to navigation facts and omits unknown refs', async () => {
+    const test = await harness()
+    const channel = await test.ctx.agentTeam.createChannel({ requestId: requestId('thread-refs-channel'), workspaceId: alpha, name: 'engineering', description: 'Engineering work' })
+    const first = committed(await test.ctx.agentTeam.sendMessage({ asTask: false, requestId: requestId('thread-refs-first'), workspaceId: alpha, channelRef: channel.channel.channelRef, body: 'alpha discussion opens here' }))
+    const second = committed(await test.ctx.agentTeam.sendMessage({ asTask: false, requestId: requestId('thread-refs-second'), workspaceId: alpha, channelRef: channel.channel.channelRef, body: 'beta discussion opens here' }))
+    const started = withTask(committed(await test.ctx.agentTeam.sendMessage({ asTask: true, requestId: requestId('thread-refs-task'), workspaceId: alpha, channelRef: channel.channel.channelRef, body: 'task work' })))
+    // Taskless Threads resolve with their opening-line title and no Task
+    // overlay; taskful Threads carry the Task home alongside the same title.
+    // Unknown refs are omitted so message bodies render them as plain text.
+    const resolved = test.ctx.agentTeam.resolveThreadRefs({ workspaceId: alpha, threadRefs: [first.thread.threadRef, second.thread.threadRef, started.thread.threadRef, 'thread:00000000-0000-4000-8000-000000000000' as AgentTeamThreadRef] })
+    expect(resolved.resolved).toEqual([
+      { threadRef: first.thread.threadRef, channelRef: channel.channel.channelRef, title: 'alpha discussion opens here' },
+      { threadRef: second.thread.threadRef, channelRef: channel.channel.channelRef, title: 'beta discussion opens here' },
+      { threadRef: started.thread.threadRef, channelRef: channel.channel.channelRef, taskRef: started.task.taskRef, taskNumber: 1, title: 'task work' },
+    ])
+    // The abbreviated spelling from the report (8 hex chars) resolves when
+    // unambiguous, answering with the full ref the click path navigates by.
+    const abbreviated = `thread:${first.thread.threadRef.slice('thread:'.length).replaceAll('-', '').slice(0, 8).toLowerCase()}` as AgentTeamThreadRef
+    expect(test.ctx.agentTeam.resolveThreadRefs({ workspaceId: alpha, threadRefs: [abbreviated] }).resolved).toEqual([
+      { threadRef: first.thread.threadRef, channelRef: channel.channel.channelRef, title: 'alpha discussion opens here' },
+    ])
+    // The same abbreviation addresses the bounded Thread view: the filter
+    // compares the resolved full key, not the authored spelling (task #17 root
+    // cause — an empty view here is what made chip clicks silently no-op).
+    expect(test.ctx.agentTeam.view({ workspaceId: alpha, threadRef: abbreviated }).items).toHaveLength(1)
+    // An unregistered workspace is rejected before any lookup.
+    expect(() => test.ctx.agentTeam.resolveThreadRefs({ workspaceId: beta, threadRefs: [first.thread.threadRef] })).toThrow(/unknown Workspace/)
+  })
+
+  it('caps resolved Thread chip titles at 40 characters', async () => {
+    const test = await harness()
+    const channel = await test.ctx.agentTeam.createChannel({ requestId: requestId('thread-title-channel'), workspaceId: alpha, name: 'engineering', description: 'Engineering work' })
+    const exact = `x${'y'.repeat(38)}z`
+    const exactThread = committed(await test.ctx.agentTeam.sendMessage({ asTask: false, requestId: requestId('thread-title-exact'), workspaceId: alpha, channelRef: channel.channel.channelRef, body: exact }))
+    // A 40-character opening line passes through untouched; anything longer
+    // is cut to 39 characters plus the mark so chips share the line with prose.
+    expect(test.ctx.agentTeam.resolveThreadRefs({ workspaceId: alpha, threadRefs: [exactThread.thread.threadRef] }).resolved).toEqual([
+      { threadRef: exactThread.thread.threadRef, channelRef: channel.channel.channelRef, title: exact },
+    ])
+    const longThread = committed(await test.ctx.agentTeam.sendMessage({ asTask: false, requestId: requestId('thread-title-long'), workspaceId: alpha, channelRef: channel.channel.channelRef, body: `${'a'.repeat(100)}\nsecond line` }))
+    expect(test.ctx.agentTeam.resolveThreadRefs({ workspaceId: alpha, threadRefs: [longThread.thread.threadRef] }).resolved).toEqual([
+      { threadRef: longThread.thread.threadRef, channelRef: channel.channel.channelRef, title: `${'a'.repeat(39)}…` },
+    ])
   })
 
   it('adds an Agent with initial Channel membership and persists no Inbox delivery facts', async () => {

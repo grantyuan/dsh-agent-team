@@ -1,4 +1,4 @@
-import { cp, mkdir, readFile, rm, symlink, writeFile } from 'node:fs/promises'
+import { cp, mkdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { afterEach, expect, it } from 'vitest'
 import { chromium, type Browser, type Locator, type Page } from 'playwright'
@@ -215,13 +215,9 @@ async function installLocalBundle(clearArtifacts = true): Promise<void> {
       return !normalized.includes('/node_modules') && !normalized.includes('/src') && !normalized.includes('/artifacts') && !normalized.includes('/.hoplite')
     },
   })
-  // The routed ledger backend in its installed position. A real `dsh plugin
-  // add` installs this bundle's dependencies under the profile tree; this
-  // lane emulates the layout, so the dependency links beside the copied
-  // bundle instead of relying on the harness app's own dependency closure.
-  const storageSqliteLink = join(HOME, 'profiles/node_modules/@deepseek-ai/dsh-storage-sqlite')
-  await mkdir(join(storageSqliteLink, '..'), { recursive: true })
-  await symlink(join(process.cwd(), 'packages/storage/storage-sqlite'), storageSqliteLink, 'junction')
+  // The routed ledger backend travels inside the staged copy: it is vendored
+  // under this bundle's own package name (see cordis.patch.yml), so no host
+  // node_modules link is staged here.
   await mkdir(UI01_SHOTS, { recursive: true })
   await mkdir(UI02_SHOTS, { recursive: true })
   await mkdir(UI03_SHOTS, { recursive: true })
@@ -2228,3 +2224,60 @@ it('keeps four same-origin Team pages responsive and independently subscribed', 
   await settleLayout(pages[1]!)
   await pages[1]!.screenshot({ path: join(BROWSER_ARTIFACTS, 'multi-web-mobile.png'), fullPage: true })
 }, 120_000)
+
+/**
+ * Taskless-thread ref chips must navigate, not just render (task #17): one
+ * taskless Thread cites another's abbreviated ref in plain prose, the reader
+ * clicks the chip, and the Thread page of the cited Thread opens. The chip is
+ * located by its raw-ref title so the assertion survives label redesigns, and
+ * arrival is proven by the Thread page marker carrying the cited full ref.
+ */
+it('opens a taskless thread from its ref chip in real Web', async () => {
+  await installLocalBundle()
+  scaffold = await launchWebScaffold({ extraOverlayPath: OVERLAY, harnessHome: HOME, extraInstallAnchors: [TEAM_INSTALL_ANCHOR] })
+  browser = await chromium.launch({ headless: true, executablePath: CHROME })
+  const page = await browser.newPage({ viewport: { width: 1440, height: 960 }, locale: 'zh-CN' })
+  const consoleWatch = watchConsole(page)
+  await page.goto(scaffold.authenticatedUrl)
+  await connectFreshWorkspaceZh(page, scaffold.workspaceCwd, 'team-workspace')
+  await page.getByRole('button', { name: '团队', exact: true }).click()
+  await page.getByRole('button', { name: '新建频道' }).click()
+  const channelDialog = page.getByRole('dialog', { name: '新建频道' })
+  await channelDialog.getByLabel('名称').fill('ref-repro')
+  await channelDialog.getByLabel('说明').fill('thread ref chips')
+  await channelDialog.getByRole('button', { name: '创建频道' }).click()
+  await page.getByRole('button', { name: '# ref-repro', exact: true }).click()
+  await page.getByRole('heading', { name: '# ref-repro', exact: true }).waitFor()
+  const channelComposer = page.getByRole('textbox', { name: '消息内容' })
+  await channelComposer.fill('ALPHA-ROOT-MARKER alpha discussion opens here')
+  await page.getByRole('button', { name: '发送', exact: true }).click()
+  await page.locator('[data-team-channel] article').filter({ hasText: 'ALPHA-ROOT-MARKER' }).waitFor()
+  // The cited form is the abbreviated spelling from the report (8 hex chars):
+  // resolution, not spelling, must decide linkability.
+  const workspaceId = scaffold.ctx.workspaceRegistry.list()[0]!.id
+  const projection = scaffold.ctx.agentTeam.view({ workspaceId })
+  const alphaThread = projection.threads.find((thread: { taskRef?: string }) => thread.taskRef === undefined)!
+  const alphaRef = alphaThread.threadRef as string
+  const alphaShort = `thread:${(alphaRef.slice('thread:'.length) as string).replaceAll('-', '').slice(0, 8).toLowerCase()}`
+  await channelComposer.fill(`BETA-ROOT-MARKER citing ${alphaShort} for the chip`)
+  await page.getByRole('button', { name: '发送', exact: true }).click()
+  const betaArticle = page.locator('[data-team-channel] article').filter({ hasText: 'BETA-ROOT-MARKER' })
+  await betaArticle.waitFor()
+  const chip = betaArticle.locator(`button[title="${alphaShort}"]`)
+  await chip.waitFor()
+  await expect.poll(() => chip.textContent()).toMatch(/alpha discussion opens here/)
+  await page.screenshot({ path: join(UI02_SHOTS, 'thread-ref-chip.png'), fullPage: true })
+  await chip.click()
+  // Split "never navigated" from "navigated but failed to render": the
+  // persisted snapshot answers the first without waiting on the second.
+  await expect.poll(() => page.evaluate(() => (JSON.parse(localStorage.getItem('dsh.agent-team.navigation') ?? '{}') as { threadRef?: string }).threadRef), { timeout: 10_000 }).toBe(alphaRef)
+  // Arrival at the cited Thread (not just any navigation): the Thread page
+  // marker carries the cited full ref, and the persisted snapshot agrees.
+  await page.locator(`[data-team-thread="${alphaRef}"]`).waitFor({ timeout: 20_000 })
+  await expect.poll(() => page.evaluate(() => (JSON.parse(localStorage.getItem('dsh.agent-team.navigation') ?? '{}') as { threadRef?: string }).threadRef)).toBe(alphaRef)
+  await page.screenshot({ path: join(UI02_SHOTS, 'thread-ref-chip-opened.png'), fullPage: true })
+  await page.setViewportSize({ width: 390, height: 844 })
+  await settleLayout(page)
+  await page.screenshot({ path: join(UI02_SHOTS, 'thread-ref-chip-opened-narrow.png'), fullPage: true })
+  expect(consoleWatch).toEqual({ warnings: [], pageErrors: [] })
+}, 180_000)

@@ -25,6 +25,7 @@ import { mintRequestId, uploadComposerFiles } from './requests.ts'
 import { daySeparatorLabel, isRunGap, timelineDayKey } from './team-separators.ts'
 import { useTimelineScroll } from './timeline-scroll.ts'
 import { hostTaskRefLookup, jumpToTaskThread } from './task-refs.ts'
+import { hostThreadRefLookup, jumpToThread } from './thread-refs.ts'
 import css from './conversation.module.css'
 import threadCss from './thread.module.css'
 
@@ -50,6 +51,7 @@ interface TeamThreadPageProps {
   readonly selectChannel: TeamConversationProps['selectChannel']
   readonly selectThread: TeamConversationProps['selectThread']
   readonly resolveTaskRefs: TeamConversationProps['resolveTaskRefs']
+  readonly resolveThreadRefs: TeamConversationProps['resolveThreadRefs']
   readonly t: TeamConversationProps['t']
 }
 
@@ -100,7 +102,7 @@ function readMeta(facts: readonly AgentTeamThreadReadFact[]): ReadonlyMap<Thread
 
 export function TeamThreadPage(props: TeamThreadPageProps) {
   const {
-    workspaceId, channelRef, taskRef, threadRef, taskNumber, backToWorkspace, selectChannel, selectThread, resolveTaskRefs, putAttachment,
+    workspaceId, channelRef, taskRef, threadRef, taskNumber, backToWorkspace, selectChannel, selectThread, resolveTaskRefs, resolveThreadRefs, putAttachment,
     loadChannels, readThread, loadThreadHistory, threadObservations,
     subscribeChanges, loadMembers, drafts, getAttachment, reply, changeTask, promoteThread, t,
   } = props
@@ -447,8 +449,9 @@ export function TeamThreadPage(props: TeamThreadPageProps) {
   const [pendingFiles, setPendingFiles] = useState<readonly File[]>([])
 
   // Branded-ref navigation for message bodies: channel refs hop to the
-  // Channel; the open Task's own refs are already on screen, and other Tasks
-  // are not resolvable from this surface, so they degrade to a no-op.
+  // Channel; thread and task refs cited here resolve through the Host and
+  // jump to their home Channel. Unresolvable refs never become links (see
+  // TeamMessage), so this path only fires for refs the Host already confirmed.
   // Identity-stable: a fresh closure per render would defeat TeamMessage's memo.
   const openRef = useCallback((ref: string): void => {
     if (ref.startsWith('channel:') && ref !== channelRef) {
@@ -456,24 +459,18 @@ export function TeamThreadPage(props: TeamThreadPageProps) {
       return
     }
     if (ref.startsWith('thread:') && ref !== threadRef) {
-      // Thread refs do not have a dedicated resolver Remote. The Host view
-      // query still returns the target's home Channel and Task projection.
-      void loadChannels({ workspaceId, threadRef: ref as AgentTeamThreadRef, includeActivities: false, limit: 1 }).then(result => {
-        if (!result.ok) return
-        const target = result.value.items[0]
-        if (target === undefined) return
-        const targetChannel = result.value.channels.find(channel => channel.channelRef === target.message.channelRef)
-        if (targetChannel !== undefined) selectThread(target.thread.threadRef, targetChannel.channelRef, target.task?.taskRef, target.taskNumber)
-      })
+      // Another Thread cited here: resolve its home Channel and jump.
+      jumpToThread(resolveThreadRefs, workspaceId, ref as AgentTeamThreadRef, selectThread)
       return
     }
     if (ref.startsWith('task:') && ref !== taskRef) {
       // Another Task cited here: resolve its home Channel and jump.
       jumpToTaskThread(resolveTaskRefs, workspaceId, ref as AgentTeamTaskRef, selectThread)
     }
-  }, [channelRef, threadRef, taskRef, workspaceId, selectChannel, selectThread, loadChannels, resolveTaskRefs])
+  }, [channelRef, threadRef, taskRef, workspaceId, selectChannel, selectThread, resolveTaskRefs, resolveThreadRefs])
 
   const lookupTaskRefs = useMemo(() => hostTaskRefLookup(resolveTaskRefs, workspaceId), [resolveTaskRefs, workspaceId])
+  const lookupThreadRefs = useMemo(() => hostThreadRefLookup(resolveThreadRefs, workspaceId), [resolveThreadRefs, workspaceId])
 
   const renderFact = (fact: AgentTeamThreadFact, grouped = false) => {
     if (fact.kind === 'message') {
@@ -492,6 +489,7 @@ export function TeamThreadPage(props: TeamThreadPageProps) {
         mentionNames={stableMentionNames(fact.mentions, mentionHandlesMap)}
         onOpenRef={openRef}
         onResolveTaskRefs={lookupTaskRefs}
+        onResolveThreadRefs={lookupThreadRefs}
         grouped={grouped}
         {...(senderStatus === undefined ? {} : { senderTitle: senderStatus.member.description })}
       />
