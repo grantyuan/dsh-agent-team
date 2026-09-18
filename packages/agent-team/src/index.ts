@@ -38,6 +38,7 @@ import { agentTeamDomainSpec } from './spec.ts'
 import { formatTeamTimestamp } from './time-format.ts'
 import type {
   AgentTeamAddMemberRequest,
+  AgentTeamAddMemberResult,
   AgentTeamAgentMember,
   AgentTeamAgentMemberStatus,
   AgentTeamArchiveChannelRequest,
@@ -724,7 +725,7 @@ export default class AgentTeam extends TypertRemoteService {
 
   /** Create a durable Member and atomically grant its declared initial Channels. */
   @Remote('addMember')
-  async addMember(request: AgentTeamAddMemberRequest): Promise<AgentTeamMemberResult> {
+  async addMember(request: AgentTeamAddMemberRequest): Promise<AgentTeamAddMemberResult> {
     return this.enqueueLifecycle(async () => {
       const workspace = this.requireWorkspace(request.workspaceId)
       await this.assertModelRoute(request.model)
@@ -741,11 +742,14 @@ export default class AgentTeam extends TypertRemoteService {
         privateMemoryPath: dshHomePath('agent-team', 'members', memberMemoryDirectoryName(memberId)),
         state: 'enabled',
       })
-      const result = await this.requireLedger().addMember({ ...request, actor: agentTeamHumanActor(), member })
+      const ledger = this.requireLedger()
+      const result = await ledger.addMember({ ...request, actor: agentTeamHumanActor(), member })
       if (result.committed) this.emitCommitted(result.value.receipt)
       const stored = result.value.member
       if (!this.handles.has(stored.memberId)) await this.activateMember(stored, workspace.path)
-      return Object.freeze({ receipt: result.value.receipt, status: this.memberStatus(stored) })
+      // Creation seeds exactly the creation Workspace participation; attach it
+      // here (like membersForClient) so the Client never synthesizes it.
+      return Object.freeze({ receipt: result.value.receipt, status: this.memberStatus(stored), workspaceIds: ledger.workspacesOf(stored.memberId) })
     })
   }
 

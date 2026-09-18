@@ -168,7 +168,7 @@ export function TeamAgentsPanel({ workspaceId, loadMembers, subscribeChanges, ad
     try {
       const result = await addMember(request)
       if (result.ok) {
-        const committed = { ...result.value.status, workspaceIds: [result.value.status.member.workspaceId] }
+        const committed = { ...result.value.status, workspaceIds: result.value.workspaceIds }
         setMembers(current => {
           const retained = current.filter(status => status.member.memberId !== committed.member.memberId)
           return committed.member.state === 'inactive' || committed.member.state === 'archived' ? retained : [...retained, committed]

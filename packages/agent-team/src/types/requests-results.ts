@@ -152,6 +152,12 @@ export interface AgentTeamMemberResult {
   readonly status: AgentTeamAgentMemberStatus
 }
 
+/** Result of creating a Member: lifecycle status plus the participation set the Host seeded at creation. */
+export interface AgentTeamAddMemberResult extends AgentTeamMemberResult {
+  /** Workspaces the new Member participates in — creation always seeds exactly the creation Workspace. */
+  readonly workspaceIds: readonly WorkspaceId[]
+}
+
 /** Operator intent to nudge one error-stopped Member into continuing its work. */
 export interface AgentTeamRecoverMemberRequest {
   readonly requestId: AgentTeamRequestId
