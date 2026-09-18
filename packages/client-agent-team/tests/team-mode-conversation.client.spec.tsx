@@ -147,6 +147,40 @@ describe('Team conversation surfaces', () => {
     await b.runtime.dispose()
   })
 
+  it('stops printing activity on a resolved Task door', async () => {
+    const b = await runtimeWithTeam({
+      mode: 'team', workspaceId: 'w1', initialChannels: true,
+      seedTaskStatus: 'done',
+      seededMessages: [{ body: '已经完成的任务', occurredAt: '2026-08-21T09:00:00.000Z' }],
+    })
+    fireEvent.click(await b.view.findByRole('button', { name: '# engineering' }))
+    // The reply is a newer fact than the opener, so follow-up activity exists —
+    // the door is the only place that could print it.
+    b.publishAgentReply()
+    const door = await b.view.findByRole('button', { name: '打开 Task #1' })
+    // A done Task already says nothing is moving, so the moment it resolved is
+    // not repeated on every finished row; the precise instant stays one hover
+    // away.
+    expect(door.textContent).toBe('Task #1')
+    expect(door.getAttribute('title')).toMatch(/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}$/)
+    await b.runtime.dispose()
+  })
+
+  it('keeps printing activity on a taskless discussion, which never resolves', async () => {
+    const b = await runtimeWithTeam({ mode: 'team', workspaceId: 'w1', initialChannels: true })
+    fireEvent.click(await b.view.findByRole('button', { name: '# engineering' }))
+    expect(await b.view.findByRole('heading', { name: '# engineering' })).toBeTruthy()
+    fireEvent.change(await b.view.findByRole('textbox', { name: '消息内容' }), { target: { value: 'plain thread' } })
+    fireEvent.click(b.view.getByRole('button', { name: '发送' }))
+    await waitFor(() => expect(b.sendMessage).toHaveBeenCalledWith(expect.objectContaining({ asTask: false })))
+    b.publishAgentReply()
+    // A discussion wears no status word, dot, or owner stack, and it has no
+    // terminal state: recency is the whole of what its door can say.
+    const door = await b.view.findByRole('button', { name: '打开讨论' })
+    expect(door.textContent).toContain('最近活动')
+    await b.runtime.dispose()
+  })
+
   it('linkifies branded refs in agent plain-prose bodies that skip the mention path', async () => {
     const taskRef = 'task:0f0ad7ce-11d3-4c05-8a9e-6f2b1c9d7e31'
     const b = await runtimeWithTeam({

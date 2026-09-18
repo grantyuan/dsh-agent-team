@@ -1116,6 +1116,10 @@ it('drives the complete opt-in Agent Team journey in real Web', async () => {
     .toBe(`打开 Task #1（${unreadTotal} 条新动态）`)
   await expect.poll(async () => (await entryUnreadCapsule(page, unreadLineSelector))?.text ?? 'missing', { timeout: 10_000 })
     .toBe(unreadTotal > 99 ? '99+' : String(unreadTotal))
+  // The Task is still live, so its door keeps reporting when the work last
+  // moved — the one thing the feed's own order cannot say, since that order
+  // follows each anchor Message rather than the Thread.
+  await expect.poll(async () => (await unreadEntryRow.textContent())?.trim() ?? '').toContain('最近活动')
   const unreadCapsule = await entryUnreadCapsule(page, unreadLineSelector)
   // The capsule is decoration inside a labeled control, and it is a capsule:
   // a filled 18px pill whose radius covers its own height.
@@ -1328,6 +1332,26 @@ it('drives the complete opt-in Agent Team journey in real Web', async () => {
   await page.getByRole('heading', { name: '# delivery' }).waitFor()
   await expect.poll(() => page.getByText('Human 已检查 Thread', { exact: true }).count()).toBe(0)
   await expect.poll(() => page.getByText('验收后继续讨论', { exact: true }).count()).toBe(0)
+  // A resolved Task's door stops printing when the work last moved: a done or
+  // closed status word says nothing is moving, and the instant would only repeat
+  // the moment it resolved on every finished row. The Thread has follow-up facts
+  // either way, so the precise instant stays on the control's title, one hover
+  // away.
+  const closedEntry = taskEntryRow(page, 1)
+  await expect.poll(async () => (await closedEntry.textContent())?.trim() ?? '').toBe('Task #1')
+  await expect.poll(async () => await closedEntry.getAttribute('title') ?? '').toMatch(/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}$/)
+  await closedEntry.scrollIntoViewIfNeeded()
+  await settleAnimations(page)
+  await page.screenshot({ path: join(UI05_SHOTS, 'resolved-task-entry.png'), fullPage: true })
+  // The door got shorter, so the narrow column has strictly less to wrap: the
+  // same row must still fit without a horizontal scrollbar.
+  await page.setViewportSize({ width: 390, height: 844 })
+  await settleLayout(page)
+  await closedEntry.scrollIntoViewIfNeeded()
+  expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(390)
+  await page.screenshot({ path: join(UI05_SHOTS, 'narrow-resolved-task-entry.png'), fullPage: true })
+  await page.setViewportSize({ width: 1440, height: 960 })
+  await settleLayout(page)
   await page.getByRole('button', { name: '成员', exact: true }).click()
   await page.getByRole('dialog', { name: '成员' }).screenshot({ path: join(UI01_SHOTS, 'global-members.png') })
   await page.getByRole('button', { name: '关闭', exact: true }).click()

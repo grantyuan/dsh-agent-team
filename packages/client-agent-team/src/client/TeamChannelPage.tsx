@@ -77,6 +77,20 @@ function followUpAt(item: AgentTeamViewItem): string | undefined {
   return lastActivityAt === undefined || lastActivityAt === item.message.occurredAt ? undefined : lastActivityAt
 }
 
+/**
+ * What the door prints about follow-up activity, or nothing. A resolved Task
+ * stops printing it: the status word beside the door already says nothing is
+ * moving, and the instant it would print is the moment it resolved — repeated
+ * on every finished row. The precise instant stays on the control's title, one
+ * hover away. A taskless Thread never resolves, so a discussion keeps the
+ * recency that is the whole of its state line: it wears no status word, dot, or
+ * owner stack.
+ */
+function printedActivityAt(item: AgentTeamViewItem): string | undefined {
+  const status = item.task?.status
+  return status === 'done' || status === 'closed' ? undefined : followUpAt(item)
+}
+
 /** Host unread per Thread, keyed for the feed's rows: zero unread is the absence of a badge, not a row. */
 function unreadCounts(inbox: AgentTeamInbox): ReadonlyMap<AgentTeamThreadRef, number> {
   return new Map(inbox.items.filter(item => item.unreadCount > 0).map(item => [item.thread.threadRef, item.unreadCount]))
@@ -503,10 +517,11 @@ function ThreadStateCluster({ task, owners, unread, t }: {
  * The gate under one top-level Message: the single row that opens its Thread,
  * and the one line that says what stands there. State leads it, then what the
  * entry is: a Task entry keeps its number so the status word never floats free
- * of the Task it describes, follow-up activity adds when the work last moved,
- * and an unanswered Thread says only 回复. The instant uses the Inbox's own
- * 今天/昨天 form with the precise local time on the control's title, and an
- * unread Thread says so in the control's label rather than only in pixels.
+ * of the Task it describes, follow-up activity adds when the work last moved —
+ * while the work is still unfinished — and an unanswered Thread says only 回复.
+ * The instant uses the Inbox's own 今天/昨天 form with the precise local time on
+ * the control's title, and an unread Thread says so in the control's label
+ * rather than only in pixels.
  */
 function ThreadEntryRow({ item, owners, unread, t, onOpen }: {
   readonly item: AgentTeamViewItem
@@ -517,10 +532,11 @@ function ThreadEntryRow({ item, owners, unread, t, onOpen }: {
 }) {
   const taskNumber = item.taskNumber
   const followUp = followUpAt(item)
+  const printedActivity = printedActivityAt(item)
   const label = taskNumber !== undefined
     ? t('taskLabel', { number: taskNumber })
     : followUp === undefined ? t('replyAction') : t('threadLabel')
-  const text = followUp === undefined ? label : `${label} · ${t('recentActivity', { time: formatInboxTime(followUp, t) })}`
+  const text = printedActivity === undefined ? label : `${label} · ${t('recentActivity', { time: formatInboxTime(printedActivity, t) })}`
   const openLabel = taskNumber === undefined
     ? unread > 0 ? t('openThreadUnread', { count: unread }) : t('openThread')
     : unread > 0 ? t('openTaskUnread', { number: taskNumber, count: unread }) : t('openTask', { number: taskNumber })
