@@ -175,12 +175,19 @@ export function mentionedMemberIds(body: string, members: readonly AgentTeamClie
   return resolveBodyMentions(body, candidates, 'member:human' as AgentTeamMemberId).memberIds
 }
 
-/** Canonical chip handles for one Message's structured mention refs. */
-export function mentionNamesOf(mentions: readonly AgentTeamMemberId[], handles: ReadonlyMap<AgentTeamMemberId, string>): string[] {
+/**
+ * Canonical chip handles for one Message's structured mention refs. The Human
+ * is Team authority, not an Agent projection, so `members()` does not include
+ * it: the caller hands over the profile name every seat names them by, so a
+ * rename reaches old mention chips the same way it reaches the roster.
+ */
+export function mentionNamesOf(
+  mentions: readonly AgentTeamMemberId[],
+  handles: ReadonlyMap<AgentTeamMemberId, string>,
+  humanName: string,
+): string[] {
   return mentions
-    // The Human is Team authority, not an Agent projection, so `members()` does
-    // not include it. Keep its stable public handle available for rendering.
-    .map(memberId => memberId === 'member:human' ? 'human' : handles.get(memberId))
+    .map(memberId => memberId === 'member:human' ? humanName : handles.get(memberId))
     .filter((name): name is string => name !== undefined)
 }
 

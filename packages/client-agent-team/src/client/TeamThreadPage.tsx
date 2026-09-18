@@ -32,6 +32,9 @@ import threadCss from './thread.module.css'
 
 interface TeamThreadPageProps {
   readonly workspaceId: WorkspaceId
+  /** The Human's own display name and avatar, from the shared identity projection. */
+  readonly humanName: string
+  readonly humanAvatarUrl?: string | undefined
   readonly channelRef?: AgentTeamChannelRef
   readonly taskRef?: AgentTeamTaskRef
   readonly threadRef: AgentTeamThreadRef
@@ -80,8 +83,8 @@ function messageFact(message: ReadProjection['anchor'], mentions: readonly Agent
  */
 const mentionNamesCache = new WeakMap<readonly AgentTeamMemberId[], readonly string[]>()
 
-function stableMentionNames(mentions: readonly AgentTeamMemberId[], handles: ReadonlyMap<AgentTeamMemberId, string>): readonly string[] {
-  const names = mentionNamesOf(mentions, handles)
+function stableMentionNames(mentions: readonly AgentTeamMemberId[], handles: ReadonlyMap<AgentTeamMemberId, string>, humanName: string): readonly string[] {
+  const names = mentionNamesOf(mentions, handles, humanName)
   const cached = mentionNamesCache.get(mentions)
   if (cached !== undefined && cached.length === names.length && cached.every((name, index) => name === names[index])) return cached
   mentionNamesCache.set(mentions, names)
@@ -104,7 +107,7 @@ function readMeta(facts: readonly AgentTeamThreadReadFact[]): ReadonlyMap<Thread
 
 export function TeamThreadPage(props: TeamThreadPageProps) {
   const {
-    workspaceId, channelRef, taskRef, threadRef, taskNumber, backToWorkspace, selectChannel, selectThread, resolveTaskRefs, resolveThreadRefs, openMemberSession, putAttachment,
+    workspaceId, humanName, humanAvatarUrl, channelRef, taskRef, threadRef, taskNumber, backToWorkspace, selectChannel, selectThread, resolveTaskRefs, resolveThreadRefs, openMemberSession, putAttachment,
     loadChannels, readThread, loadThreadHistory, threadObservations,
     subscribeChanges, loadMembers, drafts, getAttachment, reply, changeTask, promoteThread, t,
   } = props
@@ -440,7 +443,7 @@ export function TeamThreadPage(props: TeamThreadPageProps) {
   }, [activeProjection?.anchor, readFacts, currentFacts, metadata])
 
   const memberName = (memberId: AgentTeamMemberId): string => {
-    if (memberId === channelView?.humanMemberId) return t('human')
+    if (memberId === channelView?.humanMemberId) return humanName
     const status = members.find(candidate => candidate.member.memberId === memberId)
     return status === undefined ? t('memberUnknown') : `@${status.member.handle}`
   }
@@ -490,25 +493,26 @@ export function TeamThreadPage(props: TeamThreadPageProps) {
   }, [rosterKey])
   const memberOf = useMemo(() => {
     const humanMemberId = channelView?.humanMemberId
-    const humanHandle = t('human')
-    return (ref: AgentTeamMemberId) => rosterMember(members, humanMemberId, humanHandle, ref)
-  }, [rosterKey])
+    return (ref: AgentTeamMemberId) => rosterMember(members, humanMemberId, humanName, ref)
+  }, [rosterKey, humanName])
 
   const renderFact = (fact: AgentTeamThreadFact, grouped = false) => {
     if (fact.kind === 'message') {
       const sender = memberName(fact.message.sender)
       const senderStatus = members.find(candidate => candidate.member.memberId === fact.message.sender)
+      const human = fact.message.sender === channelView?.humanMemberId
       return <TeamMessage
         key={factKey(fact)}
         senderName={sender}
         memberId={fact.message.sender}
-        human={fact.message.sender === channelView?.humanMemberId}
+        human={human}
+        {...(human && humanAvatarUrl !== undefined ? { avatarUrl: humanAvatarUrl } : {})}
         body={fact.message.body}
         attachments={fact.message.attachments}
         loadAttachment={getAttachment}
         t={t}
         occurredAt={fact.message.occurredAt}
-        mentionNames={stableMentionNames(fact.mentions, mentionHandlesMap)}
+        mentionNames={stableMentionNames(fact.mentions, mentionHandlesMap, humanName)}
         onOpenRef={openRef}
         onResolveTaskRefs={lookupTaskRefs}
         onResolveThreadRefs={lookupThreadRefs}

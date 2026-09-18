@@ -27,6 +27,8 @@ export interface TeamMessageProps {
       hairline-separated entry stays self-identifying. */
   readonly showGroupedTime?: boolean
   readonly attachments?: readonly AgentTeamMessageAttachment[] | undefined
+  /** The Human's uploaded avatar; absent draws the initial on the business-tinted chip. */
+  readonly avatarUrl?: string | undefined
   /** Cache readback for thumbnails; absent on surfaces without the remotes. */
   readonly loadAttachment?: TeamConversationProps['getAttachment'] | undefined
   readonly t?: TeamConversationProps['t'] | undefined
@@ -53,7 +55,7 @@ export interface TeamMessageProps {
  * skipping a render here never detaches it. Callers must therefore keep the
  * props they derive per render (mention names, ref callbacks) identity-stable.
  */
-export const TeamMessage = memo(function TeamMessage({ senderName, memberId, human, body, occurredAt, mentionNames, senderTitle, grouped, showGroupedTime, attachments, loadAttachment, t, onOpenRef, onResolveTaskRefs, onResolveThreadRefs, channelNameOf, memberOf, onOpenMemberSession, children }: TeamMessageProps) {
+export const TeamMessage = memo(function TeamMessage({ senderName, memberId, human, avatarUrl, body, occurredAt, mentionNames, senderTitle, grouped, showGroupedTime, attachments, loadAttachment, t, onOpenRef, onResolveTaskRefs, onResolveThreadRefs, channelNameOf, memberOf, onOpenMemberSession, children }: TeamMessageProps) {
   const avatarStyle = human ? undefined : { '--team-avatar-hue': memberHue(memberId) } as CSSProperties
   // Literal bodies carry mention chips inline — Human input always, and
   // plain-prose Agent bodies where literal rendering loses nothing. Rich
@@ -165,7 +167,9 @@ export const TeamMessage = memo(function TeamMessage({ senderName, memberId, hum
       : <div ref={markdownRef} className={css.messageMarkdown}><MarkdownText key={`${displayBody}:${onOpenRef === undefined ? 'literal' : 'refs'}`} text={displayBody} labels={markdownLabels} /></div>
   return (
     <article className={css.messageRow} data-human={human || undefined} data-grouped={grouped || undefined}>
-      <div className={css.messageIdentity} style={avatarStyle} aria-hidden="true">{senderName.replace('@', '').slice(0, 1).toUpperCase()}</div>
+      {avatarUrl === undefined
+        ? <div className={css.messageIdentity} style={avatarStyle} aria-hidden="true">{senderName.replace('@', '').slice(0, 1).toUpperCase()}</div>
+        : <img className={css.messageIdentityImage} src={avatarUrl} alt="" aria-hidden="true" />}
       <div className={css.messageBody}>
         {(!grouped || showGroupedTime === true) && (
           <div className={css.nameRow}>

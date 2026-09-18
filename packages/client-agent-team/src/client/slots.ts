@@ -59,6 +59,7 @@ import type { RemoteResult } from '@deepseek-ai/dsh-typert-protocol'
 import type { TeamNavigationActions, TeamNavigationSnapshot } from './navigation.ts'
 import type { TeamChangeListener, TeamChangeScope } from './team-changes.ts'
 import type { TeamDraftStore } from './drafts.ts'
+import type { TeamHumanIdentitySource } from './human-identity.ts'
 
 export interface TeamNavigationSource {
   getSnapshot: () => TeamNavigationSnapshot
@@ -137,6 +138,8 @@ export type TeamConversationProps = PropsRuntime<'main'> & PropsLocale<'team'> &
   navigation: TeamNavigationSource
   /** Keyed composer draft cache; one store per Client context. */
   drafts: TeamDraftStore
+  /** The Human's own identity: the display name and avatar every seat that names or draws them reads. */
+  humanIdentity: TeamHumanIdentitySource
   loadChannels: (request: AgentTeamViewRequest) => Promise<RemoteResult<AgentTeamView>>
   readThread: (request: AgentTeamThreadReadRequest) => Promise<RemoteResult<AgentTeamThreadReadResult>>
   loadThreadHistory: (request: AgentTeamThreadHistoryRequest) => Promise<RemoteResult<AgentTeamThreadHistory>>

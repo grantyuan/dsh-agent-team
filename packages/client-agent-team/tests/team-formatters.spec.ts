@@ -184,12 +184,12 @@ describe('Team presentation formatters', () => {
 
   it('maps mention refs to canonical handles through the member table', () => {
     const handles = new Map([['member:1' as AgentTeamMemberId, 'builder'], ['member:2' as AgentTeamMemberId, 'lead']])
-    expect(mentionNamesOf(['member:2' as AgentTeamMemberId, 'member:1' as AgentTeamMemberId, 'member:gone' as AgentTeamMemberId], handles)).toEqual(['lead', 'builder'])
+    expect(mentionNamesOf(['member:2' as AgentTeamMemberId, 'member:1' as AgentTeamMemberId, 'member:gone' as AgentTeamMemberId], handles, 'Human')).toEqual(['lead', 'builder'])
   })
 
-  it('keeps the Human mention renderable when the Agent roster omits it', () => {
+  it('names the Human mention from the profile when the Agent roster omits it', () => {
     const handles = new Map([['member:builder' as AgentTeamMemberId, 'builder']])
-    expect(mentionNamesOf(['member:human' as AgentTeamMemberId, 'member:builder' as AgentTeamMemberId], handles)).toEqual(['human', 'builder'])
+    expect(mentionNamesOf(['member:human' as AgentTeamMemberId, 'member:builder' as AgentTeamMemberId], handles, 'Ada')).toEqual(['Ada', 'builder'])
   })
 
   it('reads one handle only when the draft writes it as an authored mention', () => {

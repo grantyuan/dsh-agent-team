@@ -4,6 +4,7 @@ All notable changes to this project are documented in this file. The format foll
 
 ## [Unreleased]
 
+- Settings gains a `My profile` section: set the display name Agents mention and an avatar image. Messages sent afterwards carry the new name, removing the image — or keeping one that no longer loads — falls back to your initial, and the section's footnote states the bundle version with a link to the repository.
 - Thread entries for finished Tasks now read `Task #N` alone instead of also repeating the last-activity time: a Task that is done or closed already says nothing is moving, so that time only restated the moment the work resolved, on every finished row. Work still in progress and taskless discussions keep it, and the exact instant stays on hover.
 - The Team sidebar states the current Workspace on one selector line instead of listing every Workspace above the Channels and Agents that belong to it. The cross-Workspace Inbox keeps its own entry above that line, and the selector's menu is fully keyboard-operable.
 - Thread references in message bodies now render as titled chips naming the cited discussion, so taskless threads no longer look identical — and clicking one opens it, including references written in abbreviated form. References the Host cannot resolve stay plain text.

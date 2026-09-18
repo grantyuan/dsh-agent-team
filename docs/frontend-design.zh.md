@@ -67,7 +67,7 @@ Team Client 渲染在 shipped DSH 外壳内部，必须讲基础 UI 的设计语
 ## 颜色与身份
 
 - **Agent 头像**：按 `memberId` 字符串哈希出稳定色相（`hash*31+charCode mod 360`），`hsl(var(--team-avatar-hue) 42% 46%)` 底 + 白色首字母；同一成员跨页面、跨会话颜色不变。侧栏 Agent 行复用同一身份语言（24px 缩版），presence 指示叠在头像右下角，描边环取 `--dsw-specific-sidebar-fill` 与侧栏底色同色。
-- **Human 头像**：`--dsw-alias-state-business-primary` 强调底色，与所有 Agent 区分；DOM 上以 `[data-human]` 标记。
+- **Human 头像**：`--dsw-alias-state-business-primary` 强调底色，与所有 Agent 区分。这一底色与首字母同时是该 Human 的兜底：资料里存了头像图片之后，Human 出现的每一处座位都换成图片；显示名则来自同一份资料投影——在 `TeamConversation` 里只解析一次（`name ?? t('human')`）、以 `humanName` 传给两个页面，所以消息发送者、花名册行、mention 兜底名与 `member:human` ref 不会各走各的，也不会各自退回字面 `human`。DOM 上以 `[data-human]` 标记。
 - **presence 圆点**：available=done 绿、working=ongoing、error 红、unavailable 用灰色叉点（`TeamPresenceDot` 的 `presenceDotState` 映射）。这一映射有两种呈现：凡是「把成员列成行」的地方都用 `TeamMemberAvatar` 的角标（首字母 + 右下角圆点），而 composer 的收件人菜单用裸 `TeamPresenceDot`——那是菜单行不是花名册行。所以花名册行统一靠头像角标、菜单保留圆点，这个不对称是有意的，不是遗漏。
 - **Thread 入口头像叠放**：`TeamAvatarStack` 复用同一套色相哈希，但不挂 presence 圆点——它回答「谁在做这件事」，不回答「谁现在在线」。
 - 错误一律 `--dsw-alias-state-error-primary` 并配 `role="alert"`。
@@ -111,6 +111,13 @@ Team Client 渲染在 shipped DSH 外壳内部，必须讲基础 UI 的设计语
 - 只读花名册不渲染动作，第三轨随之塌缩，把宽度还给 description，而不是留一个空洞。membership 动作是整行唯一的控件：一个 `Button size="sm" variant="outline"`，至少 64×28，标签在 添加/移除/更新中… 之间变化而外形不变；行自身的失败信息作为 `role="alert"` 渲染在行内文案轨下方。窄于 600px 时动作落到身份下方并与文案左对齐——被压窄的弹层放不下第三列。
 - membership 语义跟随 Host：加入要求 `availability === 'active'`（Host 会拒绝其他 availability），退出只要求 membership 事实本身，所以已经加入但暂时不可用的成员仍然保留可用的 移除。
 - 只有侧栏 Agents 在写法上不同：它像目录那样直呼 `builder`，其余花名册按 composer 的称呼写 `@builder`。
+
+### Human 资料页（我的资料）
+
+- 设置面板里 Team 只有这一面：`settings.section` 的 `team-human` 条目（「我的资料」），只在普通模式提供——Team 模式接管侧栏后设置面板不可达。导航轨与内容列由 shell 画，所以本段自己画 18px/600 标题，其余行沿用 shipped 设置语言：16px/0 内边距配 border-l2 发丝线、14px/22px 标题叠 12px/18px tertiary 说明、控件间距 12px；按钮与输入框直接用 shipped `Button` 与 `Input`，不另起一份声明。脚注写出版本号并链接仓库；升级提示行只在 Host 报告有时才出现。
+- 名字行是一个 form：36×200px 输入框，主色「保存」按钮持有 submit——脏字段里按 Enter 即保存，Tab 的下一站就是它。头像行画 40px 身份圆（`border-radius: 50%` 配 `corner-shape: round`）呈现图片或首字母，一个「更换头像」按钮驱动视觉隐藏的 `input[type="file"] accept="image/*"`（上限 10MB），只有在存有 `avatarRef` 时才多出「移除头像」。
+- `human-identity.ts` 是这份资料的唯一读取方：`TeamHumanIdentity` 在多个订阅者之间共用一次在途读取、引用未变时复用已经解码好的头像、后续读取失败时保留上一次已接受的值（只有从未加载成功才是 unavailable，此时整面 `role="alert"` 并自带重试），并在每次写入被接受后刷新。写入走 settings 命名空间：`remote.settings.update(namespace, patch, expectedRevision)` 与 `mutate(…, [{ op: 'unset', path: ['avatarRef'] }])`，经由一个可选的 `ctx.inject(['remote.settings'])` 绑定取得——未声明就读 `ctx.remote.settings` 会抛错，而硬性激活依赖会在 settings 服务缺席时把整个 Client 拖下水，所以服务缺席只报不可用。写入被拒绝时在该段内显示 Host 的 message，而不是让「正在保存…」一直挂着。Client 侧的 namespace 常量由测试钉在 Host 自己的常量上，两半不会静默漂移。
+- 390×844 下 shipped 面板保留它 188px 的导航轨（没有 media query），内容列只剩约 106px；所以本段自带 `@container (max-width: 420px)`：每行文案叠在控件上方、去掉宽版为控件预留的 48px 右内边距、输入框与按钮占满整列；浏览器验收在该宽度断言无横向溢出。
 
 ### 失败态呈现（failure surfaces）
 

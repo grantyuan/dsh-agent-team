@@ -18,6 +18,7 @@ const UI05_SHOTS = join(BROWSER_ARTIFACTS, 'ui-05')
 const UI06_SHOTS = join(BROWSER_ARTIFACTS, 'ui-06')
 const UI07_SHOTS = join(BROWSER_ARTIFACTS, 'ui-07')
 const UI08_SHOTS = join(BROWSER_ARTIFACTS, 'ui-08')
+const UI09_SHOTS = join(BROWSER_ARTIFACTS, 'ui-09')
 let scaffold: WebScaffold | undefined
 let browser: Browser | undefined
 
@@ -226,6 +227,7 @@ async function installLocalBundle(clearArtifacts = true): Promise<void> {
   await mkdir(UI06_SHOTS, { recursive: true })
   await mkdir(UI07_SHOTS, { recursive: true })
   await mkdir(UI08_SHOTS, { recursive: true })
+  await mkdir(UI09_SHOTS, { recursive: true })
 }
 
 it('drives the complete opt-in Agent Team journey in real Web', async () => {
@@ -2308,5 +2310,110 @@ it('opens a taskless thread from its ref chip in real Web', async () => {
   await page.setViewportSize({ width: 390, height: 844 })
   await settleLayout(page)
   await page.screenshot({ path: join(UI02_SHOTS, 'thread-ref-chip-opened-narrow.png'), fullPage: true })
+  expect(consoleWatch).toEqual({ warnings: [], pageErrors: [] })
+}, 180_000)
+
+/** One real 1×1 RGBA PNG: the avatar store validates the payload as an image and
+ * the page must decode it, so a placeholder byte string would prove nothing. The
+ * single pixel is opaque amber rather than white so the screenshot shows the
+ * uploaded avatar filling the identity seat instead of a blank circle. */
+const ONE_PIXEL_PNG = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP4Oo/7PwAGyAKe4yFCTgAAAABJRU5ErkJggg=='
+
+/**
+ * The Human's own settings page: display name, avatar, version footnote. It is
+ * an ordinary-mode settings section — Team mode's sidebar takeover makes the
+ * panel unreachable by design — so this journey does its panel work first and
+ * only then enters Team mode, to prove the same rename reaches the timeline.
+ */
+it('configures the Human profile from Settings in real Web', async () => {
+  await installLocalBundle()
+  scaffold = await launchWebScaffold({ extraOverlayPath: OVERLAY, harnessHome: HOME })
+  browser = await chromium.launch({ headless: true, executablePath: CHROME })
+  const page = await browser.newPage({ viewport: { width: 1440, height: 960 }, locale: 'zh-CN' })
+  const consoleWatch = watchConsole(page)
+  await page.goto(scaffold.authenticatedUrl)
+  await connectFreshWorkspaceZh(page, scaffold.workspaceCwd, 'team-workspace')
+
+  await page.getByRole('button', { name: '设置', exact: true }).click()
+  const panel = page.getByRole('dialog')
+  await panel.getByRole('button', { name: '我的资料' }).click()
+  const nameField = panel.getByLabel('名字')
+  await nameField.waitFor()
+  // The Host has no override stored yet, so the page shows the historic default
+  // and the version footnote's two facts: the bundle version and the repo link.
+  expect(await nameField.inputValue()).toBe('human')
+  expect(await panel.textContent()).toMatch(/版本 \d+\.\d+\.\d+/)
+  expect(await panel.getByRole('link', { name: 'GitHub' }).getAttribute('href')).toBe('https://github.com/wowyuarm/dsh-agent-team')
+  expect(await panel.getByRole('button', { name: '移除头像' }).count()).toBe(0)
+
+  // Keyboard rename, no pointer involved: typing makes the field dirty, Tab
+  // hands focus to the Save button that owns the form, and Enter activates it.
+  await nameField.fill('Ada')
+  await nameField.press('Tab')
+  const saveRing = await focusRing(page, '[role="dialog"] form button[type="submit"]')
+  expect(saveRing?.focusVisible).toBe(true)
+  expect(saveRing?.outlineStyle).not.toBe('none')
+  await page.keyboard.press('Enter')
+  await expect.poll(() => scaffold!.ctx.agentTeam.humanHandle()).toBe('Ada')
+  await expect.poll(async () => await panel.getByRole('button', { name: '保存' }).isDisabled()).toBe(true)
+
+  // Avatar upload: bytes go to the persistent store, the reference into
+  // settings, and the page draws what the browser can decode.
+  const avatarPath = join(HOME, 'ada-avatar.png')
+  await writeFile(avatarPath, Buffer.from(ONE_PIXEL_PNG, 'base64'))
+  await panel.locator('input[type="file"]').setInputFiles(avatarPath)
+  const preview = panel.locator('img').first()
+  await preview.waitFor()
+  await expect.poll(async () => await preview.evaluate(image => (image as HTMLImageElement).naturalWidth)).toBe(1)
+  expect(await preview.getAttribute('src')).toMatch(/^data:image\/png;base64,/)
+  await expect.poll(() => scaffold!.ctx.agentTeam.humanProfile().avatarRef !== undefined).toBe(true)
+  await page.screenshot({ path: join(UI09_SHOTS, 'human-profile.png'), fullPage: true })
+
+  // A refused name is refused before the round trip: the field keeps what the
+  // reader typed and the notice states the rule.
+  await nameField.fill('   ')
+  await panel.getByText('名字不能为空。').waitFor()
+  expect(await panel.getByRole('button', { name: '保存' }).isDisabled()).toBe(true)
+  await page.screenshot({ path: join(UI09_SHOTS, 'human-profile-empty-name.png'), fullPage: true })
+  await nameField.fill('Ada')
+  await expect.poll(async () => await panel.getByRole('button', { name: '保存' }).isDisabled()).toBe(true)
+
+  // 390×844: the shipped panel keeps its 188px nav rail at every viewport, so
+  // the question this answers is whether OUR column survives the squeeze.
+  await page.setViewportSize({ width: 390, height: 844 })
+  await settleLayout(page)
+  await page.screenshot({ path: join(UI09_SHOTS, 'human-profile-narrow.png'), fullPage: true })
+  const narrow = await page.evaluate(() => ({
+    scrollWidth: document.documentElement.scrollWidth,
+    clientWidth: document.documentElement.clientWidth,
+  }))
+  expect(narrow.scrollWidth).toBeLessThanOrEqual(narrow.clientWidth)
+  expect((await panel.boundingBox())!.width).toBeLessThanOrEqual(390)
+  await page.setViewportSize({ width: 1440, height: 960 })
+  await settleLayout(page)
+
+  // Removal returns the identity to the initial while the rename stands.
+  await panel.getByRole('button', { name: '移除头像' }).click()
+  await expect.poll(async () => await panel.locator('img').count()).toBe(0)
+  await expect.poll(() => scaffold!.ctx.agentTeam.humanProfile().avatarRef).toBeUndefined()
+  expect(await panel.getByRole('button', { name: '上传头像' }).count()).toBe(1)
+  await panel.getByRole('button', { name: '关闭' }).click()
+
+  // The rename is not page-local: the Team timeline names the Human by it.
+  await page.getByRole('button', { name: '团队', exact: true }).click()
+  await page.getByRole('button', { name: '新建频道' }).click()
+  const channelDialog = page.getByRole('dialog', { name: '新建频道' })
+  await channelDialog.getByLabel('名称').fill('profile-check')
+  await channelDialog.getByLabel('说明').fill('renamed human')
+  await channelDialog.getByRole('button', { name: '创建频道' }).click()
+  await page.getByRole('button', { name: '# profile-check', exact: true }).click()
+  const composer = page.getByRole('textbox', { name: '消息内容' })
+  await composer.fill('PROFILE-NAME-MARKER hello from the renamed human')
+  await page.getByRole('button', { name: '发送', exact: true }).click()
+  const row = page.locator('[data-team-channel] article').filter({ hasText: 'PROFILE-NAME-MARKER' })
+  await row.waitFor()
+  await expect.poll(async () => await row.textContent()).toContain('Ada')
+  expect(await row.textContent()).not.toContain('Human')
+  await page.screenshot({ path: join(UI09_SHOTS, 'renamed-human-in-timeline.png'), fullPage: true })
   expect(consoleWatch).toEqual({ warnings: [], pageErrors: [] })
 }, 180_000)

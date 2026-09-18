@@ -41,6 +41,7 @@ import type {} from '@deepseek-ai/dsh-client-ui-workspace/client'
 import type {} from '@deepseek-ai/dsh-client-ui-settings/client'
 import type {} from '@deepseek-ai/dsh-api-remotes/client'
 import { HumanSettingsSection } from './HumanSettingsSection.tsx'
+import { HUMAN_PROFILE_NAMESPACE, TeamHumanIdentity } from './human-identity.ts'
 import { bytesToBase64 } from './attachment-preview.ts'
 import { TeamNavigation } from './navigation.ts'
 import { TeamChangeStream, TeamReadStream, type TeamChangeListener, type TeamChangeScope } from './team-changes.ts'
@@ -80,6 +81,7 @@ function registerModeShadow<T extends object>(
   changes: TeamChangeStream,
   reads: TeamReadStream,
   drafts: TeamDraftStore,
+  humanIdentity: TeamHumanIdentity,
   name: 'sidebar.workspaces' | 'main' | 'sidebar.settings',
   component: T,
   extraInject?: () => Record<string, unknown>,
@@ -108,6 +110,7 @@ function registerModeShadow<T extends object>(
     subscribeReads: (listener: () => void) => reads.subscribe(listener),
     subscribeChanges: (scope: TeamChangeScope, listener: TeamChangeListener) => changes.subscribe(scope, listener),
     drafts,
+    humanIdentity,
     loadMembers: (request: AgentTeamMembersRequest) => ctx.remote.agentTeam.members(request),
     joinChannel: (request: AgentTeamJoinChannelRequest) => ctx.remote.agentTeam.joinChannel(request),
     removeChannelMember: (request: AgentTeamRemoveChannelMemberRequest) => ctx.remote.agentTeam.removeChannelMember(request),
@@ -190,9 +193,34 @@ function applyUi(ctx: ClientContext): void {
   const disposeNavigation = ctx.reflect.provide('teamNavigation', navigation)
   const drafts = new TeamDraftStore()
   const disposeDrafts = ctx.reflect.provide('teamDrafts', drafts)
+  // The Human's own identity: one projection every seat reads, refreshed once
+  // after a profile write so a rename reaches the timeline and the member refs
+  // without a reload. Reads are demand-driven — the first seat that subscribes
+  // starts the read.
+  // The profile page writes through the settings transport. It arrives from the
+  // settings plugin, and Cordis refuses a `remote.<namespace>` read that was
+  // never injected, so the binding is an optional injection rather than either
+  // a hard activation dependency (a settings-less host would lose Team mode
+  // entirely) or an undeclared read (which throws at the first write).
+  let settingsTransport: ClientContext['remote']['settings'] | undefined
+  ctx.inject(['remote.settings'], (scope: ClientContext) => {
+    settingsTransport = scope.remote.settings
+  })
+
+  const humanIdentity = new TeamHumanIdentity({
+    loadProfile: () => ctx.remote.agentTeam.humanProfile({}),
+    loadAvatarUrl: async (avatarRef: string) => {
+      // Avatar bytes ride the dedicated avatar Remote (never the TTL-bound
+      // attachment cache); a data URL is what an `<img>` seat can show directly.
+      const result = await ctx.remote.agentTeam.getHumanAvatar({ avatarRef })
+      if (!result.ok || !result.value.mediaType.startsWith('image/')) return null
+      return `data:${result.value.mediaType};base64,${result.value.bytesBase64}`
+    },
+  })
   ctx.effect(() => () => {
     navigation.dispose()
     drafts.dispose()
+    humanIdentity.dispose()
     void disposeNavigation()
     void disposeDrafts()
   }, 'agent-team: navigation service')
@@ -264,12 +292,16 @@ function applyUi(ctx: ClientContext): void {
     }),
   }, TeamFooterAction as never))
 
-  registerModeShadow(ctx, navigation, changes, reads, drafts, 'sidebar.workspaces', TeamWorkspaceBrowser as never)
-  registerModeShadow(ctx, navigation, changes, reads, drafts, 'main', TeamConversation as never, undefined, 'conversation')
-  registerModeShadow(ctx, navigation, changes, reads, drafts, 'sidebar.settings', TeamMembersAction as never, () => ({ loadMemberGroups }))
+  registerModeShadow(ctx, navigation, changes, reads, drafts, humanIdentity, 'sidebar.workspaces', TeamWorkspaceBrowser as never)
+  registerModeShadow(ctx, navigation, changes, reads, drafts, humanIdentity, 'main', TeamConversation as never, undefined, 'conversation')
+  registerModeShadow(ctx, navigation, changes, reads, drafts, humanIdentity, 'sidebar.settings', TeamMembersAction as never, () => ({ loadMemberGroups }))
 
-  // Human profile settings section (v1 skeleton; visual copy is Iris's).
-  // Ordered between General (0) and Models (10) so identity sits near the top.
+  // The Human profile page: one settings section over the `agent-team-human`
+  // namespace, ordered between General (0) and Models (10) so identity sits
+  // near the top. Writes go through the settings controller, which answers
+  // with the Host's own rejection reason (a name collides, an empty one), and
+  // the shared identity re-reads afterwards, so a rename lands in the timeline
+  // and the member refs at the same moment the page shows it.
   ctx.slots.inject('settings.section', () => ctx.slots.register({
     name: 'settings.section',
     id: 'team-human',
@@ -277,12 +309,14 @@ function applyUi(ctx: ClientContext): void {
     label: () => ctx.locale.bind(NS)('humanSettingsNav'),
     locale: NS,
     inject: () => ({
-      loadProfile: () => ctx.remote.agentTeam.humanProfile({}),
+      identity: humanIdentity,
       saveName: async (name: string) => {
-        const settings = (ctx.remote as unknown as { settings?: { update: (ns: string, patch: Record<string, unknown>, revision: number | undefined) => Promise<{ ok: boolean; error?: { message: string } }> } }).settings
-        if (settings === undefined) return 'settings service is unavailable'
-        const response = await settings.update('agent-team-human', { name }, undefined)
-        return response.ok ? undefined : (response.error?.message ?? 'settings write failed')
+        const settings = settingsTransport
+        if (settings === undefined) return 'the settings service is unavailable'
+        const saved = await settings.update(HUMAN_PROFILE_NAMESPACE, { name }, undefined)
+        if (!saved.ok) return saved.error.message
+        await humanIdentity.refresh()
+        return undefined
       },
       uploadAvatar: async (file: File) => {
         const put = await ctx.remote.agentTeam.putHumanAvatar({
@@ -291,30 +325,26 @@ function applyUi(ctx: ClientContext): void {
           bytesBase64: bytesToBase64(new Uint8Array(await file.arrayBuffer())),
         })
         if (!put.ok) return put.error.message
-        const settings = (ctx.remote as unknown as { settings?: { update: (ns: string, patch: Record<string, unknown>, revision: number | undefined) => Promise<{ ok: boolean; error?: { message: string } }> } }).settings
-        if (settings === undefined) return 'settings service is unavailable'
-        const save = await settings.update('agent-team-human', { avatarRef: put.value.avatarRef }, undefined)
-        return save.ok ? undefined : (save.error?.message ?? 'settings write failed')
-      },
-      removeAvatar: async () => {
-        const profile = await ctx.remote.agentTeam.humanProfile({})
-        if (profile.ok && profile.value.avatarRef !== undefined) {
-          await ctx.remote.agentTeam.removeHumanAvatar({ avatarRef: profile.value.avatarRef })
-          // Replace drops avatarRef back to inherited-absent; a merge patch
-          // cannot express field removal, so wholesale replace is the clear.
-          const settings = (ctx.remote as unknown as { settings?: { replace: (ns: string, section: Record<string, unknown>, revision: number | undefined) => Promise<{ ok: boolean; error?: { message: string } }> } }).settings
-          if (settings === undefined) return 'settings service is unavailable'
-          const save = await settings.replace('agent-team-human', { name: profile.value.name }, undefined)
-          return save.ok ? undefined : (save.error?.message ?? 'settings write failed')
-        }
+        const settings = settingsTransport
+        if (settings === undefined) return 'the settings service is unavailable'
+        const saved = await settings.update(HUMAN_PROFILE_NAMESPACE, { avatarRef: put.value.avatarRef }, undefined)
+        if (!saved.ok) return saved.error.message
+        await humanIdentity.refresh()
         return undefined
       },
-      loadAvatarUrl: async (avatarRef: string) => {
-        // Avatar bytes ride the dedicated avatar Remote (never the TTL cache);
-        // the data-URL preview shape mirrors message attachments.
-        const result = await ctx.remote.agentTeam.getHumanAvatar({ avatarRef })
-        if (!result.ok || !result.value.mediaType.startsWith('image/')) return null
-        return `data:${result.value.mediaType};base64,${result.value.bytesBase64}`
+      removeAvatar: async () => {
+        const { avatarRef } = humanIdentity.getSnapshot()
+        if (avatarRef === undefined) return undefined
+        const settings = settingsTransport
+        if (settings === undefined) return 'the settings service is unavailable'
+        // Bytes first, then the reference: a failed clear leaves a readable
+        // avatar instead of a reference to bytes nobody can load. Clearing one
+        // field is a path op — a merge patch cannot express removal.
+        await ctx.remote.agentTeam.removeHumanAvatar({ avatarRef })
+        const cleared = await settings.mutate(HUMAN_PROFILE_NAMESPACE, [{ op: 'unset', path: ['avatarRef'] }], undefined)
+        if (!cleared.ok) return cleared.error.message
+        await humanIdentity.refresh()
+        return undefined
       },
     }),
   }, HumanSettingsSection as never))

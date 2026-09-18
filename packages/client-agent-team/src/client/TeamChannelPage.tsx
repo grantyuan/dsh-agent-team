@@ -28,6 +28,9 @@ import threadCss from './thread.module.css'
 interface TeamChannelPageProps {
   readonly workspaceId: WorkspaceId
   readonly channelRef: AgentTeamChannelRef
+  /** The Human's own display name and avatar, from the shared identity projection. */
+  readonly humanName: string
+  readonly humanAvatarUrl?: string | undefined
   readonly loadChannels: TeamConversationProps['loadChannels']
   readonly subscribeChanges: TeamConversationProps['subscribeChanges']
   readonly loadMembers: TeamConversationProps['loadMembers']
@@ -96,7 +99,7 @@ function unreadCounts(inbox: AgentTeamInbox): ReadonlyMap<AgentTeamThreadRef, nu
   return new Map(inbox.items.filter(item => item.unreadCount > 0).map(item => [item.thread.threadRef, item.unreadCount]))
 }
 
-export function TeamChannelPage({ workspaceId, channelRef, loadChannels, subscribeChanges, loadMembers, loadInbox, drafts, putAttachment, getAttachment, sendMessage, joinChannel, removeChannelMember, selectThread, selectChannel, backToChannels, resolveTaskRefs, resolveThreadRefs, openMemberSession, t }: TeamChannelPageProps) {
+export function TeamChannelPage({ workspaceId, channelRef, humanName, humanAvatarUrl, loadChannels, subscribeChanges, loadMembers, loadInbox, drafts, putAttachment, getAttachment, sendMessage, joinChannel, removeChannelMember, selectThread, selectChannel, backToChannels, resolveTaskRefs, resolveThreadRefs, openMemberSession, t }: TeamChannelPageProps) {
   const [view, setView] = useState<AgentTeamView>()
   const [members, setMembers] = useState<readonly AgentTeamClientMemberStatus[]>([])
   const [unreadByThread, setUnreadByThread] = useState<ReadonlyMap<AgentTeamThreadRef, number>>(new Map())
@@ -175,9 +178,8 @@ export function TeamChannelPage({ workspaceId, channelRef, loadChannels, subscri
   }, [rosterKey])
   const memberOf = useMemo(() => {
     const humanMemberId = view?.humanMemberId
-    const humanHandle = t('human')
-    return (ref: AgentTeamMemberId) => rosterMember(members, humanMemberId, humanHandle, ref)
-  }, [rosterKey])
+    return (ref: AgentTeamMemberId) => rosterMember(members, humanMemberId, humanName, ref)
+  }, [rosterKey, humanName])
 
   const timeline = useTimelineScroll(`${view?.items.length ?? 0}:${channelLastItem?.message.messageRef ?? ''}`)
   const channel = view?.channels.find(item => item.channelRef === channelRef)
@@ -422,7 +424,7 @@ export function TeamChannelPage({ workspaceId, channelRef, loadChannels, subscri
           {block.items.map((item, index) => {
             const senderStatus = members.find(member => member.member.memberId === item.message.sender)
             const human = item.message.sender === view!.humanMemberId
-            const sender = human ? t('human') : senderStatus?.member.handle ?? item.message.sender
+            const sender = human ? humanName : senderStatus?.member.handle ?? item.message.sender
             const turnGap = isRunGap(index > 0 ? block.items[index - 1]!.message.occurredAt : undefined, item.message.occurredAt)
             const task = item.task
             // The entry's own line is the gate under the body, and its state
@@ -437,12 +439,13 @@ export function TeamChannelPage({ workspaceId, channelRef, loadChannels, subscri
                 senderName={sender}
                 memberId={item.message.sender}
                 human={human}
+                {...(humanAvatarUrl === undefined ? {} : { avatarUrl: humanAvatarUrl })}
                 body={item.message.body}
                 attachments={item.message.attachments}
                 loadAttachment={getAttachment}
                 t={t}
                 occurredAt={item.message.occurredAt}
-                mentionNames={mentionNamesOf(item.mentions, handleByMember)}
+                mentionNames={mentionNamesOf(item.mentions, handleByMember, humanName)}
                 onOpenRef={openRef}
                 onResolveTaskRefs={lookupTaskRefs}
                 onResolveThreadRefs={lookupThreadRefs}
