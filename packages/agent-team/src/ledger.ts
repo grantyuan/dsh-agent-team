@@ -3926,6 +3926,13 @@ export class AgentTeamLedger {
    * Channel plus the Human. A name outside this set stays prose, which is what
    * keeps an incidental name-drop from reaching someone the Channel cannot
    * deliver to.
+   *
+   * The Human is reachable under two names: the current display handle and the
+   * permanent `human` alias, so a rename never silently orphans `@human`
+   * (matching ignores case, and chips render the display name either way).
+   * The alias yields when another candidate already answers to it, so one
+   * written name never notifies two different Members; enrollment reserves the
+   * literal, so that yield only ever covers data predating the reservation.
    */
   private mentionCandidatesFor(channelRef: AgentTeamChannelRef): readonly AgentTeamBodyMentionCandidate[] {
     const candidates: AgentTeamBodyMentionCandidate[] = [{ memberId: AGENT_TEAM_HUMAN_MEMBER_ID, handle: this.humanHandle }]
@@ -3933,6 +3940,10 @@ export class AgentTeamLedger {
       if (member.state === 'inactive' || member.state === 'archived') continue
       if (!this.isChannelMember(channelRef, member.memberId)) continue
       candidates.push({ memberId: member.memberId, handle: member.handle })
+    }
+    if (this.humanHandle.normalize('NFKC').trim().toLowerCase() !== AGENT_TEAM_HUMAN_HANDLE
+      && !candidates.some(candidate => candidate.handle.normalize('NFKC').trim().toLowerCase() === AGENT_TEAM_HUMAN_HANDLE)) {
+      candidates.push({ memberId: AGENT_TEAM_HUMAN_MEMBER_ID, handle: AGENT_TEAM_HUMAN_HANDLE })
     }
     return Object.freeze(candidates)
   }
@@ -4012,9 +4023,15 @@ export class AgentTeamLedger {
     // with it would make body mentions ambiguous, so it is reserved globally.
     // The ledger's runtime humanHandle is the single source; replay uses the
     // Host-synced value, and the default equals the historic literal.
+    // The historic literal itself is reserved permanently alongside it: `@human`
+    // is the documented permanent alias for the Human, so it must never belong
+    // to an agent even after a rename moves the display name elsewhere.
     const humanNormalized = this.humanHandle.normalize('NFKC').trim().toLowerCase()
     if (humanNormalized !== '' && normalized === humanNormalized) {
       throw new Error(`Agent Member handle '${handle}' collides with the human display name`)
+    }
+    if (normalized === AGENT_TEAM_HUMAN_HANDLE) {
+      throw new Error(`Agent Member handle '${handle}' collides with the reserved human alias`)
     }
   }
 

@@ -57,6 +57,10 @@ Composer attachments 是 `$DSH_HOME/agent-team/attachments/v1/<attachmentId>/` �
 - Members 通过 `team_message` 的可选 `attachments`（absolute paths）共享文件：Host 先验证每个 path（absolute、regular file、non-empty、10 MB），再以 extension-derived media type 复制到 cache 的新 immutable entry，因此 agent-sent images 与 composer uploads 的渲染一致。任一 rejection 都会拒绝整个 send，不提交也不复制。
 - 不需要为手动 path references 增加机制：粘贴到 Message body 的 absolute path 会被 Member agent 像其他文件一样读取，Host 不会触碰不属于自己的内容。
 
+### Human profile 与版本脚注
+
+Human 的显示名与头像引用存放在 Host settings namespace `agent-team-human`（user layer）；头像 bytes 存放在持久的 `$DSH_HOME/agent-team/human/v1/` store，从不进入带 TTL 的 attachment cache。四个 typed Remote 服务设置页：`humanProfile`（名字、头像引用与版本脚注 facts），以及 `putHumanAvatar`/`getHumanAvatar`/`removeHumanAvatar`（只收图片，与 attachments 共用 10 MB 上限；已删除的条目读取时抛错，Client 回退到首字母）。脚注携带 bundle version 与 repository 链接；当后台检查观察到更新的已发布 release 时，再多一条点名该版号的更新 tip。检查最多每 12h 询问一次公开 npm `latest` document，后台刷新使 profile 读取永不等待网络，任何失败都落为"无已知更新"，`DSH_AGENT_TEAM_UPDATE_CHECK=0` 时保持关闭。ledger 为 `team_view` 与 @ 匹配读取同一份 profile，一次改名同时到达每个 surface；`human` 是 Human 的永久别名，任何 agent handle 不得占用该字面，因此 `@human` 跨改名持续送达，而 chip 始终渲染当前显示名。
+
 修改 Host capability 时，先阅读 package source/tests，再阅读匹配的 Harness capability contract。导航表见 [`harness-navigation.zh.md`](harness-navigation.zh.md)，其中将 Host 改动映射到 `deepseek-harness/docs/subsystems/` 和 source packages。
 
 ## Tools and preset

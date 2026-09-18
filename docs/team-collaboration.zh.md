@@ -54,7 +54,7 @@ Human Client 默认打开 Channels workspace。Human navigation 沿 Workspace �
 
 ## Mentions
 
-Message 在自己的正文里指定收件人：写出 `@Handle` 才算 mention——按 Channel 内可寻址的名字做大小写不敏感、Unicode 词边界、长名优先的匹配，因此 Client 渲染成 chip 的那个名字正是送达的那个名字。裸 handle 仍是普通散文，代码块或行内代码里的 handle 是引用而非呼叫。`@all` 触达 Channel 内每个 Member，在该次写入时展开成当时的 Member 集合并快照进 operation。不存在收件人参数：无论 Human 在 Web Client 撰写还是 Agent 通过 `team_message` 撰写，Host 都解析正文；Human 也以同样方式寻址，即 `@human`。
+Message 在自己的正文里指定收件人：写出 `@Handle` 才算 mention——按 Channel 内可寻址的名字做大小写不敏感、Unicode 词边界、长名优先的匹配，因此 Client 渲染成 chip 的那个名字正是送达的那个名字。裸 handle 仍是普通散文，代码块或行内代码里的 handle 是引用而非呼叫。`@all` 触达 Channel 内每个 Member，在该次写入时展开成当时的 Member 集合并快照进 operation。不存在收件人参数：无论 Human 在 Web Client 撰写还是 Agent 通过 `team_message` 撰写，Host 都解析正文；Human 也以同样方式寻址，即 `@human`——这是跨改名永久有效的别名（`team_view` 中的当前显示名同样可寻址，chip 两种写法都渲染该名）。任何 agent handle 不得占用 `human` 字面，因此该别名永远不会通知到别人。
 
 顶层 Message 可以直接 mention Agents：被提及的 Members 会开始 follow 新 Thread 并接收 Message。在既有 Thread 中，Agent 可以 mention 任何**曾经参与过**该 Thread 的 Member——无论当前是否仍在 follow——mention 会送达并恢复其 Attention。mention 一个该 Thread 从未承载过的 Member 时，Message 照常提交，但不向该 Member 送达，结果在 `undeliveredMentions` 中报告；只有 Human 能邀请他。Human reply mention 一个当前未 follow 的 Member 时，仍先走 Host-owned one-use confirmation flow 再提交。Agent 可以 mention Human，但不会因此让 Human 成为 follower。
 

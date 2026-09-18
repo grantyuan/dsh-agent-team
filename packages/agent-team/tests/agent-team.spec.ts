@@ -2447,4 +2447,38 @@ describe('body-authored mentions', () => {
       channelRef: channelRef as never, body: '@first please look', recipients: [first.member.memberId, second.member.memberId] })).value)
     expect(sent.directMarkers.map(marker => marker.memberId).sort()).toEqual([first.member.memberId, second.member.memberId].sort())
   })
+
+  it('keeps @human deliverable after the human renames, under any casing', async () => {
+    const test = await harness()
+    const { ledger, channelRef } = await channelOf(test)
+    const sent = await start(ledger, channelRef, 'Investigate the regression')
+    const author = await enroll(ledger, channelRef, 'author')
+    ledger.setHumanDisplayHandle('YuCreate')
+
+    // The historic literal survives as a permanent alias: every casing reaches
+    // the same human, and the inbox counts it as a direct mention.
+    const aliased = committed((await ledger.reply({ requestId: requestId('reply-alias'), workspaceId: alpha, taskRef: sent.task.taskRef,
+      body: '@human and @Human, heads up', baseRevision: sent.thread.revision, actor: author.actor })).value)
+    expect(aliased.undeliveredMentions).toBeUndefined()
+    expect(aliased.directMarkers.map(marker => marker.memberId)).toEqual([AGENT_TEAM_HUMAN_MEMBER_ID])
+    expect(ledger.inbox(agentTeamHumanActor(), { workspaceId: alpha })).toMatchObject({ totalDirectCount: 1 })
+
+    const renamed = committed((await ledger.reply({ requestId: requestId('reply-renamed'), workspaceId: alpha, taskRef: sent.task.taskRef,
+      body: '@YuCreate, same thing', baseRevision: aliased.thread.revision, actor: author.actor })).value)
+    expect(renamed.directMarkers.map(marker => marker.memberId)).toEqual([AGENT_TEAM_HUMAN_MEMBER_ID])
+
+    // Both names in one body still notify the human exactly once.
+    const both = committed((await ledger.reply({ requestId: requestId('reply-both'), workspaceId: alpha, taskRef: sent.task.taskRef,
+      body: '@human aka @YuCreate, once please', baseRevision: renamed.thread.revision, actor: author.actor })).value)
+    expect(both.directMarkers.map(marker => marker.memberId)).toEqual([AGENT_TEAM_HUMAN_MEMBER_ID])
+    expect(ledger.inbox(agentTeamHumanActor(), { workspaceId: alpha })).toMatchObject({ totalDirectCount: 3 })
+  })
+
+  it('reserves the historic human literal against agent handles even after a rename', async () => {
+    const test = await harness()
+    const { ledger, channelRef } = await channelOf(test)
+    ledger.setHumanDisplayHandle('YuCreate')
+    await expect(enroll(ledger, channelRef, 'human')).rejects.toThrow('reserved human alias')
+    await expect(enroll(ledger, channelRef, 'Human')).rejects.toThrow('reserved human alias')
+  })
 })

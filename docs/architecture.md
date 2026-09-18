@@ -50,6 +50,10 @@ Attachments live in the bounded cache `$DSH_HOME/agent-team/attachments/v1/<atta
 
 Garbage collection runs at startup and every 24 hours: referenced uploads older than 72 hours and orphaned uploads older than 24 hours are removed, while metadata remains. Agent-sent absolute paths are validated as absolute non-empty regular files under 10 MB, copied into a fresh immutable cache entry, and rejected atomically if any path fails. A manually pasted absolute path is simply read by the Agent; Host touches nothing it does not own.
 
+### Human profile and version footnote
+
+The Human's display name and avatar reference live in the Host settings namespace `agent-team-human` (user layer); avatar bytes live in the persistent `$DSH_HOME/agent-team/human/v1/` store, never in the TTL-bound attachment cache. Four typed Remotes serve the settings page: `humanProfile` (name, avatar reference, and version footnote facts) and `putHumanAvatar`/`getHumanAvatar`/`removeHumanAvatar` (images only, 10 MB cap shared with attachments; a removed entry throws and the Client falls back to the initial). The footnote carries the bundle version and the repository link, plus an update tip naming the newer version once a background check has observed a newer published release. The check asks the public npm `latest` document at most every 12 hours, refreshes in the background so profile reads never wait on the network, settles every failure as "no update known", and stays off while `DSH_AGENT_TEAM_UPDATE_CHECK=0`. The ledger reads the same profile for `team_view` and @ matching, so a rename reaches every surface at once; `human` stays a permanent alias for the Human and no agent handle may claim the literal, so `@human` keeps delivering across renames while chips render the current display name.
+
 When changing a Host capability, read package source/tests first and then the matching Harness contract. [`harness-navigation.md`](harness-navigation.md) maps the route to `deepseek-harness/docs/subsystems/` and source packages.
 
 ## Tools and preset

@@ -341,9 +341,10 @@ export interface AgentTeamHumanProfileResult {
   /** Repository home the footnote links to. */
   readonly repoUrl: string
   /**
-   * Whether a newer release is known. v1 never self-checks (Host-side check
-   * is a follow-up), so this stays false until that lands; the footnote
-   * shows only the version + link until then.
+   * Whether a newer release is known. Best-effort and cached Host-side
+   * (npm `latest`, 12 h TTL, silent on any failure), so this stays false
+   * until a background refresh actually observes one; the footnote shows
+   * only the version + link until then.
    */
   readonly updateAvailable: boolean
   readonly latestVersion?: string | undefined

@@ -26,6 +26,7 @@ import type { WorkspaceId } from '@deepseek-ai/dsh-workspace'
 import { ATTACHMENT_MAX_BYTES, attachmentPayloadPath, attachmentsRoot, copyPathAttachment, newAttachmentId, readAttachment, sanitizeMediaType, sweepAttachmentCache, validatePathAttachment, writeAttachment } from './attachments.ts'
 import { HUMAN_PROFILE_DEFAULT_NAME, HUMAN_PROFILE_REPO_URL, HUMAN_PROFILE_SETTINGS_NAMESPACE, HUMAN_PROFILE_SETTINGS_SCHEMA, HUMAN_PROFILE_VERSION, assertValidHumanName, normalizeHumanName, type HumanProfileSettings } from './human-profile.ts'
 import { humanAvatarsRoot, readHumanAvatar, removeHumanAvatar, writeHumanAvatar } from './human-avatar.ts'
+import { createHumanUpdateChecker } from './human-update-check.ts'
 import { PressurePolicyCoordinator } from './pressure-policy.ts'
 import { ContextManagementCoordinator, type TransitionPlan } from './context-management.ts'
 import { AGENT_TEAM_PLUGIN_ID, createHandoffMessage } from './context-source.ts'
@@ -408,6 +409,12 @@ export default class AgentTeam extends TypertRemoteService {
    * default so team_view and @ matching keep working without settings.
    */
   private humanProfileSource: () => HumanProfileSettings = () => ({ name: HUMAN_PROFILE_DEFAULT_NAME })
+  /**
+   * New-release check behind the settings footnote. Memory-only and
+   * background-refreshed, so the profile read path never waits on the
+   * network and every failure settles as "no update known".
+   */
+  private readonly humanUpdateCheck = createHumanUpdateChecker({ currentVersion: HUMAN_PROFILE_VERSION })
 
   private readonly recovery = new RecoveryCoordinator({
     wake: memberId => {
@@ -1338,20 +1345,23 @@ export default class AgentTeam extends TypertRemoteService {
 
   /**
    * Human profile read for the settings page and footnote: name + avatar
-   * reference from settings plus static version facts. Human-scoped (the Web
+   * reference from settings plus version facts. Human-scoped (the Web
    * Client calls it); agent tools never receive avatar bytes, only the name
-   * through team_view. Update checking stays Host-side and unimplemented in
-   * v1, so `updateAvailable` is always false until that lands.
+   * through team_view. The new-release check stays best-effort and cached —
+   * `updateAvailable` is false until a background refresh actually observes a
+   * newer published release.
    */
   @Remote('humanProfile')
   humanProfileForClient(_request: AgentTeamHumanProfileRequest): AgentTeamHumanProfileResult {
     const profile = this.humanProfile()
+    const update = this.humanUpdateCheck.snapshot()
     return Object.freeze({
       name: profile.name,
       ...(profile.avatarRef === undefined ? {} : { avatarRef: profile.avatarRef }),
       version: HUMAN_PROFILE_VERSION,
       repoUrl: HUMAN_PROFILE_REPO_URL,
-      updateAvailable: false,
+      updateAvailable: update.updateAvailable,
+      ...(update.latestVersion === undefined ? {} : { latestVersion: update.latestVersion }),
     })
   }
 
