@@ -127,6 +127,16 @@ Team Client 渲染在 shipped DSH 外壳内部，必须讲基础 UI 的设计语
 - Panel 失败按 Panel 记：每个挂载中的 Panel 各自报告它看到的那次断连，所以一次断连会在侧栏出现同一条消息，正文自身读取也失败时再在页面上出现一次。
 - Panel 失败行不带重试按钮：侧栏靠 change stream 自愈——断连只上报一次，传输恢复后唤醒全部 listener（见 [`architecture.md`](architecture.md)）。
 
+### Thread 顶层栏与 Claim 面板（header band / claim panel）
+
+- Thread 顶层栏装的是返回行、Task 身份、运行风险区与 Claims 区，整条带由 `.surfaceHeader` 自己那一条底边收口。因此带内两个分区**只靠间距分层**：分区级 `border-top` 会在什么都没围住的地方再画一条线，而带上方的组已经由带自己的边线结束了。这里「分隔线条数」是可量测的设计属性而非口味问题：shipped DSH 的分隔线只画在**组与组之间**（`PluginInventorySettingsTab.module.css` 的 `.group + .group { border-top: 0.5px solid … }`），所以原先每个分区各带一条 `1px solid var(--dsw-alias-border-l2)` 既不合房规也是多余的。保留的是：页头带自己的 `border-bottom`（真实结构边界）与时间线里的未读边界线（语义边界）。
+- 顶层栏是**有高度预算**的，不只是「整齐」问题：两个成员处于错误态时它占到 960px 视口里的 426px，把对话内容整个推到首屏以下；改成分区间距分层后同样内容只占 360px。
+- 一行 Claim 是**三条网格轨道且都有内容**：presence 点、身份加状态一组、direction。身份与状态共用第一行、direction 独占第二行——handle 因此不会变成在宽行尽头漂着的后缀（880px 下旧单行布局会把 handle 放到它所属 direction 之后 158px 处），状态也不会飘在行尾、离开它所限定的那条 Claim。**窄屏不重排模板**：`14px minmax(0, 1fr) auto` 一套模板在 1440 与 390 都成立，两端因此不会各自漂移；14px 的点列加上列表 22px 缩进，让每个点都落在上方 `Claims · N` 标题的同一条竖轴上。
+- 行首的 presence 点是这一行**唯一**的活跃指示器：在 handle 旁再加一个「可用」徽标等于把同一件事说两遍，而这类重复读者会先察觉、后命名。已完成的 Claim 带 `claimRowDone`，把它的 direction 降到次级色，让完成的工作不再与进行中的抢注意力，但 Claim 本身仍然可见。
+- 运行风险行每个出错成员一行，行首是**该诊断结构化 class 的本地化名称**——`session-refused` / `session-unreadable` / `preset-composition` / `rollover` / `runtime` / `activation`，即 `AgentTeamMemberDiagnostic.class` 这条策略轴，`restartOffered` 早已按它分支。这条轴回答的是可本地化的「这是哪一类问题」，而 Host 的 `detail` 天生是英文，所以行内只截取它的首句，完整原文留在该行的 `title` 上。`AgentTeamClientMemberStatus` 本来就把整份 diagnostic 带到浏览器，因此这条轴不需要改 Host 协议。
+- 每个 class 一个句子 key，让可见行留在界面语言里，而不是把 Host 字符串直接贴进本地化界面；完全没有 diagnostic 的成员回落到 `runtime` 文案，而不是留空。
+- Task / Thread 身份下方那句开篇文字**在任意宽度、任意 Thread 类型下都只占一行**（`-webkit-line-clamp: 1`，同时写标准属性 `line-clamp`），完整原文留在 `title`。Task 标题本来就长且夹着不可断的 ref，而讨论的开篇就是它自己的锚消息——正文时间线里紧接着完整重复了一遍——所以给它在页头带里再留第二行，等于把页头高度花在读者已经能看到的文字上，还让页头高度取决于别人当初打了多少字。压成一行后，很长的开篇与两个字的开篇页头同高（实测 taskless Thread 两种都是 114px）。
+
 ### 时间线滚动（timeline-scroll）
 
 - 策略：读者停留在底部（距底 <48px 视为 pinned）时跟随新内容；不在底部时不打扰。

@@ -1,5 +1,6 @@
-import type { AgentTeamActivity, AgentTeamClaim, AgentTeamClientMemberStatus, AgentTeamMemberId, AgentTeamTask, AgentTeamTaskRef, AgentTeamThreadRef } from '@wowyuarm/dsh-agent-team/types'
+import type { AgentTeamActivity, AgentTeamClaim, AgentTeamClientMemberStatus, AgentTeamMemberDiagnosticClass, AgentTeamMemberId, AgentTeamTask, AgentTeamTaskRef, AgentTeamThreadRef } from '@wowyuarm/dsh-agent-team/types'
 import { hasAllMarker, resolveBodyMentions, scanBodyHandles } from '@wowyuarm/dsh-agent-team/mentions'
+import type { TeamKey } from './locales.ts'
 import type { TeamConversationProps } from './slots.ts'
 import type { TeamStateDotState } from './TeamStateDot.tsx'
 
@@ -20,6 +21,44 @@ export function formatClaimState(state: AgentTeamClaim['state'], t: TeamConversa
     released: 'claimStateReleased',
   } as const)[state])
 }
+
+const RISK_CLASS_KEYS = {
+  'session-refused': ['riskClassSessionRefused', 'riskSessionRefused'],
+  'session-unreadable': ['riskClassSessionUnreadable', 'riskSessionUnreadable'],
+  'preset-composition': ['riskClassPresetComposition', 'riskPresetComposition'],
+  'rollover': ['riskClassRollover', 'riskRollover'],
+  'runtime': ['riskClassRuntime', 'riskRuntime'],
+  'activation': ['riskClassActivation', 'riskActivation'],
+} as const satisfies Record<AgentTeamMemberDiagnosticClass, readonly [TeamKey, TeamKey]>
+
+/**
+ * The two localized halves of one runtime-risk statement: the class label names
+ * what kind of problem this is, and the sentence key states it of the Member
+ * (it keeps its `{member}` placeholder so the caller supplies the handle). The
+ * Host's own diagnostic stays English and belongs in the row's title, so the
+ * visible line reads in the interface language.
+ */
+export function formatRiskClass(
+  status: Pick<AgentTeamClientMemberStatus, 'diagnostic'>,
+  t: TeamConversationProps['t'],
+): { readonly label: string, readonly sentenceKey: TeamKey } {
+  const [labelKey, sentenceKey] = RISK_CLASS_KEYS[status.diagnostic?.class ?? 'runtime']
+  return { label: t(labelKey), sentenceKey }
+}
+
+/**
+ * The first sentence of a Host diagnostic: risk rows read one line, and the
+ * Host writes the reason as its first sentence with recovery context after it.
+ * A terminator the Host used mid-sentence becomes a full stop so the clamped
+ * line reads as a sentence; the untouched text stays in the row's title.
+ */
+export function firstSentence(detail: string): string {
+  const trimmed = detail.trim()
+  const end = trimmed.search(/[.。;；]/)
+  if (end === -1) return trimmed
+  // A terminator that already ends a sentence stays; a separator the Host used
+  // mid-sentence becomes a full stop.
+  return trimmed[end] === '.' || trimmed[end] === '。' ? trimmed.slice(0, end + 1) : `${trimmed.slice(0, end)}.`}
 
 /**
  * Status indicator for a Task status, the dot every Task surface renders.

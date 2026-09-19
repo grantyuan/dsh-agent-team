@@ -1,10 +1,10 @@
 import { describe, expect, it } from 'vitest'
-import type { AgentTeamActivity, AgentTeamClaim, AgentTeamClientMemberStatus, AgentTeamMemberId } from '@wowyuarm/dsh-agent-team/types'
+import type { AgentTeamActivity, AgentTeamClaim, AgentTeamClientMemberStatus, AgentTeamMemberDiagnostic, AgentTeamMemberId } from '@wowyuarm/dsh-agent-team/types'
 import { AGENT_TEAM_HUMAN_HANDLE } from '@wowyuarm/dsh-agent-team/host'
 import { MENTION_BODY_FIXTURE } from '../../agent-team/tests/fixtures/mention-bodies.ts'
 import { zh } from '../src/client/locales.ts'
 import type { TeamConversationProps } from '../src/client/slots.ts'
-import { allMentionMembers, containsAllMention, containsMention, formatAbsoluteTime, formatActivity, formatClaimState, formatInboxTime, formatMessageTime, formatTaskStatus, HUMAN_HISTORIC_HANDLE, isPlainTextBody, isSingleBrandedRef, mentionNamesOf, mentionedMemberIds, planMessageBody, shouldClampMessage, splitBrandedRefs, splitMentionNames, taskStatusDot } from '../src/client/team-formatters.ts'
+import { allMentionMembers, containsAllMention, containsMention, firstSentence, formatAbsoluteTime, formatActivity, formatClaimState, formatInboxTime, formatMessageTime, formatTaskStatus, HUMAN_HISTORIC_HANDLE, isPlainTextBody, isSingleBrandedRef, mentionNamesOf, formatRiskClass, mentionedMemberIds, planMessageBody, shouldClampMessage, splitBrandedRefs, splitMentionNames, taskStatusDot } from '../src/client/team-formatters.ts'
 
 const t = ((key: keyof typeof zh, params?: Record<string, string | number>) => {
   let value: string = zh[key]
@@ -34,6 +34,32 @@ describe('Team presentation formatters', () => {
     expect(formatTaskStatus('closed', t)).toBe('已关闭')
     expect(formatClaimState('active', t)).toBe('进行中')
     expect(formatClaimState('released', t)).toBe('已释放')
+  })
+
+  it('names every diagnostic class instead of showing the Host reason alone', () => {
+    const status = (diagnosticClass?: AgentTeamMemberDiagnostic['class']): Pick<AgentTeamClientMemberStatus, 'diagnostic'> =>
+      diagnosticClass === undefined ? {} : { diagnostic: { class: diagnosticClass, detail: 'host reason' } }
+    expect(formatRiskClass(status('session-refused'), t)).toEqual({ label: '会话被拒绝', sentenceKey: 'riskSessionRefused' })
+    expect(formatRiskClass(status('session-unreadable'), t).label).toBe('会话不可读')
+    expect(formatRiskClass(status('preset-composition'), t).label).toBe('预设装配失败')
+    expect(formatRiskClass(status('rollover'), t).label).toBe('上下文交接中')
+    expect(formatRiskClass(status('runtime'), t).label).toBe('运行时故障')
+    expect(formatRiskClass(status('activation'), t).label).toBe('激活失败')
+    // A Member carrying no diagnostic still gets a class word, never a hole.
+    expect(formatRiskClass(status(), t)).toEqual({ label: '运行时故障', sentenceKey: 'riskRuntime' })
+    // The sentence key keeps its placeholder so the row can supply the handle.
+    expect(zh[formatRiskClass(status('rollover'), t).sentenceKey]).toContain('{member}')
+  })
+
+  it('keeps a risk row to the Host diagnostic first sentence', () => {
+    expect(firstSentence('context pressure policy: the routed model capacity is unknown; refusing to forward'))
+      .toBe('context pressure policy: the routed model capacity is unknown.')
+    expect(firstSentence('reason one. more detail here')).toBe('reason one.')
+    expect(firstSentence('中文原因。后面还有')).toBe('中文原因。')
+    // No terminator: the text is the sentence and stays intact.
+    expect(firstSentence('a reason with no terminator')).toBe('a reason with no terminator')
+    expect(firstSentence('  padded  ')).toBe('padded')
+    expect(firstSentence('')).toBe('')
   })
 
   it('formats every Activity kind without exposing refs or enums', () => {

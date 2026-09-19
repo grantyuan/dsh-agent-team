@@ -19,7 +19,7 @@ import { TeamComposer } from './TeamComposer.tsx'
 import { diagnosticText, TeamPresenceDot } from './TeamPresenceDot.tsx'
 import { TeamMessage } from './TeamMessage.tsx'
 import { TeamRunDivider } from './TeamRunDivider.tsx'
-import { formatActivity, formatClaimState, formatTaskStatus, formatTaskTitle, mentionNameOf, mentionNamesOf, mentionedMemberIds, taskStatusDot, type MentionHandle } from './team-formatters.ts'
+import { firstSentence, formatActivity, formatClaimState, formatRiskClass, formatTaskStatus, formatTaskTitle, mentionNameOf, mentionNamesOf, mentionedMemberIds, taskStatusDot, type MentionHandle } from './team-formatters.ts'
 import { TeamStateDot } from './TeamStateDot.tsx'
 import { mintRequestId, uploadComposerFiles } from './requests.ts'
 import { daySeparatorLabel, isRunGap, timelineDayKey } from './team-separators.ts'
@@ -737,9 +737,20 @@ export function TeamThreadPage(props: TeamThreadPageProps) {
 
   const currentFactsWithAnchor = mergeFacts(activeProjection === undefined ? [] : [messageFact(activeProjection.anchor, activeProjection.anchorMentions)], currentFacts)
   const unreadBoundary = unreadIndex >= 0 ? unreadIndex : undefined
+  // One row per erroring Member holding a live Claim. The row shows the
+  // diagnostic's structured class — the localizable axis — beside the first
+  // sentence of the Host's own reason; the full English text moves to the
+  // row's title.
   const risks = taskClaims.filter(claim => claim.state === 'active').flatMap(claim => {
     const status = members.find(candidate => candidate.member.memberId === claim.owner)
-    return status?.presence === 'error' ? [{ claim, status }] : []
+    if (status?.presence !== 'error') return []
+    const risk = formatRiskClass(status, t)
+    const detail = diagnosticText(status)
+    return [{
+      claim, status, ...risk,
+      reason: detail === '' ? t('statusError') : firstSentence(detail),
+      full: detail === '' ? t('statusError') : detail,
+    }]
   })
   // Threads are always entered through a Channel page, so a Channel origin
   // returns to its timeline; a Thread restored without one returns further.
@@ -778,7 +789,10 @@ export function TeamThreadPage(props: TeamThreadPageProps) {
       </header>
       {risks.length > 0 && <section className={threadCss.riskSection} aria-label={t('runtimeRisk')}>
         <h2>{t('runtimeRisk')}</h2>
-        {risks.map(({ claim, status }) => <p className={threadCss.riskRow} key={claim.claimRef}><TeamPresenceDot status={status} t={t} /><span>{t('runtimeRiskDetail', { member: status.member.handle, diagnostic: diagnosticText(status) || t('statusError') })} · {claim.direction}</span></p>)}
+        {risks.map(({ claim, status, label, sentenceKey, reason, full }) => <p className={threadCss.riskRow} key={claim.claimRef}>
+          <TeamPresenceDot status={status} t={t} />
+          <span title={full}><strong className={threadCss.riskClass}>{label}</strong> · {t(sentenceKey, { member: status.member.handle })} — {reason}</span>
+        </p>)}
       </section>}
       {task !== undefined && thread !== undefined && (() => {
         // Recomputed here so the confirm list never shows stale rows.
@@ -814,9 +828,9 @@ export function TeamThreadPage(props: TeamThreadPageProps) {
             {taskClaims.length === 0 && <p className={threadCss.emptyClaims}>{t('noClaims')}</p>}
             {taskClaims.map(claim => {
               const ownerStatus = members.find(status => status.member.memberId === claim.owner)
-              return <article className={threadCss.claimRow} key={claim.claimRef}>
+              return <article className={`${threadCss.claimRow}${claim.state === 'done' ? ` ${threadCss.claimRowDone}` : ''}`} key={claim.claimRef}>
                 {ownerStatus === undefined ? <span /> : <TeamPresenceDot status={ownerStatus} t={t} />}
-                <strong className={threadCss.claimOwner}>{memberName(claim.owner)}</strong>
+                <strong className={threadCss.claimOwner} title={memberName(claim.owner)}>{memberName(claim.owner)}</strong>
                 <span className={threadCss.claimDirection}>{claim.direction}</span>
                 <small className={threadCss.claimState}>{formatClaimState(claim.state, t)}</small>
               </article>
