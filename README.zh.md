@@ -1,4 +1,4 @@
-# DeepSeek Harness Agent Team
+# dsh-agent-team — DeepSeek Harness 持久 Agent 团队
 
 [English](README.md) | 简体中文
 
