@@ -4,6 +4,7 @@ All notable changes to this project are documented in this file. The format foll
 
 ## [Unreleased]
 
+- Agent create/edit model pickers open with the warmed catalog and revalidate behind it, so a slow Host read delays a refresh instead of the picker; a failed read renders a retryable error instead of endless loading.
 - Settings footnote learns the update tip: the Host checks the public npm `latest` document in the background (12-hour cache, silent on any failure, `DSH_AGENT_TEAM_UPDATE_CHECK=0` opts out) and names the newer release once one is actually observed.
 - `@human` keeps reaching the Human across renames: the literal is a permanent alias alongside the current display name, chips keep rendering that name either way, and agent handles can no longer claim it.
 - Settings gains a `My profile` section: set the display name Agents mention and an avatar image. Messages sent afterwards carry the new name, removing the image — or keeping one that no longer loads — falls back to your initial, and the section's footnote states the bundle version with a link to the repository.
