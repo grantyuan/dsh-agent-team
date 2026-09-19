@@ -186,6 +186,12 @@ describe('Agent Team shipping contract', () => {
     expect(preset).toContain('your own judgment per task')
     expect(preset).not.toContain('SKILL.md')
     expect(preset).not.toContain('YAML front matter')
+    // Memory upkeep follows the same split: the persona carries only the
+    // resident rule (bounded index, detail in the note it names) and routes
+    // the craft to the bundled member-memory-manager core skill.
+    expect(preset).toContain('Keep `memory.md` a bounded index, not a store')
+    expect(preset).toContain('past 16 KiB it is not injected at all')
+    expect(preset).toContain('the bundled `member-memory-manager` skill')
     const toolSource = await readFile(resolve(root, 'packages/tool-agent-team/src/index.ts'), 'utf8')
     expect([...toolSource.matchAll(/name: '(team_[a-z]+)'/g)].map(match => match[1])).toEqual([
       'team_inbox', 'team_thread', 'team_message', 'team_claim', 'team_view',

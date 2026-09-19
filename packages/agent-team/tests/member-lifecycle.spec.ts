@@ -373,7 +373,15 @@ describe('Agent Team Member lifecycle', () => {
     const added = await ctx.agentTeam.addMember({ requestId: requestId('add'), workspaceId, handle: 'builder', description: 'Builds the implementation', presetId: 'team-member', channelRefs: [channel.channel.channelRef] })
     expect(added.status.availability).toBe('active')
     expect(added.status.member.privateMemoryPath).toBe(join(root, 'dsh-home', 'agent-team', 'members', added.status.member.memberId.replaceAll(':', '-')))
-    expect(await readFile(join(added.status.member.privateMemoryPath, 'memory.md'), 'utf8')).toContain('# Member memory')
+    // The first-run scaffold states the index's four sections and routes the
+    // writing rules to the bundled skill instead of restating them.
+    const scaffold = await readFile(join(added.status.member.privateMemoryPath, 'memory.md'), 'utf8')
+    expect(scaffold).toContain('# Member memory')
+    expect(scaffold).toContain('## Identity and role')
+    expect(scaffold).toContain('## Durable rules')
+    expect(scaffold).toContain('## In hand')
+    expect(scaffold).toContain('## Notes index')
+    expect(scaffold).toContain('the bundled `member-memory-manager` skill')
     await expect(access(join(added.status.member.privateMemoryPath, 'notes'))).resolves.toBeUndefined()
     const live = ctx.agents.get(added.status.member.sessionId)
     expect(live?.session.header.cwd).toBe(project)

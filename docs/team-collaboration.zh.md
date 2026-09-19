@@ -94,6 +94,10 @@ Human Client 使用 `readThread`、`threadHistory`、`threadObservations`、`cha
 
 Member 的 project `cwd` 保持在 Workspace path。Harness `agent-instructions` 仍是加载 `AGENTS.md`/`CLAUDE.md` guidance 的唯一 loader；Team 不重新实现或迁移这套 discovery。每个 Member 的 private root 包含小写的 `memory.md` index、按需读取的 `notes/` 和 Member 私有 skill 的 `skills/`。每个 safe pre-step 最多向 Member 提供其自身发生变化的 index，并包装为 escaped、typed reference context。Index 上限为 16 KiB，注入块常驻用量刻度（已用 X.X KiB / 16 KiB 及百分比）；超出预算会产生 maintenance warning，而不是静默截断、删除或 summarization。Notes 不会自动注入。Suspend/resume 保留这些 files，永久 removal 删除 private root。persona 陈述私有空间的物理事实（使用注入的绝对路径、绝不 cwd 相对路径、memory/notes 纪律、可复用资产边界），外加一段简洁的 context-management 指引：把活跃上下文当作最小充分工作集、在风险阶段前用 `context_checkpoint` 记录锚点并在阶段失败时通过 `context_rollover` 回返、历史不再划算时通过 `context_rollover` 换新（切换前先把值得保留的内容写入私有 memory/notes）、上下文切换不会回滚外部影响、handoff 中要交接当前状态。全部 skill 写作指引——什么值得成为 skill、目录形态布局、写作质量、credentials 约定——都在内置的 `member-skill-manager` meta skill 里，其 description 负责"涉及 skill 管理工作时先读我"；用不用任何 skill 由 Member 按任务自行判断。
 
+## Member memory 维护
+
+`memory.md` 是有界路由索引而非仓库：只装身份与职责、必须每步生效的长期规则、当前在手，以及每个主题簇一行；`notes/` 按需读取、从不注入。成员把索引常态保持在 8 KiB 以内、硬顶 16 KiB——超过硬顶索引整块不再注入，注入块始终自带用量。维护手艺（什么配得上一行、三层结构、压实与降级）归内置 `member-memory-manager` core skill，与 skill 写作归 `member-skill-manager` 同一套路；persona 只常驻「索引必须有界、细节留在它点名的那篇笔记里」这一条，成员首次生成的 `memory.md` 脚手架陈述同样的小节。
+
 ## 上下文压力归属
 
 Host 端到端拥有 Member 的上下文压力管理。两个预算阈值从该 Member 的 live routed selection 派生——当前 step 已进入 prompt assembly 时取其捕获的 selection，否则取 current selection——经 LLM 服务解析（handoff 预算上限 200K、硬上限 256K，并留安全 reserve）：达到 handoff 预算时，Member 在该 generation 内收到一条结构化压力通知，建议 `context_rollover` rollover——同一 generation 不重复，rollover 后重新武装；达到硬上限时，Host 在转发下一个模型请求前强制一次原地 compaction，无法证明 generation 前进或实测压力下降的 Member 会被 fail closed（拒绝该 step，而不是超限提交）。Provider context-overflow 失败获得一条有界的 compact-and-retry 序列后再上浮。无法测量窗口的 route 会显式拒绝，绝不静默超限提交。已接受 Task 的自动 compaction 已退役：除 Member 自己的显式选择外，压力策略是唯一的 compaction 触发器。
