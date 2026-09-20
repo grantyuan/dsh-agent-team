@@ -160,13 +160,18 @@
 }
 /* Everything the sidebar still says about unread: the solid ink the queue uses
    for a Thread that named the reader, at the size of a mark instead of a count.
-   The ring is the surface's own background, so the dot reads as a mark laid over
-   the icon's strokes rather than one blending into them — and it follows the
-   card's hovered and current-page fills, which are not the page background. */
+   The ring is the surface's own background — the sidebar fill, as the Agent
+   badge's ring is — so the dot reads as a mark laid over the icon's strokes
+   rather than one blending into them. A hovered or current-page card adds a
+   translucent wash on top of that fill, so the ring paints both in order: the wash
+   alone would darken the already-washed card a second time and ring the dot with a
+   halo the reader would read as a smudge. */
 .inboxDot {
   background: var(--dsw-alias-state-business-primary);
   border-radius: 50%;
-  box-shadow: 0 0 0 2px var(--team-mark-ring, var(--dsw-alias-bg-base));
+  box-shadow:
+    0 0 0 2px var(--team-mark-ring, var(--dsw-specific-sidebar-fill)),
+    0 0 0 2px var(--dsw-specific-sidebar-fill);
   corner-shape: round;
   height: 8px;
   left: -2px;
