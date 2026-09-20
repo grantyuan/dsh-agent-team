@@ -10,7 +10,7 @@ import type { TeamDraftKey, TeamDraftStore } from './drafts.ts'
 import { TeamComposer } from './TeamComposer.tsx'
 import { TeamMemberRow } from './TeamMemberRow.tsx'
 import { TeamMessage } from './TeamMessage.tsx'
-import { TeamAvatarStack, type TeamAvatarOwner } from './TeamAvatarStack.tsx'
+import { namedAvatarOwners, TeamAvatarStack, type TeamAvatarHuman, type TeamAvatarOwner } from './TeamAvatarStack.tsx'
 import { TeamCountBadge } from './TeamCountBadge.tsx'
 import { TeamRunDivider } from './TeamRunDivider.tsx'
 import { claimersLabel, formatAbsoluteTime, formatInboxTime, formatTaskStatus, taskStatusDot, mentionNamesOf } from './team-formatters.ts'
@@ -180,6 +180,13 @@ export function TeamChannelPage({ workspaceId, channelRef, humanName, humanAvata
     const humanMemberId = view?.humanMemberId
     return (ref: AgentTeamMemberId) => rosterMember(members, humanMemberId, humanName, ref)
   }, [rosterKey, humanName])
+  // The Thread entry row's owner stack speaks the same grammar as the Inbox
+  // row's, Human included: the Host names which actor is the reader, the
+  // Client's identity projection says what that actor looks like.
+  const humanMemberId = view?.humanMemberId
+  const humanIdentity: TeamAvatarHuman | undefined = humanMemberId === undefined
+    ? undefined
+    : { memberId: humanMemberId, name: humanName, ...(humanAvatarUrl === undefined ? {} : { avatarUrl: humanAvatarUrl }) }
 
   const timeline = useTimelineScroll(`${view?.items.length ?? 0}:${channelLastItem?.message.messageRef ?? ''}`)
   const channel = view?.channels.find(item => item.channelRef === channelRef)
@@ -460,6 +467,7 @@ export function TeamChannelPage({ workspaceId, channelRef, humanName, humanAvata
                   item={item}
                   owners={item.claimOwners}
                   unread={unread}
+                  human={humanIdentity}
                   t={t}
                   onOpen={() => { selectThread(item.thread.threadRef, channelRef, task?.taskRef, item.taskNumber) }}
                 />}
@@ -498,15 +506,17 @@ export function TeamChannelPage({ workspaceId, channelRef, humanName, humanAvata
  * carried nothing else. The unread capsule is the only member a taskless
  * discussion can carry: it needs no Task.
  */
-function ThreadStateCluster({ task, owners, unread, t }: {
+function ThreadStateCluster({ task, owners, unread, human, t }: {
   readonly task: AgentTeamTask | undefined
   readonly owners: readonly TeamAvatarOwner[]
   readonly unread: number
+  readonly human: TeamAvatarHuman | undefined
   readonly t: TeamConversationProps['t']
 }) {
   if (task === undefined && unread === 0) return null
+  const namedOwners = namedAvatarOwners(owners, human)
   return <span className={css.stateCluster}>
-    {task !== undefined && <TeamAvatarStack owners={owners} label={claimersLabel(owners, t)} />}
+    {task !== undefined && <TeamAvatarStack owners={namedOwners} label={claimersLabel(namedOwners, t)} human={human} />}
     {task !== undefined && <TeamStateDot size={8} state={taskStatusDot(task.status)} />}
     {task !== undefined && <span className={css.statusWord}>{formatTaskStatus(task.status, t)}</span>}
     {/* The capsule is decoration inside the control whose label already carries
@@ -526,10 +536,11 @@ function ThreadStateCluster({ task, owners, unread, t }: {
  * the control's title, and an unread Thread says so in the control's label
  * rather than only in pixels.
  */
-function ThreadEntryRow({ item, owners, unread, t, onOpen }: {
+function ThreadEntryRow({ item, owners, unread, human, t, onOpen }: {
   readonly item: AgentTeamViewItem
   readonly owners: readonly TeamAvatarOwner[]
   readonly unread: number
+  readonly human: TeamAvatarHuman | undefined
   readonly t: TeamConversationProps['t']
   readonly onOpen: () => void
 }) {
@@ -548,7 +559,7 @@ function ThreadEntryRow({ item, owners, unread, t, onOpen }: {
   // descendants from the accessibility tree — and so the control's name says
   // exactly what clicking it does.
   return <span className={css.entryLine} data-thread-entry="">
-    <ThreadStateCluster task={item.task} owners={owners} unread={unread} t={t} />
+    <ThreadStateCluster task={item.task} owners={owners} unread={unread} human={human} t={t} />
     <button
       type="button"
       className={css.entryRow}

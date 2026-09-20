@@ -357,7 +357,7 @@ export async function runtimeWithTeam(options?: { mode?: 'team'; workspaceId?: s
     const recent = scoped.filter(row => !holdsUnread(row)).map(row => row.item)
     const unread = items.reduce((sum, item) => sum + ((item as { unreadCount?: number }).unreadCount ?? 0), 0)
     const direct = items.reduce((sum, item) => sum + ((item as { directCount?: number }).directCount ?? 0), 0)
-    return { ok: true as const, value: { items, recent, totalUnreadCount: unread, totalDirectCount: direct } }
+    return { ok: true as const, value: { humanMemberId: 'member:human', items, recent, totalUnreadCount: unread, totalDirectCount: direct } }
   })
   const seedInbox = (rows: ReadonlyArray<{ readonly workspaceId: string } & Record<string, unknown>>): void => {
     inboxRows = rows.map(row => ({ workspaceId: row.workspaceId, item: row as Record<string, unknown> }))

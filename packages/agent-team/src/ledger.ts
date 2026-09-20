@@ -1567,7 +1567,8 @@ export class AgentTeamLedger {
     const recent = authorized.kind === 'human'
       ? this.recentInboxItems(authorized.memberId, workspaceIds[0]!, unreadThreads, taskNumbers)
       : Object.freeze([] as AgentTeamInboxItem[])
-    return Object.freeze({ items: Object.freeze(selected), recent,
+    return Object.freeze({ humanMemberId: this.initialization().data.humanMemberId,
+      items: Object.freeze(selected), recent,
       totalUnreadCount: items.reduce((sum, item) => sum + item.unreadCount, 0),
       totalDirectCount: items.reduce((sum, item) => sum + item.directCount, 0) })
   }
@@ -1583,8 +1584,15 @@ export class AgentTeamLedger {
     return this.memberActor(fact.kind === 'message' ? fact.message.sender : fact.activity.actor)
   }
 
-  /** One Member as a row draws them: the id carries the identity hue, the handle the initial. */
+  /**
+   * One Member as a row draws them: the id carries the identity hue, the handle
+   * the initial. The Human is the one Member the Agent roster never holds, so
+   * their row reads the runtime display name rather than falling back to the
+   * durable `member:human` id — the same name every other seat and @ matching
+   * already use.
+   */
   private memberActor(memberId: AgentTeamMemberId): AgentTeamInboxActor {
+    if (memberId === this.initialization().data.humanMemberId) return Object.freeze({ memberId, name: this.humanHandle })
     return Object.freeze({ memberId, name: this.state.members.get(memberId)?.handle ?? memberId })
   }
 

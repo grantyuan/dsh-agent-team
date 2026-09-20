@@ -671,6 +671,14 @@ export interface AgentTeamInboxItem {
 }
 
 export interface AgentTeamInbox {
+  /**
+   * The ledger's Human Member id — the durable identity a row matches to know
+   * which of its actors is the reader, so a seat can draw that one actor from
+   * its own Human identity (name and avatar) instead of the row's initials
+   * fallback. The same id `AgentTeamView` carries, from the same initialization
+   * record.
+   */
+  readonly humanMemberId: AgentTeamMemberId
   /** The unread queue: every Thread holding at least one unread fact for this reader. */
   readonly items: readonly AgentTeamInboxItem[]
   /**

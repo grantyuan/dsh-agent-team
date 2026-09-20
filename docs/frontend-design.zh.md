@@ -69,7 +69,8 @@ Team Client 渲染在 shipped DSH 外壳内部，必须讲基础 UI 的设计语
 - **Agent 头像**：按 `memberId` 字符串哈希出稳定色相（`hash*31+charCode mod 360`），`hsl(var(--team-avatar-hue) 42% 46%)` 底 + 白色首字母；同一成员跨页面、跨会话颜色不变。侧栏 Agent 行复用同一身份语言（24px 缩版），presence 指示叠在头像右下角，描边环取 `--dsw-specific-sidebar-fill` 与侧栏底色同色。
 - **Human 头像**：`--dsw-alias-state-business-primary` 强调底色，与所有 Agent 区分。这一底色与首字母同时是该 Human 的兜底：资料里存了头像图片之后，Human 出现的每一处座位都换成图片；显示名则来自同一份资料投影——在 `TeamConversation` 里只解析一次（`name ?? t('human')`）、以 `humanName` 传给两个页面，所以消息发送者、花名册行、mention 兜底名与 `member:human` ref 不会各走各的，也不会各自退回字面 `human`。DOM 上以 `[data-human]` 标记。
 - **presence 圆点**：available=done 绿、working=ongoing、error 红、unavailable 用灰色叉点（`TeamPresenceDot` 的 `presenceDotState` 映射）。这一映射有两种呈现：凡是「把成员列成行」的地方都用 `TeamMemberAvatar` 的角标（首字母 + 右下角圆点），而 composer 的收件人菜单用裸 `TeamPresenceDot`——那是菜单行不是花名册行。所以花名册行统一靠头像角标、菜单保留圆点，这个不对称是有意的，不是遗漏。
-- **Thread 入口头像叠放**：`TeamAvatarStack` 复用同一套色相哈希，但不挂 presence 圆点——它回答「谁在做这件事」，不回答「谁现在在线」。
+- **Thread 入口头像叠放**：`TeamAvatarStack` 复用同一套色相哈希，但不挂 presence 圆点——它回答「谁在做这件事」，不回答「谁现在在线」。画到读者本人时，那**一枚**胶囊改画 Human 的图片：同一份 18px 几何、同一个 2px 环、`object-fit: cover`，色相留在图下当解码期间的底，其余所有者照旧是首字母。Inbox 行的领起簇与 Channel feed 的 Thread 入口行都按这条规则接线。
+- **叠放里的 Human 座位**：Agent 座位从不画图片（色相 + 首字母就是 Agent 的全部身份），所以叠放里只有「是 Human 的那一枚」走真实身份。座位从 Host 拿到 Human 的 Member id（`AgentTeamInbox.humanMemberId`，与 `AgentTeamView` 同一条 initialization 记录），再由 `namedAvatarOwners(owners, human)` 把那一枚所有者换成 `humanName`/`humanAvatarUrl`——名字与图片都来自 Client 这一份投影，所以改名时胶囊首字母与叠放标签里的名字一起动，而不会停在资料已经不用了的旧首字母上；解不开的字节与其它座位一样经 `useAvatarImage` 回落到显示名首字母。Host 在 Inbox 行上也用这个运行时显示名来称呼 Human，而不是退回 Agent 花名册里从来没有的 durable `member:human` id。
 - 错误一律 `--dsw-alias-state-error-primary` 并配 `role="alert"`。
 
 ## 组件合同

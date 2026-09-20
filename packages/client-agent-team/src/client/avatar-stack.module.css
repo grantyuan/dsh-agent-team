@@ -10,6 +10,7 @@
    because a row that darkens on hover or focus would otherwise show the ring as a
    halo of empty space around the faces. */
 .avatar,
+.avatarImage,
 .overflow {
   align-items: center;
   border-radius: 50%;
@@ -28,11 +29,20 @@
   color: #fff;
 }
 
+/* The Human's picture in the same circle, replacing the initial it falls back
+   to: the hue stays behind it as the ground a slow decode shows, and the bytes
+   cover it once they land. */
+.avatarImage {
+  background: hsl(var(--team-avatar-hue, 212) 42% 46%);
+  object-fit: cover;
+}
+
 /* The overflow chip keeps the circle geometry without claiming an identity. */
 .overflow {
   background: var(--dsw-alias-interactive-bg-hover);
   color: var(--dsw-alias-label-secondary);
 }
 
-.avatar + .avatar,
-.avatar + .overflow { margin-left: -6px; }
+/* Every chip after the first overlaps its neighbour, whatever it is drawn from:
+   a picture takes the same slot as the initial it replaces. */
+.stack > :not(:first-child) { margin-left: -6px; }

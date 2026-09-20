@@ -2409,7 +2409,11 @@ it('configures the Human profile from Settings in real Web', async () => {
   await panel.getByRole('button', { name: '移除头像' }).click()
   await expect.poll(async () => await panel.locator('img').count()).toBe(0)
   await expect.poll(() => scaffold!.ctx.agentTeam.humanProfile().avatarRef).toBeUndefined()
-  expect(await panel.getByRole('button', { name: '上传头像' }).count()).toBe(1)
+  await expect.poll(async () => await panel.getByRole('button', { name: '上传头像' }).count()).toBe(1)
+  // The readable bytes go back in: the Inbox leg below draws the compact stack
+  // from the same profile, and a seat can only prove that with a picture.
+  await panel.locator('input[type="file"]').setInputFiles(avatarPath)
+  await expect.poll(async () => await panel.locator('img').count()).toBe(1)
   await panel.getByRole('button', { name: '关闭' }).click()
 
   // The rename is not page-local: the Team timeline names the Human by it.
@@ -2428,5 +2432,24 @@ it('configures the Human profile from Settings in real Web', async () => {
   await expect.poll(async () => await row.textContent()).toContain('Ada')
   expect(await row.textContent()).not.toContain('Human')
   await page.screenshot({ path: join(UI09_SHOTS, 'renamed-human-in-timeline.png'), fullPage: true })
+
+  // The identity is not page-local either. The Inbox row that names the Human
+  // leads with the profile picture in the very circle an Agent's initial fills
+  // — the same seat, the same 18px geometry — and the row reads the display
+  // name rather than the durable `member:human` id no Agent roster holds.
+  await page.locator('button[class*="inboxCard"]').click()
+  const identityRow = page.locator('[data-team-inbox] button').filter({ hasText: 'PROFILE-NAME-MARKER' })
+  await expect.poll(async () => await identityRow.count(), { timeout: 30_000 }).toBe(1)
+  const identityStack = identityRow.locator('[class*="rowActor"] [role="img"]')
+  const identityPicture = identityStack.locator('img')
+  await expect.poll(async () => await identityPicture.count()).toBe(1)
+  expect(await identityPicture.getAttribute('src')).toMatch(/^data:image\/png;base64,/)
+  expect(await identityStack.getAttribute('aria-label')).toContain('@Ada')
+  const identityGeometry = await identityStack.evaluate(cluster => {
+    const rect = cluster.getBoundingClientRect()
+    return { width: Math.round(rect.width), height: Math.round(rect.height), radius: getComputedStyle(cluster.firstElementChild!).borderTopLeftRadius }
+  })
+  expect(identityGeometry).toEqual({ width: 18, height: 18, radius: '50%' })
+  await page.screenshot({ path: join(UI09_SHOTS, 'human-identity-in-inbox-stack.png'), fullPage: true })
   expect(consoleWatch).toEqual({ warnings: [], pageErrors: [] })
 }, 180_000)
