@@ -762,13 +762,17 @@ describe('Team conversation surfaces', () => {
   it('states the current Workspace on one line and switches through its menu', async () => {
     const b = await runtimeWithTeam({ mode: 'team' })
     expect(await b.view.findByRole('heading', { name: '频道' })).toBeTruthy()
-    fireEvent.click(b.view.getByRole('button', { name: 'Toggle fixture sidebar' }))
-    await waitFor(() => { expect(b.view.getByRole('button', { name: '频道' })).toBeTruthy() })
+    // The selector renders in the wide sidebar only, and collapsing the fixture
+    // keeps that wide surface mounted for another 150ms (SidebarRoot's collapse
+    // settle) before the rail replaces it. Every assertion below reads the wide
+    // surface, so this test leaves the sidebar width alone: the collapse click
+    // it used to fire raced that window, and the last assertion lost the race on
+    // a slow lane. The rail keeps its own coverage in the toggle test above.
     // The selected Workspace is the trigger's own text and its accessible name:
     // a reader who cannot see the field still learns which one is stated. The
     // others are not rows on the surface, so the sections below read as that
     // Workspace's content.
-    const trigger = b.view.getByRole('button', { name: '工作区，Alpha' })
+    const trigger = await b.view.findByRole('button', { name: '工作区，Alpha' })
     expect(trigger.getAttribute('aria-haspopup')).toBe('menu')
     expect(trigger.getAttribute('aria-expanded')).toBe('false')
     expect(trigger.textContent).toContain('Alpha')
