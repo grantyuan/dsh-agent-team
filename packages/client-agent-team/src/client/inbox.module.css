@@ -30,9 +30,18 @@
 /* A queue row is the shipped two-line result row (`.searchResultRow`): one
    marker leads in a gutter of its own and everything the row says starts on one
    column. The grid is what holds that column across both sections — the same
-   Thread moves between them and must not slide sideways on the way. */
+   Thread moves between them and must not slide sideways on the way.
+   The first line's items centre on each other rather than sharing a baseline,
+   which is what the shipped row does with its own marker
+   (`.searchResultHeading`), because the marker is not always text: a face drawn
+   as a picture has no baseline, so a browser reads a replaced box as sitting on
+   its bottom edge. Baseline alignment therefore dropped the identity line 4px
+   and made the row 4px taller wherever the leading chip was the Human's
+   picture — the same row led by an initial stayed put. Both are 18px in a 20px
+   line, so centring puts every chip on the line it leads whatever it is drawn
+   from. */
 .row {
-  align-items: baseline;
+  align-items: center;
   background: transparent;
   border: 0;
   border-radius: 8px;
