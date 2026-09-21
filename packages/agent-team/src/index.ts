@@ -28,8 +28,9 @@ import { HUMAN_PROFILE_DEFAULT_NAME, HUMAN_PROFILE_REPO_URL, HUMAN_PROFILE_SETTI
 import { humanAvatarsRoot, readHumanAvatar, removeHumanAvatar, writeHumanAvatar } from './human-avatar.ts'
 import { createHumanUpdateChecker } from './human-update-check.ts'
 import { PressurePolicyCoordinator } from './pressure-policy.ts'
-import { ContextManagementCoordinator, type TransitionPlan } from './context-management.ts'
-import { AGENT_TEAM_PLUGIN_ID, createHandoffMessage } from './context-source.ts'
+import type { TransitionPlan } from '@wowyuarm/dsh-context-continuity'
+import { createTeamContextManagement, TEAM_CONTEXT_CODEC, toEngineProjectionState } from './context-continuity-host.ts'
+import { AGENT_TEAM_PLUGIN_ID } from './context-source.ts'
 import { carriedInputOf, checkpointByRef, checkpointRefFor, contextProjectionFold, foldContextProjection, isReminderNoticeSummary, timelineCandidates, type AgentTeamContextProjectionState, type TimelineCandidate } from './context-projection.ts'
 import { advanceOwnedSessionEventCursor, type OwnedSessionEventCursor } from './session-event-cursor.ts'
 import { AGENT_TEAM_HUMAN_MEMBER_ID, AgentTeamLedger, agentTeamHumanActor, type AgentTeamDurableMemberResult } from './ledger.ts'
@@ -440,7 +441,7 @@ export default class AgentTeam extends TypertRemoteService {
    * owns intent, and this coordinator owns only reconstructible process
    * state. See docs/architecture.md and docs/team-collaboration.md.
    */
-  private readonly contextManagement = new ContextManagementCoordinator({
+  private readonly contextManagement = createTeamContextManagement({
     agentForMember: memberId => this.handles.get(memberId)?.agent,
     memberForAgent: agent => this.memberForAgent(agent),
     projectionForMember: (memberId, sessionId) => {
@@ -460,7 +461,7 @@ export default class AgentTeam extends TypertRemoteService {
         session.inheritedEventCount,
       )
       this.contextCursors.set(memberId, owned)
-      return owned.cursor.value
+      return { state: owned.cursor.value, inheritedEventCount: session.inheritedEventCount }
     },
     executeTransition: (memberId, plan) => this.executeMemberTransition(memberId, plan),
     log: message => { this.ctx.logger.warn(`agent-team: ${message}`) },
@@ -1037,7 +1038,10 @@ export default class AgentTeam extends TypertRemoteService {
         throw new Error(`the context rollover is refused: this Member now owns jobs that would not survive the switch (${blockingJobs.join(', ')}); collect or stop them, then retry`)
       }
       const rolled = await this.rolloverSessionForAgent(active.agent, {
-        requestId: plan.requestId,
+        // The engine plan carries the host-derived request id as a plain
+        // string; Team's rollover operation vocabulary brands it, and the
+        // context-continuity host adapter is its only producer.
+        requestId: plan.requestId as AgentTeamRolloverSessionRequest['requestId'],
         workspaceId: stored.workspaceId,
         memberId,
         previousSessionId: plan.previousSessionId,
@@ -1828,7 +1832,7 @@ export default class AgentTeam extends TypertRemoteService {
     const state = foldContextProjection(inspection.events, inspection.inheritedEventCount, previousSessionId)
     if (state.pending === null) return
     const pending = state.pending
-    const message = createHandoffMessage({
+    const message = TEAM_CONTEXT_CODEC.createHandoffMessage({
       handoff: pending.handoff,
       previousSessionId,
       newSessionId: agent.session.id,
@@ -2532,12 +2536,13 @@ export default class AgentTeam extends TypertRemoteService {
       // old Session; the projection still carries the intent, so finish the
       // transition (or keep waiting for the containing turn) from here.
       if (persisted) {
-        const state = foldContextProjection(created.agent.session.ownEvents(), created.agent.session.inheritedEventCount, created.agent.session.id)
+        const inheritedEventCount = created.agent.session.inheritedEventCount
+        const state = foldContextProjection(created.agent.session.ownEvents(), inheritedEventCount, created.agent.session.id)
         if (state.pending !== null) this.contextManagement.recoverPendingTransition(member.memberId, created.agent, member.sessionId)
         // A restart between one checkpoint's durable result and its quiet
         // follow-up delivery repairs exactly once; delivered continuations
         // stay delivered through the projection's own delivery record.
-        this.contextManagement.repairContinuations(created.agent, state)
+        this.contextManagement.repairContinuations(created.agent, toEngineProjectionState({ state, inheritedEventCount }, created.agent.session.id))
         // A restart after the rollover committed but before the handoff was
         // delivered activates the new Session with no handoff in its own
         // log — never treat that as an ordinary blank Member Session. The

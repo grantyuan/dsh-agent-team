@@ -1,6 +1,7 @@
 import { cp, mkdtemp, mkdir, readFile, rm, symlink, writeFile } from 'node:fs/promises'
 import { join, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
+import { continuityDir } from './continuity-dir.mjs'
 import { harnessDir } from './harness-dir.mjs'
 
 const projectRoot = resolve(import.meta.dirname, '..')
@@ -36,6 +37,15 @@ try {
   } else {
     await symlink(zodSource, zodTarget, 'file')
   }
+  // The sibling context-continuity engine is the second external package the
+  // Host face imports. The temp package sits inside the harness checkout, so
+  // only its own manifest and built declarations travel: copying the checkout
+  // would drag its node_modules along, and a symlink is the Windows-hostile
+  // form the zod comment above already rules out.
+  const engineTarget = join(tempPackage, 'node_modules', '@wowyuarm', 'dsh-context-continuity')
+  await mkdir(engineTarget, { recursive: true })
+  await cp(join(continuityDir, 'package.json'), join(engineTarget, 'package.json'))
+  await cp(join(continuityDir, 'lib'), join(engineTarget, 'lib'), { recursive: true })
   await writeFile(join(tempPackage, 'tsconfig.json'), JSON.stringify({
     extends: '../../tsconfig.base.json',
     include: ['src'],

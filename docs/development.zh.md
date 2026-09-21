@@ -185,7 +185,7 @@ invariant companion 是"被覆盖"而不是"要扩展"：`invariant.ts` 注册�
 1. 先 `corepack enable pnpm` 落地 shim，再 clone `../deepseek-harness`，checkout 最新认证 release tag（当前 `dsh-v0.1.5-rc.1`，随认证前进），然后 `corepack pnpm install`（workspace 全量一次到位）、`corepack pnpm build:lib` 与 `corepack pnpm build:native-system`。shim 是必需的：认证 Harness 自身的 script 内部会调裸 `pnpm`（`build:lib`、`build:web`），而 `corepack pnpm` 只在自己进程内解析；缺了 shim 这些步骤会以 `pnpm: not found` 失败。两个仓库的 `packageManager` 都锁 `pnpm@11.7.0`，shim 因此解析到该版本，而非环境预装的任意版本。native 这一步是独立的构建，不会由别处替我们完成：host addon 被 gitignore，Harness 的 `test` script 会在自己的 Vitest 之前用 `build:native-system` 构建它，而本仓库是直接对那个 checkout 跑 Vitest——全新 clone 缺了它会表现为宿主 Team 激活失败（`Agent is not an active Team Member`），而不是缺模块报错。`--host-addon-only` 在非 Linux/macOS 上直接退出、不构建，因此该步骤在所有平台都安全。不要复用上一次构建遗留的 `lib/` 或 `node_modules/`——旧产物可能掩盖声明或运行时不兼容。
 2. 工作流需要 `test:browser` 时，用 `corepack pnpm build:web` 构建 Harness `apps/web` dist；workspace install 已备好其依赖。
 3. 在本仓库内用 `corepack pnpm install` 安装依赖。绝不能运行 `npm install`：它会静默破坏指向相邻 checkout vendor 包的 workspace 符号链接，故障随后才以误导性的 `Cannot find module 'zod'` 暴露。
-4. 用 `node scripts/link-harness-packages.mjs` 把 Harness 的 workspace 与 vendor 包链接进本仓库 `node_modules`，再 `npm run build` 构建 bundle。宿主测试从本仓库根按真实 `node_modules` 查找解析 preset row 与 bundle 自身的未发布 row（如 `@wowyuarm/dsh-agent-team/member-context`）——与已发布 bundle 的 profile 安装布局一致。
+4. 用 `node scripts/link-harness-packages.mjs` 把 Harness 的 workspace、其 vendor 包与相邻的 context-continuity 引擎链接进本仓库 `node_modules`，再 `npm run build` 构建 bundle。引擎必须先以相邻目录 `../dsh-context-continuity` 存在、并在其中构建过（`npm run build`）：bundle 按包名 import `@wowyuarm/dsh-context-continuity`，在引擎发布之前正是这条链接解析该包名；`DSH_CONTEXT_CONTINUITY_DIR` 可把解析指向另一个 checkout。宿主测试从本仓库根按真实 `node_modules` 查找解析 preset row 与 bundle 自身的未发布 row（如 `@wowyuarm/dsh-agent-team/member-context`）——与已发布 bundle 的 profile 安装布局一致。
 5. 用 `node scripts/sync-paths.mjs` 对准全新 checkout 重新生成 TypeScript path facades。全新 clone 不能信任仓库里已提交的 facades：`sync-paths` 不属于任何 npm script，跳过它 facades 指向的仍是生成时固化的旧路径。`sync-paths` 同时生成测试 harness 需要的 `@deepseek-ai/dsh-client-locale/src/*` 通配映射。
 6. 冒烟验证：`npm run typecheck && npm test`。全绿 = 环境正确；大面积假挂（见下）= 环境不对——先修环境，再查 diff。
 
@@ -194,6 +194,7 @@ invariant companion 是"被覆盖"而不是"要扩展"：`invariant.ts` 注册�
 | 变量 | 何时需要 | 说明 |
 | --- | --- | --- |
 | `CHROME_PATH` | `test:browser`（可选） | 默认 `/usr/bin/google-chrome`；仅当沙箱 Chrome 不在默认位置时设置 |
+| `DSH_CONTEXT_CONTINUITY_DIR` | 仅隔离 checkout 场景 | 把引擎解析指向另一个 `dsh-context-continuity` checkout；日常保持未设——相邻目录名即契约 |
 | `DSH_HARNESS_DIR` | 仅认证场景 | 指向带 tag 后缀的相邻 checkout；日常保持未设——默认名即契约 |
 | `DEEPSEEK_API_KEY` | `npm run preview` | 真实模型预览缺它即刻失败；测试与浏览器路径从不需要 |
 
@@ -202,6 +203,10 @@ invariant companion 是"被覆盖"而不是"要扩展"：`invariant.ts` 注册�
 **工作树上方不得有遗留 `node_modules`。** TypeScript `typeRoots` 与 Node 模块解析都会沿祖先目录上爬，home 目录下一次误跑 `npm install` 留下的 `node_modules\@types` 会把它的类型静默注入每次编译——实测表现为 harness 构建报出 lockfile 解释不了的 React 19 类型错误（实际锁的是 18）。全新 checkout typecheck 报出 lockfile 无法解释的类型错误时，先逐级检查祖先目录有无遗留 `node_modules`，再查代码。
 
 **checkout 指针集中化且 fail-fast。** `scripts/harness-dir.mjs` 是所有消费方（Vitest、`sync-paths`、`build-client`、`generate-typert`、浏览器/预览 runner）共同解析的单一事实源：`DSH_HARNESS_DIR` 设定时优先；其次读 `sync-paths` 写下的 `.generated-harness` 标记（测试自动跟随 facade 生成时的同一 checkout——认证轮生成后忘了带 env 也不会让两者劈叉）；最后落到默认相邻名。解析出的目录不存在时立即中止，列出相邻真实存在的 Harness checkout 与修复指引，而不是等到跑测才炸出上面那些远端症状。
+
+**引擎指针同理。** `scripts/continuity-dir.mjs` 拥有 `link-harness-packages.mjs` 所链接、`generate-typert.mjs` 所预置进分析包的那个相邻 `dsh-context-continuity` checkout，唯一逃生口是 `DSH_CONTEXT_CONTINUITY_DIR`，失败信息同样 fail-fast。引擎是独立仓库且尚未发布，因此今天解析 `@wowyuarm/dsh-context-continuity` 的只有这条相邻链接；根 manifest 已把它声明为 peer，这正是 `shipping.spec.ts` 的 boot-critical closure 关卡对每个运行时 root 的要求。
+
+> TODO: 引擎的安装期契约仍未定——是发到 npm 作为 peer 由 profile 安装解析，还是以别的方式到达消费者。在定下来之前，CI 无法运行本仓库的关卡（它只 clone Harness checkout，而引擎既未发布也不可 clone），所以关卡只在存在相邻引擎 checkout 的环境里运行。
 
 **CI lanes。** [`.github/workflows/ci.yml`](../.github/workflows/ci.yml) 在干净的 `ubuntu-latest` 与 `windows-latest` runner 上运行 typecheck 加完整测试套件——pull request、push 到 `master`、手动 `workflow_dispatch` 都会触发。两条 lane 执行上面相同的六步环境契约；Windows lane 的每一步经 git bash（`shell: bash`）运行，因为默认 pwsh 会破坏反斜杠续行；harness 包经目录 junction 链接，无需 symlink 权限。范围护栏：无 coverage matrix、无发布自动化、无 `test:browser`——浏览器验收始终是本地步骤。Windows lane 是文件系统标识符类 bug（issue #7/#8）的回归防线。唯一可调变量是 `DSH_HARNESS_TAG`；认证推进该 tag 时，workflow 的 env、本文档与 [`.hoplite/settings.json`](../.hoplite/settings.json) 三处同步更新——三处靠手工保持一致。若该次 tag 推进同时移动了 DSH peers，必须在同一改动里提交 `pnpm-lock.yaml`：CI 以 `frozen-lockfile` 安装，而本地装一次就会就地重写 lockfile，把这个不一致一直掩盖到 CI 上才暴露。开发脚本（`build-client`、`run-browser-test`、`run-preview`、`run-ui-preview`）已做 Windows 硬化，在该平台经 git bash 运行，本地 Windows 开发遵循同一环境契约。
 

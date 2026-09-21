@@ -16,7 +16,8 @@ import {
   withScheduledContinuation,
   type AgentTeamContextProjectionState,
 } from '../src/context-projection.ts'
-import { AGENT_TEAM_PLUGIN_ID, continuationCheckpointRefOf, createCheckpointContinuationMessage, createHandoffMessage, handoffOf } from '../src/context-source.ts'
+import { AGENT_TEAM_PLUGIN_ID, continuationCheckpointRefOf, handoffOf } from '../src/context-source.ts'
+import { TEAM_CONTEXT_CODEC } from '../src/context-continuity-host.ts'
 
 let eventSeq = 0
 function nextSeq(): SessionSeq {
@@ -360,7 +361,7 @@ describe('AgentTeam context projection — quiet continuation delivery', () => {
     expect(continuationDelivered(scheduled, checkpointRef)).toBe(false)
     const delivered = foldContextProjection([
       ...events,
-      userMessageEvent(createCheckpointContinuationMessage(checkpointRef as never)),
+      userMessageEvent(TEAM_CONTEXT_CODEC.createCheckpointContinuationMessage(checkpointRef as never)),
     ], undefined, SID)
     expect(continuationDelivered(delivered, checkpointRef)).toBe(true)
   })
@@ -371,14 +372,14 @@ describe('AgentTeam context projection — quiet continuation delivery', () => {
     state = withScheduledContinuation(state, checkpointRef)
     state = withScheduledContinuation(state, checkpointRef)
     expect(state.continuations).toHaveLength(1)
-    const delivered = foldContextProjection([userMessageEvent(createCheckpointContinuationMessage(checkpointRef as never))], undefined, SID)
+    const delivered = foldContextProjection([userMessageEvent(TEAM_CONTEXT_CODEC.createCheckpointContinuationMessage(checkpointRef as never))], undefined, SID)
     expect(continuationDelivered(delivered, checkpointRef)).toBe(true)
   })
 })
 
 describe('AgentTeam context sources', () => {
   it('the handoff message carries the snapshot form, envelope, and prose section', () => {
-    const message = createHandoffMessage({
+    const message = TEAM_CONTEXT_CODEC.createHandoffMessage({
       handoff: 'objective: finish the parser\nnext step: run tests',
       previousSessionId: 'agent-team-old',
       newSessionId: 'agent-team-new',
@@ -403,7 +404,7 @@ describe('AgentTeam context sources', () => {
 
   it('checkpoint continuation notices recognize themselves regardless of body text', () => {
     const checkpointRef = checkpointRefFor(SID, 'call-cp')
-    const message = createCheckpointContinuationMessage(checkpointRef as never)
+    const message = TEAM_CONTEXT_CODEC.createCheckpointContinuationMessage(checkpointRef as never)
     expect(message.source).toMatchObject({ kind: 'plugin', plugin: AGENT_TEAM_PLUGIN_ID, form: 'snapshot' })
     expect(continuationCheckpointRefOf(message)).toBe(checkpointRef)
   })
@@ -413,7 +414,7 @@ describe('AgentTeam context projection — timeline boundaries', () => {
   it('a handoff delivery becomes a handoff boundary resolved by its turn end', () => {
     const events = [
       turnStart(1),
-      userMessageEvent(createHandoffMessage({ handoff: 'seed text', previousSessionId: 'session:a' as never, newSessionId: 'session:b' as never, trigger: 'model', handoffEventSeq: 5 as never })),
+      userMessageEvent(TEAM_CONTEXT_CODEC.createHandoffMessage({ handoff: 'seed text', previousSessionId: 'session:a' as never, newSessionId: 'session:b' as never, trigger: 'model', handoffEventSeq: 5 as never })),
       turnEnd(1),
     ]
     const state = foldContextProjection(events, undefined, SID)
@@ -440,7 +441,7 @@ describe('AgentTeam context projection — timeline boundaries', () => {
   it('a structured Team notice is a team boundary on its Thread\'s first arrival; a relay DM and a checkpoint continuation are not', () => {
     const notice = createUserMessage({ content: [{ type: 'text', text: 'Direct Team mention\nThread: thread:4d5e6f70-8b9c-4d5e-0f1a-2b3c4d5e6f70' }], source: { kind: 'plugin', plugin: '@wowyuarm/dsh-agent-team', form: 'notice', summary: 'Team Inbox has unread work.' } })
     const relay = createUserMessage({ content: [{ type: 'text', text: 'dm' }], source: { kind: 'plugin', plugin: '@wowyuarm/dsh-agent-team', form: 'relay' } })
-    const continuation = createCheckpointContinuationMessage(checkpointRefFor(SID, 'call-cp'))
+    const continuation = TEAM_CONTEXT_CODEC.createCheckpointContinuationMessage(checkpointRefFor(SID, 'call-cp'))
     const events = [
       turnStart(1),
       userMessageEvent(notice),
@@ -502,7 +503,7 @@ describe('AgentTeam context projection — timeline boundaries', () => {
       ...checkpointPair(1, 'call-inherited', 'anchor'),
       turnEnd(1),
       turnStart(2),
-      userMessageEvent(createCheckpointContinuationMessage(checkpointRefFor(SID, 'call-inherited'))),
+      userMessageEvent(TEAM_CONTEXT_CODEC.createCheckpointContinuationMessage(checkpointRefFor(SID, 'call-inherited'))),
       turnEnd(2),
     ]
     const inherited = parentEvents.length
