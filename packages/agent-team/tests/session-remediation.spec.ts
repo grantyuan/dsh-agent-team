@@ -213,9 +213,9 @@ describe('legacy source rewriting', () => {
   })
 
   it('treats a rescued legacy handoff as already present in the generation log', () => {
-    const noBoundaries: readonly { readonly source: string }[] = []
+    const noBoundaries: readonly { readonly kind: string }[] = []
     // The admitted shape is recognized through the projection boundary...
-    expect(handoffAlreadyInLog([{ source: 'handoff' }], [])).toBe(true)
+    expect(handoffAlreadyInLog([{ kind: 'handoff' }], [])).toBe(true)
     // ...and the retired shape through the log evidence itself, which is what
     // the projection cannot classify: rebuilding on top of it would inject the
     // same handoff a second time.

@@ -31,7 +31,7 @@ import SystemPrompt from '@deepseek-ai/dsh-system-prompt'
 import ToolRuntime from '@deepseek-ai/dsh-tools'
 import { WorkspaceId } from '@deepseek-ai/dsh-workspace'
 import AgentTeam, { AGENT_TEAM_HUMAN_MEMBER_ID, AGENT_TEAM_TOOL_NAMES, isTsxDevMode, markAgentTeamPreset, teamPresetScopeMismatchMessage } from '../src/index.ts'
-import { checkpointRefFor, foldContextProjection } from '../src/context-projection.ts'
+import { checkpointRefFor, foldTeamContextProjection } from '../src/context-projection.ts'
 import { AGENT_TEAM_PLUGIN_ID, continuationCheckpointRefOf, handoffOf, isCheckpointContinuationMessage, isHandoffMessage } from '../src/context-source.ts'
 import { RECOVERY_DELAY_MS } from '../src/recovery.ts'
 import type { AgentTeamChannelRef, AgentTeamClaimRef, AgentTeamMemberId, AgentTeamRequestId } from '../src/types.ts'
@@ -1601,7 +1601,7 @@ describe('Agent Team fresh context_rollover rollover (ticket 01)', () => {
       return JSON.stringify(event.data.message.content).includes('does not resolve in this Member\'s lineage')
     })
     expect(rejection).toBeDefined()
-    const poisoned = foldContextProjection(live.session.ownEvents(), live.session.inheritedEventCount, live.session.id)
+    const poisoned = foldTeamContextProjection(live.session.ownEvents(), { sessionId: live.session.id, inheritedEventCount: live.session.inheritedEventCount })
     expect(poisoned.pending).toBeNull()
 
     // An explicit later-turn fresh rollover still succeeds: the refused
@@ -1651,7 +1651,7 @@ describe('Agent Team fresh context_rollover rollover (ticket 01)', () => {
     const current = ctx.agentTeam.members().find(status => status.member.memberId === memberId)!
     expect(current.member.sessionId).toBe(sessionId)
     expect(() => ctx.agentTeam.validateLedger()).not.toThrow()
-    const poisoned = foldContextProjection(live.session.ownEvents(), live.session.inheritedEventCount, live.session.id)
+    const poisoned = foldTeamContextProjection(live.session.ownEvents(), { sessionId: live.session.id, inheritedEventCount: live.session.inheritedEventCount })
     expect(poisoned.pending).toMatchObject({ toolCallId: 'call-seam-nc' })
     expect(poisoned.pending?.turnEndSeq).not.toBe(-1)
 
@@ -1666,7 +1666,7 @@ describe('Agent Team fresh context_rollover rollover (ticket 01)', () => {
     // the spent pending intent in the projection — the poison state is
     // provably undone at the fold before the binding moves.
     const replaced = await waitFor(() => {
-      const state = foldContextProjection(live.session.ownEvents(), live.session.inheritedEventCount, live.session.id)
+      const state = foldTeamContextProjection(live.session.ownEvents(), { sessionId: live.session.id, inheritedEventCount: live.session.inheritedEventCount })
       return state.pending?.toolCallId === 'call-seam-retry' && state.pending.turnEndSeq !== -1 ? state : undefined
     })
     expect(replaced.pending).toMatchObject({ handoff: 'explicit fresh retry after the seam failure' })
@@ -2131,7 +2131,7 @@ describe('Agent Team checkpoint selection and return (ticket 02)', () => {
     expect(turnEnds).toHaveLength(1)
     const results = events.filter(event => event.type === 'tool/result')
     expect(results.length).toBe(2)
-    const state = foldContextProjection(events, undefined, live.session.id)
+    const state = foldTeamContextProjection(events, { sessionId: live.session.id })
     expect(state.checkpoints).toHaveLength(1)
     expect(state.checkpoints[0]!.turnEndSeq).toBe(turnEnds[0]!.seq)
   })
@@ -2155,7 +2155,7 @@ describe('Agent Team checkpoint selection and return (ticket 02)', () => {
     const events = live.session.ownEvents()
     const turns = events.filter(event => event.type === 'turn/start')
     expect(turns).toHaveLength(1)
-    const state = foldContextProjection(events, undefined, live.session.id)
+    const state = foldTeamContextProjection(events, { sessionId: live.session.id })
     expect(state.checkpoints).toHaveLength(0)
     expect(state.continuations).toHaveLength(0)
   })
@@ -2277,7 +2277,7 @@ describe('Agent Team checkpoint selection and return (ticket 02)', () => {
     }) ? true : undefined)
     await live.whenIdle()
     const anchorEvents = live.session.ownEvents().length
-    const anchorTurnEndSeq = foldContextProjection(live.session.ownEvents(), undefined, live.session.id).checkpoints[0]!.turnEndSeq
+    const anchorTurnEndSeq = foldTeamContextProjection(live.session.ownEvents(), { sessionId: live.session.id }).checkpoints[0]!.turnEndSeq
 
     adapter.enqueue(textResponse('noisy branch work.'))
     live.followup(createUserMessage({ content: [{ type: 'text', text: 'now make some noise' }], source: { kind: 'user' } }))
@@ -2319,7 +2319,7 @@ describe('Agent Team checkpoint selection and return (ticket 02)', () => {
     // Inherited historical intent stays inert: the inherited prefix's
     // checkpoint history is visible, but no continuation or rollover is
     // rescheduled from it.
-    const state = foldContextProjection(own, next.session.inheritedEventCount, next.session.id)
+    const state = foldTeamContextProjection(own, { sessionId: next.session.id, inheritedEventCount: next.session.inheritedEventCount })
     expect(state.pending).toBeNull()
     expect(state.continuations).toHaveLength(0)
     // The old generation archived; the ledger records the seed fields.
@@ -2389,7 +2389,7 @@ describe('Agent Team checkpoint lineage (ticket 02 ancestors)', () => {
     await waitForArchived(archived, firstSessionId, secondSessionId)
     expect(archived).not.toContain(thirdSessionId)
     // The inherited prefix is exactly the ancestor's anchor cut.
-    const gen1Fold = foldContextProjection(gen1.session.ownEvents(), undefined, firstSessionId)
+    const gen1Fold = foldTeamContextProjection(gen1.session.ownEvents(), { sessionId: firstSessionId })
     const anchor = gen1Fold.checkpoints.find(entry => entry.checkpointRef === checkpointRefFor(firstSessionId, 'call-anc-cp'))!
     expect(gen3.session.inheritedEventCount).toBe(anchor.turnEndSeq + 1)
     // The handoff is the first own model-facing context of generation 3.
@@ -2416,7 +2416,7 @@ describe('Agent Team checkpoint lineage (ticket 02 ancestors)', () => {
     adapter.enqueue(toolCallResponse('call-repair-cp', 'context_checkpoint', { name: 'pre-crash anchor' }))
     const live = ctx.agents.get(sessionId)!
     live.followup(createUserMessage({ content: [{ type: 'text', text: 'checkpoint before the crash' }], source: { kind: 'user' } }))
-    await waitFor(() => foldContextProjection(live.session.ownEvents(), undefined, live.session.id).checkpoints.some(entry => entry.turnEndSeq !== -1) ? true : undefined)
+    await waitFor(() => foldTeamContextProjection(live.session.ownEvents(), { sessionId: live.session.id }).checkpoints.some(entry => entry.turnEndSeq !== -1) ? true : undefined)
     await live.whenIdle()
     await new Promise(resolve => setTimeout(resolve, 50))
     const deliveredBeforeRestart = live.session.ownEvents().filter(event => event.type === 'user/message'
@@ -3069,9 +3069,9 @@ describe('Agent Team recovery hardening (ticket 04)', () => {
     adapter.enqueue(textResponse('anchored.'))
     const live = ctx.agents.get(firstSessionId)!
     live.followup(createUserMessage({ content: [{ type: 'text', text: 'record the anchor' }], source: { kind: 'user' } }))
-    await waitFor(() => foldContextProjection(live.session.ownEvents(), undefined, live.session.id).checkpoints.some(entry => entry.turnEndSeq !== -1) ? true : undefined)
+    await waitFor(() => foldTeamContextProjection(live.session.ownEvents(), { sessionId: live.session.id }).checkpoints.some(entry => entry.turnEndSeq !== -1) ? true : undefined)
     await live.whenIdle()
-    const anchorTurnEndSeq = foldContextProjection(live.session.ownEvents(), undefined, live.session.id).checkpoints[0]!.turnEndSeq
+    const anchorTurnEndSeq = foldTeamContextProjection(live.session.ownEvents(), { sessionId: live.session.id }).checkpoints[0]!.turnEndSeq
 
     adapter.enqueue(textResponse('noise past the anchor.'))
     live.followup(createUserMessage({ content: [{ type: 'text', text: 'make some noise' }], source: { kind: 'user' } }))
@@ -3801,7 +3801,7 @@ describe('Agent Team recovery hardening (ticket 04)', () => {
       // Only the rollover turn counts: the pending intent must already be
       // durable, or the injected input would be consumed by that same turn
       // instead of riding behind the handoff.
-      const state = foldContextProjection(live.session.ownEvents(), undefined, live.session.id)
+      const state = foldTeamContextProjection(live.session.ownEvents(), { sessionId: live.session.id })
       if (state.pending === null) return
       injected = true
       queueMicrotask(() => {
@@ -3855,7 +3855,7 @@ describe('Agent Team recovery hardening (ticket 04)', () => {
     let injected = false
     const disposeObserver = ctx.on('session/event', (session, event) => {
       if (session.id !== firstSessionId || event.type !== 'turn/end' || injected) return
-      const state = foldContextProjection(live.session.ownEvents(), undefined, live.session.id)
+      const state = foldTeamContextProjection(live.session.ownEvents(), { sessionId: live.session.id })
       if (state.pending === null) return
       injected = true
       queueMicrotask(() => {
@@ -3954,7 +3954,7 @@ describe('Agent Team recovery hardening (ticket 04)', () => {
     adapter.enqueue(textResponse('big anchor recorded.'))
     const live = ctx.agents.get(firstSessionId)!
     live.followup(createUserMessage({ content: [{ type: 'text', text: 'record the big anchor' }], source: { kind: 'user' } }))
-    await waitFor(() => foldContextProjection(live.session.ownEvents(), undefined, live.session.id).checkpoints.some(entry => entry.turnEndSeq !== -1) ? true : undefined)
+    await waitFor(() => foldTeamContextProjection(live.session.ownEvents(), { sessionId: live.session.id }).checkpoints.some(entry => entry.turnEndSeq !== -1) ? true : undefined)
     await live.whenIdle()
 
     // Fresh rollover into a small generation 2: the current child is cheap,
@@ -4007,7 +4007,7 @@ describe('Agent Team recovery hardening (ticket 04)', () => {
     adapter.enqueue(textResponse('anchor recorded.'))
     const live = ctx.agents.get(firstSessionId)!
     live.followup(createUserMessage({ content: [{ type: 'text', text: 'record the anchor' }], source: { kind: 'user' } }))
-    await waitFor(() => foldContextProjection(live.session.ownEvents(), undefined, live.session.id).checkpoints.some(entry => entry.turnEndSeq !== -1) ? true : undefined)
+    await waitFor(() => foldTeamContextProjection(live.session.ownEvents(), { sessionId: live.session.id }).checkpoints.some(entry => entry.turnEndSeq !== -1) ? true : undefined)
     await live.whenIdle()
 
     adapter.enqueue(toolCallResponse('call-unmeas-nc', 'context_rollover', { handoff: 'fresh generation' }))

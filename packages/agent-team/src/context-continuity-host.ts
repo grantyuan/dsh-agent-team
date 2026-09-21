@@ -10,11 +10,9 @@
  * Member vocabulary and the ledger-backed lifecycle behind
  * {@link TeamContextContinuityOptions.executeTransition}.
  *
- * The projection bridge is deliberately thin and temporary: the engine
- * coordinator reads the same facts Team's own fold already derives, so phase 1
- * maps the existing state instead of moving the fold. Phase 2 replaces both
- * the fold and this bridge with the engine's projection unit, at which point
- * `boundaries` carry real topic attributions.
+ * The projection state this host hands the coordinator is the engine's own
+ * (`ContextProjectionState`), read from the unit `context-projection.ts`
+ * registers once per Host — one state shape, one fold, no translation.
  * @module @wowyuarm/dsh-agent-team/context-continuity-host
  */
 
@@ -33,7 +31,6 @@ import {
 } from '@wowyuarm/dsh-context-continuity'
 import { SessionId as SessionIdBrand } from '@deepseek-ai/dsh-session'
 import { AGENT_TEAM_PLUGIN_ID } from './context-source.ts'
-import type { AgentTeamContextProjectionState } from './context-projection.ts'
 import type { AgentTeamAgentMember, AgentTeamMemberId, AgentTeamRolloverSessionRequest } from './types.ts'
 
 /**
@@ -50,24 +47,17 @@ export const TEAM_CONTEXT_CODEC = new ContextMessageCodec({
   handoffVerifyNote: 'Your handoff from the previous context follows. Verify external state before relying on it; a context change never rolls back files, processes, Team facts, or remote side effects.',
 })
 
-/**
- * One Member's fold state plus the Session facts the engine state carries.
- * `inheritedEventCount` is the fork-inherited prefix length of the folded
- * Session: the engine skips that prefix so a seeded successor never adopts its
- * ancestor's facts as its own.
- */
-export interface TeamProjectionSnapshot {
-  readonly state: AgentTeamContextProjectionState
-  readonly inheritedEventCount: number
-}
-
 export interface TeamContextContinuityOptions {
   /** Resolve the live Agent of one Member; undefined leaves intent parked. */
   readonly agentForMember: (memberId: AgentTeamMemberId) => Agent | undefined
   /** Resolve the durable Member of one live Agent. */
   readonly memberForAgent: (agent: Agent) => AgentTeamAgentMember | undefined
-  /** Fold one Member Session's projection state from its durable events. */
-  readonly projectionForMember: (memberId: AgentTeamMemberId, sessionId: SessionId) => TeamProjectionSnapshot | undefined
+  /**
+   * Read one Member Session's engine-folded continuity state: the unit
+   * registered by `context-projection.ts`, or undefined when the Member has no
+   * live Session with that id (the coordinator leaves intent parked).
+   */
+  readonly projectionForMember: (memberId: AgentTeamMemberId, sessionId: SessionId) => ContextProjectionState | undefined
   /**
    * Execute one prepared Member generation swap at a true idle boundary:
    * commit, dispose, archive, create/activate, deliver the handoff first,
@@ -98,9 +88,7 @@ export class TeamContextContinuityHost implements ContextContinuityHost<AgentTea
   }
 
   projectionForSubject(memberId: AgentTeamMemberId, sessionId: SessionId): ContextProjectionState | undefined {
-    const snapshot = this.options.projectionForMember(memberId, sessionId)
-    if (snapshot === undefined) return undefined
-    return toEngineProjectionState(snapshot, sessionId)
+    return this.options.projectionForMember(memberId, sessionId)
   }
 
   executeTransition(memberId: AgentTeamMemberId, plan: TransitionPlan): Promise<void> {
@@ -141,46 +129,4 @@ export class TeamContextContinuityHost implements ContextContinuityHost<AgentTea
 /** Build the engine coordinator over Team's Member lifecycle. */
 export function createTeamContextManagement(options: TeamContextContinuityOptions): ContextContinuityCoordinator<AgentTeamMemberId> {
   return new ContextContinuityCoordinator(new TeamContextContinuityHost(options), TEAM_CONTEXT_CODEC)
-}
-
-/**
- * Map one Team fold state onto the engine's read-only state. Field by field:
- * every universal fact is already the same shape; the Team-specific parts are
- * the carried candidate's message (the engine keys carry by message id, the
- * fold keeps the message), the boundary's `source`/`seq` naming, and the
- * Thread-attributed `seenThreads` topic list.
- *
- * Exported because the Host also hands a cold fold straight to engine calls
- * (`repairContinuations` during activation); phase 2 deletes this function
- * together with the fold it maps.
- */
-export function toEngineProjectionState(snapshot: TeamProjectionSnapshot, sessionId: SessionId): ContextProjectionState {
-  const { state } = snapshot
-  return {
-    sessionId,
-    inheritedEventCount: snapshot.inheritedEventCount,
-    checkpoints: state.checkpoints,
-    pending: state.pending,
-    continuations: state.continuations,
-    carriedCandidates: state.carriedCandidates.map(candidate => ({
-      messageId: candidate.message.id,
-      surfacedTurn: candidate.surfacedTurn,
-      consumed: candidate.consumed,
-    })),
-    lastTurn: state.lastTurn,
-    openCalls: state.openCalls,
-    boundaries: state.boundaries.map(boundary => ({
-      kind: boundary.source,
-      label: boundary.label,
-      resultSeq: boundary.seq,
-      turn: boundary.turn,
-      turnEndSeq: boundary.turnEndSeq,
-      // Team's boundary keys are Session-local anchors, not topics: the
-      // engine's default-anchor policy needs the Thread a boundary belongs to,
-      // which the fold does not carry yet. Phase 2 supplies it.
-      attributions: [],
-    })),
-    seenTopics: state.seenThreads,
-    lastTurnEndSeq: state.lastTurnEndSeq,
-  }
 }

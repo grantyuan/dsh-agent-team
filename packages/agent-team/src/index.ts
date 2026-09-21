@@ -28,11 +28,10 @@ import { HUMAN_PROFILE_DEFAULT_NAME, HUMAN_PROFILE_REPO_URL, HUMAN_PROFILE_SETTI
 import { humanAvatarsRoot, readHumanAvatar, removeHumanAvatar, writeHumanAvatar } from './human-avatar.ts'
 import { createHumanUpdateChecker } from './human-update-check.ts'
 import { PressurePolicyCoordinator } from './pressure-policy.ts'
-import type { TransitionPlan } from '@wowyuarm/dsh-context-continuity'
-import { createTeamContextManagement, TEAM_CONTEXT_CODEC, toEngineProjectionState } from './context-continuity-host.ts'
+import { CONTEXT_CONTINUITY_PROJECTION_KEY, type ContextProjectionState, type TransitionPlan } from '@wowyuarm/dsh-context-continuity'
+import { createTeamContextManagement, TEAM_CONTEXT_CODEC } from './context-continuity-host.ts'
 import { AGENT_TEAM_PLUGIN_ID } from './context-source.ts'
-import { carriedInputOf, checkpointByRef, checkpointRefFor, contextProjectionFold, foldContextProjection, isReminderNoticeSummary, timelineCandidates, type AgentTeamContextProjectionState, type TimelineCandidate } from './context-projection.ts'
-import { advanceOwnedSessionEventCursor, type OwnedSessionEventCursor } from './session-event-cursor.ts'
+import { boundaryByRef, carriedInputOf, checkpointByRef, checkpointRefFor, createTeamContextProjectionDefinition, foldTeamContextProjection, isReminderNoticeSummary, TeamContextProjectionHost, timelineCandidates, type TimelineCandidate } from './context-projection.ts'
 import { AGENT_TEAM_HUMAN_MEMBER_ID, AgentTeamLedger, agentTeamHumanActor, type AgentTeamDurableMemberResult } from './ledger.ts'
 import { AGENT_TEAM_TOOL_NAMES, deepCopyCapabilities, memberMemoryDirectoryName, MemberRuntime } from './member-runtime.ts'
 import type { MemberSkillSelectionRef } from './member-skills.ts'
@@ -356,6 +355,7 @@ export default class AgentTeam extends TypertRemoteService {
     'agentPresets',
     'tools',
     'sessionPersistence',
+    'sessionProjections',
   ]
 
   private domain?: Domain<typeof agentTeamDomainSpec>
@@ -427,18 +427,21 @@ export default class AgentTeam extends TypertRemoteService {
     },
   })
   /**
-   * Incremental fold state for {@link contextManagement}'s projection lookup:
-   * one entry per Member, replaced when that Member's Session changes. Keying
-   * by Member rather than by Session id is what bounds the map — a rollover
-   * that leaves the previous generation's projection behind retains it for the
-   * life of the process, and only the current Session can ever read it.
+   * Team's domain half of the continuity projection: the durable ref naming,
+   * the Team-notice rule, and the boundary judgement (committed messages,
+   * claim changes, first Thread arrivals). Its claim attribution resolves the
+   * Task's Thread through the ledger, which is why the resolver reads
+   * `this.ledger` lazily — the fold may run before the domain is open, and an
+   * unattributed boundary is still a valid anchor.
    */
-  private readonly contextCursors = new Map<AgentTeamMemberId, OwnedSessionEventCursor<AgentTeamContextProjectionState>>()
+  private readonly contextProjectionHost = new TeamContextProjectionHost({
+    threadForTask: taskRef => this.ledger?.threadForTask(taskRef),
+  })
   /**
    * Context self-management: the one deep module that turns a Member's
    * successful `context_rollover` tool result into its next private context
-   * generation. The ledger owns the binding audit, the Session projection
-   * owns intent, and this coordinator owns only reconstructible process
+   * generation. The ledger owns the binding audit, the engine's projection
+   * unit owns intent, and this coordinator owns only reconstructible process
    * state. See docs/architecture.md and docs/team-collaboration.md.
    */
   private readonly contextManagement = createTeamContextManagement({
@@ -447,21 +450,11 @@ export default class AgentTeam extends TypertRemoteService {
     projectionForMember: (memberId, sessionId) => {
       const handle = this.handles.get(memberId)
       if (handle === undefined || handle.agent.session.id !== sessionId) return undefined
-      const session = handle.agent.session
-      // The projection is read on every successful tool result and turn end, so
-      // it folds incrementally. The entry is keyed by Member and carries the
-      // Session it was built from: this Session's log keeps growing, a rollover
-      // replaces the entry instead of resuming from its predecessor's cursor,
-      // and a rewritten log falls back to a cold fold inside the cursor.
-      const owned = advanceOwnedSessionEventCursor(
-        this.contextCursors.get(memberId),
-        session.id,
-        contextProjectionFold(session.id),
-        session.ownEvents(),
-        session.inheritedEventCount,
-      )
-      this.contextCursors.set(memberId, owned)
-      return { state: owned.cursor.value, inheritedEventCount: session.inheritedEventCount }
+      // The engine's registered unit folds this Session's durable log (replay
+      // on attach, then incrementally per committed event) and keys every ref
+      // to the Session that recorded it; the registry materializes the cell
+      // lazily, so a Member that has not folded yet is built on this read.
+      return this.ctx.sessionProjections.stateOf(handle.agent.session, CONTEXT_CONTINUITY_PROJECTION_KEY)
     },
     executeTransition: (memberId, plan) => this.executeMemberTransition(memberId, plan),
     log: message => { this.ctx.logger.warn(`agent-team: ${message}`) },
@@ -562,6 +555,14 @@ export default class AgentTeam extends TypertRemoteService {
 
   /** Open the durable ledger and restore every enabled Member independently. */
   protected async [Service.init](): Promise<void> {
+    // The continuity projection registers once per Host: the framework keeps
+    // one unit per projection key and drives it for every Session, so Team's
+    // fold is session-agnostic and the state carries the identity it folds.
+    // The registration rides this plugin's fiber — unloading Team removes the
+    // key (and its cached cells) from later drives and snapshots.
+    this.ctx.effect(() => this.ctx.root.sessionProjections.register(
+      createTeamContextProjectionDefinition(this.contextProjectionHost),
+    ), 'agentTeam.contextProjection')
     this.ctx.on('agent/error', ({ agent, error }) => {
       const member = this.memberForAgent(agent)
       if (member === undefined) return
@@ -1057,8 +1058,13 @@ export default class AgentTeam extends TypertRemoteService {
       // to override the fold.
       const preRetireCapture = this.contextManagement.drainCapturedInput(memberId)
       await this.retireMemberGeneration(memberId, active, plan.previousSessionId)
-      const finalState = foldContextProjection(active.agent.session.ownEvents(), active.agent.session.inheritedEventCount, active.agent.session.id)
-      const foldedCarried = carriedInputOf(finalState)
+      const finalEvents = active.agent.session.ownEvents()
+      const finalState = foldTeamContextProjection(
+        finalEvents,
+        { sessionId: active.agent.session.id, inheritedEventCount: active.agent.session.inheritedEventCount },
+        this.contextProjectionHost,
+      )
+      const foldedCarried = carriedInputOf(finalState, finalEvents)
       const carriedById = new Map(plan.carriedInput.map(message => [message.id, message]))
       for (const message of foldedCarried) carriedById.set(message.id, message)
       for (const message of preRetireCapture) if (!carriedById.has(message.id)) carriedById.set(message.id, message)
@@ -1748,19 +1754,19 @@ export default class AgentTeam extends TypertRemoteService {
       // Fold the source with its inherited cut respected: inherited events
       // are resolved history in that source, never fresh intent; checkpoints
       // recorded in this source's own span are the selectable targets.
-      const state = foldContextProjection(events, inheritedEventCount, sessionId)
+      const state = foldTeamContextProjection(events, { sessionId, inheritedEventCount }, this.contextProjectionHost)
       // A Team-boundary default checkpoint: the boundary's completed-turn
       // anchor is the seed cut, and it is selectable exactly when one
       // Thread's facts entered the context through it — the same proof the
       // timeline requires, revalidated here because the model may cite a
       // boundary the timeline never surfaced.
       const boundary = checkpointRef.startsWith('team-boundary-')
-        ? state.boundaries.find(entry => entry.key === checkpointRef)
+        ? boundaryByRef(state, checkpointRef)
         : undefined
       const entry = checkpointByRef(state, checkpointRef)
       const anchorTurnEndSeq = boundary !== undefined ? boundary.turnEndSeq : entry?.turnEndSeq
       if (anchorTurnEndSeq !== undefined && anchorTurnEndSeq !== -1) {
-        if (boundary !== undefined && boundary.source !== 'team-boundary') {
+        if (boundary !== undefined && boundary.kind !== 'team-boundary') {
           throw new Error(`checkpoint '${checkpointRef}' is not a restorable boundary`)
         }
         // The seed is the exact contiguous prefix through the anchor's
@@ -1829,7 +1835,11 @@ export default class AgentTeam extends TypertRemoteService {
       return
     }
     const inspection = previousRead.inspection
-    const state = foldContextProjection(inspection.events, inspection.inheritedEventCount, previousSessionId)
+    const state = foldTeamContextProjection(
+      inspection.events,
+      { sessionId: previousSessionId, inheritedEventCount: inspection.inheritedEventCount },
+      this.contextProjectionHost,
+    )
     if (state.pending === null) return
     const pending = state.pending
     const message = TEAM_CONTEXT_CODEC.createHandoffMessage({
@@ -1867,9 +1877,13 @@ export default class AgentTeam extends TypertRemoteService {
     if (!Number.isSafeInteger(through) || through < 0 || through > inspection.events.length) {
       throw new Error(`the recorded checkpoint-return seed cut ${through} is not a valid prefix of Session '${seed.sourceSessionId}'`)
     }
-    const state = foldContextProjection(inspection.events, inspection.inheritedEventCount, seed.sourceSessionId)
+    const state = foldTeamContextProjection(
+      inspection.events,
+      { sessionId: seed.sourceSessionId, inheritedEventCount: inspection.inheritedEventCount },
+      this.contextProjectionHost,
+    )
     const anchorProven = checkpointByRef(state, seed.checkpointRef) !== undefined
-      || state.boundaries.some(boundary => boundary.key === seed.checkpointRef)
+      || boundaryByRef(state, seed.checkpointRef) !== undefined
     if (!anchorProven) {
       throw new Error(`the recorded checkpoint-return anchor '${seed.checkpointRef}' no longer resolves in Session '${seed.sourceSessionId}'`)
     }
@@ -1935,8 +1949,12 @@ export default class AgentTeam extends TypertRemoteService {
     }
     inspectionEvents = previousRead.inspection.events
     inspectionInherited = previousRead.inspection.inheritedEventCount
-    const state = foldContextProjection(inspectionEvents, inspectionInherited, transition.previousSessionId)
-    const carried = carriedInputOf(state)
+    const state = foldTeamContextProjection(
+      inspectionEvents,
+      { sessionId: transition.previousSessionId, inheritedEventCount: inspectionInherited },
+      this.contextProjectionHost,
+    )
+    const carried = carriedInputOf(state, inspectionEvents)
     if (carried.length === 0) return 0
     const known = new Set<string>()
     for (const event of agent.session.ownEvents()) {
@@ -2004,14 +2022,18 @@ export default class AgentTeam extends TypertRemoteService {
     let live = true
     let guard = 0
     while (sessionId !== undefined && guard++ < MAX_TIMELINE_ANCESTORS) {
-      let state: AgentTeamContextProjectionState | undefined
+      let state: ContextProjectionState | undefined
       let sourceSessionId = sessionId
       let sourceEvents: readonly SessionEvent[] = []
       // Capture this iteration's source identity BEFORE the branch advances
       // the lineage flag: measurement and discard pricing both key on it.
       const sourceIsCurrent = live
       if (live) {
-        state = foldContextProjection(agent.session.ownEvents(), agent.session.inheritedEventCount, agent.session.id)
+        state = foldTeamContextProjection(
+          agent.session.ownEvents(),
+          { sessionId: agent.session.id, inheritedEventCount: agent.session.inheritedEventCount },
+          this.contextProjectionHost,
+        )
         sourceEvents = agent.session.snapshotEvents()
         sessionId = agent.session.header.parentSession
         live = false
@@ -2023,7 +2045,11 @@ export default class AgentTeam extends TypertRemoteService {
           incompleteFrom = { sessionId, reason: `${read.failure.kind}: ${read.failure.detail}` }
           sessionId = undefined
         } else {
-          state = foldContextProjection(read.inspection.events, read.inspection.inheritedEventCount, sessionId)
+          state = foldTeamContextProjection(
+            read.inspection.events,
+            { sessionId, inheritedEventCount: read.inspection.inheritedEventCount },
+            this.contextProjectionHost,
+          )
           sourceEvents = read.inspection.events
           sourceSessionId = sessionId
           sessionId = read.inspection.header.parentSession
@@ -2537,12 +2563,16 @@ export default class AgentTeam extends TypertRemoteService {
       // transition (or keep waiting for the containing turn) from here.
       if (persisted) {
         const inheritedEventCount = created.agent.session.inheritedEventCount
-        const state = foldContextProjection(created.agent.session.ownEvents(), inheritedEventCount, created.agent.session.id)
+        const state = foldTeamContextProjection(
+          created.agent.session.ownEvents(),
+          { sessionId: created.agent.session.id, inheritedEventCount },
+          this.contextProjectionHost,
+        )
         if (state.pending !== null) this.contextManagement.recoverPendingTransition(member.memberId, created.agent, member.sessionId)
         // A restart between one checkpoint's durable result and its quiet
         // follow-up delivery repairs exactly once; delivered continuations
         // stay delivered through the projection's own delivery record.
-        this.contextManagement.repairContinuations(created.agent, toEngineProjectionState({ state, inheritedEventCount }, created.agent.session.id))
+        this.contextManagement.repairContinuations(created.agent, state)
         // A restart after the rollover committed but before the handoff was
         // delivered activates the new Session with no handoff in its own
         // log — never treat that as an ordinary blank Member Session. The

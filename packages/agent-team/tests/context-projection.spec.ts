@@ -4,20 +4,37 @@ import { SessionLogOffset, SessionSeq, type SessionEvent } from '@deepseek-ai/ds
 
 /** Fixed Session identity for every fold in this spec; checkpoint refs key on it. */
 const SID = 'agent-team-test-session'
+import { continuationDelivered, type ContextProjectionState } from '@wowyuarm/dsh-context-continuity'
 import {
   CONTEXT_CHECKPOINT_TOOL_NAME,
   CONTEXT_ROLLOVER_TOOL_NAME,
   NEW_CONTEXT_TOOL_NAME,
-  agentTeamContextProjectionDefinition,
+  boundaryRefFor,
   checkpointRefFor,
-  continuationDelivered,
-  foldContextProjection,
+  createTeamContextProjectionDefinition,
+  foldTeamContextProjection,
+  TeamContextProjectionHost,
   timelineCandidates,
-  withScheduledContinuation,
-  type AgentTeamContextProjectionState,
 } from '../src/context-projection.ts'
 import { AGENT_TEAM_PLUGIN_ID, continuationCheckpointRefOf, handoffOf } from '../src/context-source.ts'
 import { TEAM_CONTEXT_CODEC } from '../src/context-continuity-host.ts'
+
+/**
+ * Team's projection host with no ledger attached: boundary attribution that
+ * resolves through the ledger (a claim mutation's Task→Thread) stays empty,
+ * exactly as it does before the domain is open. Cases that need a resolved
+ * attribution build their own host.
+ */
+const PROJECTION_HOST = new TeamContextProjectionHost()
+
+/** Fold one log through the engine's unit with Team's config — the production path. */
+function fold(events: readonly SessionEvent[], inheritedEventCount?: SessionLogOffset, sessionId: string = SID): ContextProjectionState {
+  return foldTeamContextProjection(
+    events,
+    { sessionId, ...(inheritedEventCount === undefined ? {} : { inheritedEventCount }) },
+    PROJECTION_HOST,
+  )
+}
 
 let eventSeq = 0
 function nextSeq(): SessionSeq {
@@ -85,7 +102,7 @@ describe('AgentTeam context projection — rollover intent', () => {
       ...legacyRolloverPair(1, 'call-1', { handoff: 'continue from here' }),
       turnEnd(1),
     ]
-    const state = foldContextProjection(events, undefined, SID)
+    const state = fold(events)
     expect(state.pending).toMatchObject({ handoff: 'continue from here', turn: 1, turnEndSeq: events.at(-1)!.seq })
     expect(state.pending?.resultSeq).toBe(events[2]!.seq)
     expect(state.pending?.relatedFiles).toEqual([])
@@ -100,7 +117,7 @@ describe('AgentTeam context projection — rollover intent', () => {
       toolResult(1, 'call-rollover'),
       turnEnd(1),
     ]
-    const state = foldContextProjection(events, undefined, SID)
+    const state = fold(events)
     expect(state.pending).toMatchObject({ handoff: 'new name, same swap', turn: 1 })
   })
 
@@ -116,7 +133,7 @@ describe('AgentTeam context projection — rollover intent', () => {
       toolResult(1, 'call-legacy'),
       turnEnd(1),
     ]
-    const legacyState = foldContextProjection(legacy, undefined, SID)
+    const legacyState = fold(legacy)
     expect(legacyState.pending).toMatchObject({ handoff: 'legacy intent' })
     expect(legacyState.pending?.checkpointRef).toBe('context-checkpoint-' + 'e'.repeat(64))
     // Mixed-era same-Session log: one Session's durable events carry the
@@ -129,45 +146,45 @@ describe('AgentTeam context projection — rollover intent', () => {
       toolResult(2, 'call-modern'),
       turnEnd(2),
     ]
-    const mixedState = foldContextProjection([...legacy, ...modern], undefined, SID)
+    const mixedState = fold([...legacy, ...modern], undefined, SID)
     expect(mixedState.pending).toMatchObject({ toolCallId: 'call-modern', handoff: 'modern intent', turn: 2 })
   })
 
   it('failed, dangling, or malformed results never create intent', () => {
     // Model-visible error result.
-    const failed = foldContextProjection([
+    const failed = fold([
       turnStart(1),
       contextToolCall(1, 'call-err', NEW_CONTEXT_TOOL_NAME, { handoff: 'x' }),
       toolResult(1, 'call-err', { isError: true }),
       turnEnd(1),
-    ], undefined, SID)
+    ])
     expect(failed.pending).toBeNull()
     // The landed error result consumed its paired open call: nothing stays
     // dangling, so a provider retry reusing the callId cannot pair a fresh
     // success result with these stale arguments.
     expect(failed.openCalls).toEqual([])
     // Internal failure identity on the result event.
-    const internal = foldContextProjection([
+    const internal = fold([
       turnStart(1),
       contextToolCall(1, 'call-int', NEW_CONTEXT_TOOL_NAME, { handoff: 'x' }),
       toolResult(1, 'call-int', { internalError: true }),
       turnEnd(1),
-    ], undefined, SID)
+    ])
     expect(internal.pending).toBeNull()
     // Dangling call: result never landed before the cut.
-    const dangling = foldContextProjection([
+    const dangling = fold([
       turnStart(1),
       contextToolCall(1, 'call-open', NEW_CONTEXT_TOOL_NAME, { handoff: 'x' }),
       turnEnd(1),
-    ], undefined, SID)
+    ])
     expect(dangling.pending).toBeNull()
     // Malformed arguments: empty handoff after trim.
-    const malformed = foldContextProjection([
+    const malformed = fold([
       turnStart(1),
       contextToolCall(1, 'call-bad', NEW_CONTEXT_TOOL_NAME, { handoff: '   ' }),
       toolResult(1, 'call-bad'),
       turnEnd(1),
-    ], undefined, SID)
+    ])
     expect(malformed.pending).toBeNull()
   })
 
@@ -178,7 +195,7 @@ describe('AgentTeam context projection — rollover intent', () => {
       ...legacyRolloverPair(1, 'call-2', { handoff: 'second' }),
       turnEnd(1),
     ]
-    const state = foldContextProjection(events, undefined, SID)
+    const state = fold(events)
     expect(state.pending?.handoff).toBe('first')
   })
 
@@ -198,7 +215,7 @@ describe('AgentTeam context projection — rollover intent', () => {
       ...legacyRolloverPair(2, 'call-fresh-retry', { handoff: 'explicit fresh retry' }),
       turnEnd(2),
     ]
-    const state = foldContextProjection(events, undefined, SID)
+    const state = fold(events)
     expect(state.pending).toMatchObject({ toolCallId: 'call-fresh-retry', handoff: 'explicit fresh retry', turn: 2 })
     expect(state.pending?.checkpointRef).toBeUndefined()
   })
@@ -218,7 +235,7 @@ describe('AgentTeam context projection — rollover intent', () => {
       toolResult(2, 'call-modern-retry'),
       turnEnd(2),
     ]
-    const state = foldContextProjection(events, undefined, SID)
+    const state = fold(events)
     expect(state.pending).toMatchObject({ toolCallId: 'call-modern-retry', handoff: 'modern retry', turn: 2 })
   })
 
@@ -240,7 +257,7 @@ describe('AgentTeam context projection — rollover intent', () => {
       toolResult(2, 'call-reused'),
       turnEnd(2),
     ]
-    const state = foldContextProjection(events, undefined, SID)
+    const state = fold(events)
     expect(state.pending).toMatchObject({ toolCallId: 'call-reused', handoff: 'fresh retry', turn: 2 })
     expect(state.pending?.checkpointRef).toBeUndefined()
     expect(state.openCalls).toEqual([])
@@ -255,7 +272,7 @@ describe('AgentTeam context projection — rollover intent', () => {
     const childEvents: SessionEvent[] = [...parentEvents, turnStart(2), turnEnd(2)]
     // The child inherited the whole parent prefix: the same events fold to no
     // pending intent once every one of them is inside the inherited cut.
-    const state = foldContextProjection(childEvents, SessionLogOffset(parentEvents.length), SID)
+    const state = fold(childEvents, SessionLogOffset(parentEvents.length))
     expect(state.pending).toBeNull()
     expect(state.checkpoints).toEqual([])
   })
@@ -266,10 +283,12 @@ describe('AgentTeam context projection — rollover intent', () => {
       ...legacyRolloverPair(1, 'call-1', { handoff: 'live', relatedFiles: [{ path: 'src/index.ts', reason: 'in progress' }] }),
       turnEnd(1),
     ]
-    const definition = agentTeamContextProjectionDefinition(SID)
-    let live = definition.init({} as never, 0 as never)
+    const definition = createTeamContextProjectionDefinition(PROJECTION_HOST)
+    // `init` seeds the Session identity and the inherited cut from the
+    // header — the definition itself closes over neither.
+    let live = definition.init({ id: SID } as never, 0 as never)
     for (const event of events) live = definition.apply(live, event)
-    expect(live).toEqual(foldContextProjection(events, undefined, SID))
+    expect(live).toEqual(fold(events))
   })
 })
 
@@ -280,7 +299,7 @@ describe('AgentTeam context projection — checkpoints', () => {
       ...checkpointPair(1, 'call-cp', 'before-rewrite'),
       turnEnd(1),
     ]
-    const state = foldContextProjection(events, undefined, SID)
+    const state = fold(events)
     expect(state.checkpoints).toHaveLength(1)
     expect(state.checkpoints[0]).toMatchObject({
       checkpointRef: checkpointRefFor(SID, 'call-cp'),
@@ -300,7 +319,7 @@ describe('AgentTeam context projection — checkpoints', () => {
       ...checkpointPair(2, 'call-b', 'same-name'),
       turnEnd(2),
     ]
-    const state = foldContextProjection(events, undefined, SID)
+    const state = fold(events)
     expect(state.checkpoints.map(entry => entry.name)).toEqual(['same-name', 'same-name'])
     expect(state.checkpoints[0]!.checkpointRef).not.toBe(state.checkpoints[1]!.checkpointRef)
   })
@@ -310,7 +329,7 @@ describe('AgentTeam context projection — checkpoints', () => {
       turnStart(1),
       ...checkpointPair(1, 'call-cp', 'open'),
     ]
-    const state = foldContextProjection(events, undefined, SID)
+    const state = fold(events)
     expect(state.checkpoints[0]!.turnEndSeq).toBe(-1)
   })
 
@@ -326,7 +345,7 @@ describe('AgentTeam context projection — checkpoints', () => {
       ...checkpointPair(1, hostile, 'hostile-anchor'),
       turnEnd(1),
     ]
-    const state = foldContextProjection(events, undefined, SID)
+    const state = fold(events)
     expect(state.checkpoints[0]!.checkpointRef).toBe(ref)
     // The same pair reproduces the ref; a different call id never collides.
     expect(checkpointRefFor(SID, hostile)).toBe(ref)
@@ -342,8 +361,8 @@ describe('AgentTeam context projection — checkpoints', () => {
     // checkpoints distinct and each resolves in its own Session's fold.
     const firstEvents = [turnStart(1), ...checkpointPair(1, callId, 'gen-one'), turnEnd(1)]
     const secondEvents = [turnStart(1), ...checkpointPair(1, callId, 'gen-two'), turnEnd(1)]
-    const firstState = foldContextProjection(firstEvents, undefined, 'agent-team-generation-one')
-    const secondState = foldContextProjection(secondEvents, undefined, 'agent-team-generation-two')
+    const firstState = fold(firstEvents, undefined, 'agent-team-generation-one')
+    const secondState = fold(secondEvents, undefined, 'agent-team-generation-two')
     expect(firstState.checkpoints[0]!.checkpointRef).toBe(first)
     expect(secondState.checkpoints[0]!.checkpointRef).toBe(second)
   })
@@ -357,23 +376,35 @@ describe('AgentTeam context projection — quiet continuation delivery', () => {
       turnEnd(1),
     ]
     const checkpointRef = checkpointRefFor(SID, 'call-cp')
-    const scheduled = withScheduledContinuation(foldContextProjection(events, undefined, SID), checkpointRef)
-    expect(continuationDelivered(scheduled, checkpointRef)).toBe(false)
-    const delivered = foldContextProjection([
+    // Nothing is delivered yet: the durable record is the message in the log,
+    // never a scheduled-but-unwritten intent (the live latch is the
+    // coordinator's, and it re-arms from this record after a restart).
+    expect(continuationDelivered(fold(events), checkpointRef)).toBe(false)
+    const delivered = fold([
       ...events,
       userMessageEvent(TEAM_CONTEXT_CODEC.createCheckpointContinuationMessage(checkpointRef as never)),
-    ], undefined, SID)
+    ])
     expect(continuationDelivered(delivered, checkpointRef)).toBe(true)
   })
 
-  it('scheduling twice is idempotent and delivery records only once', () => {
+  it('a repeated continuation notice keeps the first delivery seq', () => {
     const checkpointRef = checkpointRefFor(SID, 'call-x')
-    let state: AgentTeamContextProjectionState = { checkpoints: [], pending: null, continuations: [], carriedCandidates: [], lastTurn: 0, openCalls: [], boundaries: [], seenThreads: [], lastTurnEndSeq: -1 }
-    state = withScheduledContinuation(state, checkpointRef)
-    state = withScheduledContinuation(state, checkpointRef)
+    const continuation = TEAM_CONTEXT_CODEC.createCheckpointContinuationMessage(checkpointRef as never)
+    const events: SessionEvent[] = [
+      turnStart(1),
+      ...checkpointPair(1, 'call-x', 'anchor'),
+      turnEnd(1),
+      turnStart(2),
+      userMessageEvent(continuation),
+      turnEnd(2),
+      turnStart(3),
+      userMessageEvent(continuation),
+      turnEnd(3),
+    ]
+    const state = fold(events)
     expect(state.continuations).toHaveLength(1)
-    const delivered = foldContextProjection([userMessageEvent(TEAM_CONTEXT_CODEC.createCheckpointContinuationMessage(checkpointRef as never))], undefined, SID)
-    expect(continuationDelivered(delivered, checkpointRef)).toBe(true)
+    expect(state.continuations[0]!.deliveredSeq).toBe(events[5]!.seq)
+    expect(continuationDelivered(state, checkpointRef)).toBe(true)
   })
 })
 
@@ -417,11 +448,12 @@ describe('AgentTeam context projection — timeline boundaries', () => {
       userMessageEvent(TEAM_CONTEXT_CODEC.createHandoffMessage({ handoff: 'seed text', previousSessionId: 'session:a' as never, newSessionId: 'session:b' as never, trigger: 'model', handoffEventSeq: 5 as never })),
       turnEnd(1),
     ]
-    const state = foldContextProjection(events, undefined, SID)
+    const state = fold(events)
     expect(state.boundaries).toHaveLength(1)
-    expect(state.boundaries[0]).toMatchObject({ source: 'handoff', turnEndSeq: events.at(-1)!.seq })
+    expect(state.boundaries[0]).toMatchObject({ kind: 'handoff', turnEndSeq: events.at(-1)!.seq })
     const candidates = timelineCandidates(state, 12)
-    expect(candidates.some(candidate => candidate.ref === state.boundaries[0]!.key && candidate.source === 'handoff')).toBe(true)
+    const boundaryRef = boundaryRefFor(SID, state.boundaries[0]!.resultSeq)
+    expect(candidates.some(candidate => candidate.ref === boundaryRef && candidate.source === 'handoff')).toBe(true)
   })
 
   it('a Team claim mutation result becomes a team boundary; list calls do not', () => {
@@ -433,9 +465,9 @@ describe('AgentTeam context projection — timeline boundaries', () => {
       toolResult(1, 'call-list'),
       turnEnd(1),
     ]
-    const state = foldContextProjection(events, undefined, SID)
+    const state = fold(events)
     expect(state.boundaries).toHaveLength(1)
-    expect(state.boundaries[0]).toMatchObject({ source: 'team-boundary', label: 'Team task claim change' })
+    expect(state.boundaries[0]).toMatchObject({ kind: 'team-boundary', label: 'Team task claim change' })
   })
 
   it('a structured Team notice is a team boundary on its Thread\'s first arrival; a relay DM and a checkpoint continuation are not', () => {
@@ -449,9 +481,9 @@ describe('AgentTeam context projection — timeline boundaries', () => {
       userMessageEvent(continuation),
       turnEnd(1),
     ]
-    const state = foldContextProjection(events, undefined, SID)
+    const state = fold(events)
     expect(state.boundaries).toHaveLength(1)
-    expect(state.boundaries[0]!.source).toBe('team-boundary')
+    expect(state.boundaries[0]!.kind).toBe('team-boundary')
     // The boundary label states WHAT first arrived (the Thread), not the
     // notice's own generic "unread work" account — that is the decision
     // surface a checkpointRef pick needs.
@@ -463,17 +495,17 @@ describe('AgentTeam context projection — timeline boundaries', () => {
     // Team-owned structured deliveries, so the label falls back generically.
     const instructions = createUserMessage({ content: [{ type: 'text', text: 'identity\nThread: thread:5e6f7081-9c0d-4e5f-1a2b-3c4d5e6f7081' }], source: { kind: 'plugin', plugin: '@wowyuarm/dsh-agent-team', form: 'instructions' } })
     const events = [turnStart(1), userMessageEvent(instructions), turnEnd(1)]
-    const state = foldContextProjection(events, undefined, SID)
+    const state = fold(events)
     expect(state.boundaries).toHaveLength(1)
-    expect(state.boundaries[0]).toMatchObject({ source: 'team-boundary', label: 'First arrival: thread:5e6f7081-9c0d-4e5f-1a2b-3c4d5e6f7081' })
+    expect(state.boundaries[0]).toMatchObject({ kind: 'team-boundary', label: 'First arrival: thread:5e6f7081-9c0d-4e5f-1a2b-3c4d5e6f7081' })
   })
 
   it('a pre-compaction notice is a compaction boundary', () => {
     const preCompaction = createUserMessage({ content: [{ type: 'text', text: 'persist conclusions' }], source: { kind: 'plugin', plugin: '@wowyuarm/dsh-agent-team', form: 'notice', summary: 'Compaction is imminent; consider persisting key conclusions.' } })
     const events = [turnStart(1), userMessageEvent(preCompaction), turnEnd(1)]
-    const state = foldContextProjection(events, undefined, SID)
+    const state = fold(events)
     expect(state.boundaries).toHaveLength(1)
-    expect(state.boundaries[0]).toMatchObject({ source: 'compaction' })
+    expect(state.boundaries[0]).toMatchObject({ kind: 'compaction' })
   })
 
   it('timeline candidates order newest first, include the head, and respect the limit', () => {
@@ -484,7 +516,7 @@ describe('AgentTeam context projection — timeline boundaries', () => {
       const turn = index + 1
       events.push(turnStart(turn), ...checkpointPair(turn, `call-${name}`, name), turnEnd(turn))
     }
-    const state = foldContextProjection(events, undefined, SID)
+    const state = fold(events)
     const candidates = timelineCandidates(state, 2)
     expect(candidates).toHaveLength(2)
     // The head (latest completed turn) is newest; the third checkpoint is
@@ -508,7 +540,7 @@ describe('AgentTeam context projection — timeline boundaries', () => {
     ]
     const inherited = parentEvents.length
     const childEvents = [...parentEvents, turnStart(3), turnEnd(3)]
-    const state = foldContextProjection(childEvents, inherited as SessionLogOffset, SID)
+    const state = fold(childEvents, inherited as SessionLogOffset)
     expect(state.checkpoints).toHaveLength(0)
     expect(state.boundaries).toHaveLength(0)
     expect(state.continuations).toHaveLength(0)
@@ -528,10 +560,11 @@ describe('AgentTeam context projection — timeline boundaries', () => {
       userMessageEvent(createUserMessage({ content: [{ type: 'text', text: 'notice' }], source: { kind: 'plugin', plugin: '@wowyuarm/dsh-agent-team', form: 'notice', summary: 'Team Inbox has unread work.' } })),
       turnEnd(3),
     ]
-    const cold = foldContextProjection(events, undefined, SID)
-    let live = agentTeamContextProjectionDefinition(SID).init({} as never, 0 as never)
+    const cold = fold(events)
+    const definition = createTeamContextProjectionDefinition(PROJECTION_HOST)
+    let live = definition.init({ id: SID } as never, 0 as never)
     for (const event of events) {
-      live = agentTeamContextProjectionDefinition(SID).apply(live, event)
+      live = definition.apply(live, event)
     }
     expect(live).toEqual(cold)
   })
@@ -555,9 +588,9 @@ describe('AgentTeam context projection — effect-anchored team boundaries', () 
       userMessageEvent(teamNotice('Team Inbox has unread work.', 'Thread: thread:6f1c2d3e-4a5b-4c6d-8e7f-9a0b1c2d3e4f yet another update')),
       turnEnd(3),
     ]
-    const state = foldContextProjection(events, undefined, SID)
+    const state = fold(events)
     expect(state.boundaries).toHaveLength(1)
-    expect(state.boundaries[0]!.source).toBe('team-boundary')
+    expect(state.boundaries[0]!.kind).toBe('team-boundary')
   })
 
   it('a second Thread\'s first notice is still a boundary; per-Thread first arrival only', () => {
@@ -572,7 +605,7 @@ describe('AgentTeam context projection — effect-anchored team boundaries', () 
       userMessageEvent(teamNotice('Team Inbox has unread work.', 'Thread: thread:1a2b3c4d-5e6f-4a5b-8c9d-0e1f2a3b4c5d again — not a first arrival')),
       turnEnd(3),
     ]
-    const state = foldContextProjection(events, undefined, SID)
+    const state = fold(events)
     expect(state.boundaries).toHaveLength(2)
   })
 
@@ -585,7 +618,7 @@ describe('AgentTeam context projection — effect-anchored team boundaries', () 
       userMessageEvent(teamNotice('Recovery: continue your interrupted work.', 'recovery facts')),
       turnEnd(2),
     ]
-    const state = foldContextProjection(events, undefined, SID)
+    const state = fold(events)
     expect(state.boundaries).toHaveLength(0)
   })
 
@@ -608,7 +641,7 @@ describe('AgentTeam context projection — effect-anchored team boundaries', () 
       toolResult(4, 'call-msg-notfollowing', { meta: { kind: 'member_not_following', memberIds: ['member:x'] } }),
       turnEnd(4),
     ]
-    const state = foldContextProjection(events, undefined, SID)
+    const state = fold(events)
     expect(state.boundaries).toHaveLength(1)
     expect(state.boundaries[0]!.label).toBe('Team message')
   })
@@ -620,7 +653,7 @@ describe('AgentTeam context projection — effect-anchored team boundaries', () 
       toolResult(1, 'call-msg-err', { isError: true }),
       turnEnd(1),
     ]
-    const state = foldContextProjection(events, undefined, SID)
+    const state = fold(events)
     expect(state.boundaries).toHaveLength(0)
   })
 
@@ -635,7 +668,7 @@ describe('AgentTeam context projection — effect-anchored team boundaries', () 
       toolResult(2, 'call-start-legacy'),
       turnEnd(2),
     ]
-    const state = foldContextProjection(events, undefined, SID)
+    const state = fold(events)
     // The meta-bearing start is a boundary; the legacy no-meta start is not —
     // old logs refold under the new semantics without their start boundaries.
     expect(state.boundaries).toHaveLength(1)
@@ -649,7 +682,7 @@ describe('AgentTeam context projection — effect-anchored team boundaries', () 
       toolResult(1, 'call-dm', { meta: { kind: 'dm-sent', recipientMemberId: 'member:peer', recipientHandle: 'peer', delivered: true } }),
       turnEnd(1),
     ]
-    const state = foldContextProjection(events, undefined, SID)
+    const state = fold(events)
     expect(state.boundaries).toHaveLength(0)
   })
 
@@ -672,7 +705,7 @@ describe('AgentTeam context projection — effect-anchored team boundaries', () 
       toolResult(4, 'call-read'),
       turnEnd(4),
     ]
-    const state = foldContextProjection(events, undefined, SID)
+    const state = fold(events)
     expect(state.boundaries).toHaveLength(2)
     expect(state.boundaries.every(boundary => boundary.label === 'Team attention change')).toBe(true)
   })
@@ -692,7 +725,7 @@ describe('AgentTeam context projection — effect-anchored team boundaries', () 
       toolResult(3, 'call-read'),
       turnEnd(3),
     ]
-    const state = foldContextProjection(events, undefined, SID)
+    const state = fold(events)
     expect(state.boundaries).toHaveLength(0)
   })
 
@@ -703,7 +736,7 @@ describe('AgentTeam context projection — effect-anchored team boundaries', () 
       toolResult(1, 'call-claim'),
       turnEnd(1),
     ]
-    const state = foldContextProjection(events, undefined, SID)
+    const state = fold(events)
     expect(state.boundaries).toHaveLength(1)
     expect(state.boundaries[0]!.label).toBe('Team task claim change')
   })
@@ -727,10 +760,10 @@ describe('AgentTeam context projection — effect-anchored team boundaries', () 
       toolResult(3, 'call-old-claim'),
       turnEnd(3),
     ]
-    const refolded = foldContextProjection(events, undefined, SID)
+    const refolded = fold(events)
     expect(refolded.boundaries).toHaveLength(2)
     expect(refolded.boundaries.some(boundary => boundary.label === 'Team task claim change')).toBe(true)
-    expect(refolded.boundaries.filter(boundary => boundary.source === 'team-boundary' && boundary.label === 'First arrival: thread:3c4d5e6f-7a8b-4c5d-0e1f-2a3b4c5d6e7f')).toHaveLength(1)
+    expect(refolded.boundaries.filter(boundary => boundary.kind === 'team-boundary' && boundary.label === 'First arrival: thread:3c4d5e6f-7a8b-4c5d-0e1f-2a3b4c5d6e7f')).toHaveLength(1)
   })
 
   it('a first-arrival notice boundary labels the Thread it introduces, not the notice summary', () => {
@@ -743,7 +776,7 @@ describe('AgentTeam context projection — effect-anchored team boundaries', () 
       userMessageEvent(teamNotice('Team Inbox has unread work.', 'Direct Team mention\nThread: thread:4d5e6f70-8b9c-4d5e-0f1a-2b3c4d5e6f70 task handover')),
       turnEnd(1),
     ]
-    const state = foldContextProjection(events, undefined, SID)
+    const state = fold(events)
     expect(state.boundaries).toHaveLength(1)
     expect(state.boundaries[0]!.label).toBe('First arrival: thread:4d5e6f70-8b9c-4d5e-0f1a-2b3c4d5e6f70')
   })
@@ -758,8 +791,98 @@ describe('AgentTeam context projection — effect-anchored team boundaries', () 
       userMessageEvent(teamNotice('Team Inbox has unread work.', 'Thread: thread:1a2b3c4d-5e6f-4a5b-8c9d-0e1f2a2b4c5d and\nThread: thread:2b3c4d5e-6f7a-4b5c-9d0e-1f2a3b4c5d6e both new')),
       turnEnd(1),
     ]
-    const state = foldContextProjection(events, undefined, SID)
+    const state = fold(events)
     expect(state.boundaries).toHaveLength(1)
     expect(state.boundaries[0]!.label).toBe('First arrival: thread:1a2b3c4d-5e6f-4a5b-8c9d-0e1f2a2b4c5d, thread:2b3c4d5e-6f7a-4b5c-9d0e-1f2a3b4c5d6e')
+  })
+})
+
+describe('AgentTeam context projection — the engine unit Team registers', () => {
+  it('one registration folds two Sessions and keys every ref to the Session that recorded it', () => {
+    // The framework keeps one unit per projection key and drives it for every
+    // Session, so the definition closes over no Session identity: identity and
+    // the fork-inherited cut travel in the state.
+    const events = [turnStart(1), ...checkpointPair(1, 'call-shared', 'anchor'), turnEnd(1)]
+    const first = fold(events, undefined, 'agent-team-generation-one')
+    const second = fold(events, undefined, 'agent-team-generation-two')
+    expect(first.sessionId).toBe('agent-team-generation-one')
+    expect(second.sessionId).toBe('agent-team-generation-two')
+    expect(first.checkpoints[0]!.checkpointRef).toBe(checkpointRefFor('agent-team-generation-one', 'call-shared'))
+    expect(second.checkpoints[0]!.checkpointRef).toBe(checkpointRefFor('agent-team-generation-two', 'call-shared'))
+    expect(first.checkpoints[0]!.checkpointRef).not.toBe(second.checkpoints[0]!.checkpointRef)
+  })
+
+  it('records the inherited cut it was given, so a seeded child keeps none of the ancestor facts', () => {
+    const parent = [turnStart(1), ...checkpointPair(1, 'call-parent', 'anchor'), turnEnd(1)]
+    const child = fold([...parent, turnStart(2), turnEnd(2)], SessionLogOffset(parent.length), 'agent-team-child')
+    expect(child.inheritedEventCount).toBe(parent.length)
+    expect(child.checkpoints).toEqual([])
+    expect(child.sessionId).toBe('agent-team-child')
+  })
+
+  it('boundary refs are Session-scoped: an ancestor boundary never collides with this generation\'s', () => {
+    const seq = 7
+    expect(boundaryRefFor('agent-team-generation-one', seq)).not.toBe(boundaryRefFor('agent-team-generation-two', seq))
+    const notice = createUserMessage({ content: [{ type: 'text', text: 'Thread: thread:aaaa1111-2222-4333-8444-555566667777' }], source: { kind: 'plugin', plugin: AGENT_TEAM_PLUGIN_ID, form: 'notice', summary: 'Team Inbox has unread work.' } })
+    const event = userMessageEvent(notice)
+    const first = fold([turnStart(1), event, turnEnd(2)], undefined, 'agent-team-generation-one')
+    const second = fold([turnStart(1), { ...event, seq: event.seq }, turnEnd(2)], undefined, 'agent-team-generation-two')
+    const firstRef = timelineCandidates(first, 12).find(candidate => candidate.source === 'team-boundary')!.ref
+    const secondRef = timelineCandidates(second, 12).find(candidate => candidate.source === 'team-boundary')!.ref
+    expect(firstRef).toBe(boundaryRefFor('agent-team-generation-one', event.seq))
+    expect(secondRef).toBe(boundaryRefFor('agent-team-generation-two', event.seq))
+    expect(firstRef).not.toBe(secondRef)
+  })
+
+  it('a claim boundary is attributed to its Task\'s Thread through the ledger; without a resolution it stays unattributed', () => {
+    const events = [
+      turnStart(1),
+      contextToolCall(1, 'call-claim', 'team_claim', { action: 'claim', taskRef: 'task:x', baseRevision: 1, direction: 'do it' }),
+      toolResult(1, 'call-claim'),
+      turnEnd(1),
+    ]
+    const attributed = foldTeamContextProjection(
+      events,
+      { sessionId: SID },
+      new TeamContextProjectionHost({ threadForTask: () => 'thread:owner' as never }),
+    )
+    expect(attributed.boundaries[0]!.attributions).toEqual(['thread:owner'])
+    // The default host carries no ledger: the boundary still anchors the
+    // timeline, it is simply not selectable as a single-Thread return target.
+    expect(fold(events).boundaries[0]!.attributions).toEqual([])
+  })
+
+  it('a claim boundary with an unknown Task keeps its anchor and drops only the attribution', () => {
+    const events = [
+      turnStart(1),
+      contextToolCall(1, 'call-claim-unknown', 'team_claim', { action: 'done', taskRef: 'task:gone', baseRevision: 2 }),
+      toolResult(1, 'call-claim-unknown'),
+      turnEnd(1),
+    ]
+    const state = foldTeamContextProjection(events, { sessionId: SID }, new TeamContextProjectionHost({ threadForTask: () => undefined }))
+    expect(state.boundaries).toHaveLength(1)
+    expect(state.boundaries[0]!.attributions).toEqual([])
+  })
+
+  it('attention and committed-message boundaries carry the Thread they touched', () => {
+    const events = [
+      turnStart(1),
+      contextToolCall(1, 'call-follow', 'team_thread', { action: 'follow', threadRef: 'thread:followed' }),
+      toolResult(1, 'call-follow'),
+      turnEnd(1),
+      turnStart(2),
+      contextToolCall(2, 'call-reply', 'team_message', { action: 'reply', threadRef: 'thread:replied', baseRevision: 3, body: 'x' }),
+      toolResult(2, 'call-reply', { meta: { kind: 'committed', threadRef: 'thread:replied', revision: 4, messageRef: 'message:m' } }),
+      turnEnd(2),
+    ]
+    const state = fold(events)
+    expect(state.boundaries.map(boundary => boundary.attributions)).toEqual([['thread:followed'], ['thread:replied']])
+  })
+
+  it('a first-arrival notice records the Threads it introduced as seen topics', () => {
+    const notice = createUserMessage({ content: [{ type: 'text', text: 'Thread: thread:aaaa1111-2222-4333-8444-555566667777 and\nThread: thread:bbbb2222-3333-4444-8555-666677778888' }], source: { kind: 'plugin', plugin: AGENT_TEAM_PLUGIN_ID, form: 'notice', summary: 'Team Inbox has unread work.' } })
+    const state = fold([turnStart(1), userMessageEvent(notice), turnEnd(1)])
+    expect(state.seenTopics).toEqual(['thread:aaaa1111-2222-4333-8444-555566667777', 'thread:bbbb2222-3333-4444-8555-666677778888'])
+    expect(state.boundaries[0]!.attributions).toEqual(state.seenTopics)
   })
 })

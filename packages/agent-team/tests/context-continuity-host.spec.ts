@@ -1,18 +1,17 @@
 /**
- * Phase 1 of the Team/engine split: the message codec Team writes through, the
- * durable rollover identity the host derives, the notice rule the engine
- * consults, and the bridge from Team's fold state to the engine's read-only
- * state. The lifecycle behavior these feed — swap, carry, crash repair — stays
- * covered by the member-lifecycle and context-projection suites.
+ * Team's binding of the context-continuity engine: the message codec Team
+ * writes through, the durable rollover identity the host derives, the notice
+ * rule the engine consults, and the projection state the host hands back
+ * untranslated. The lifecycle behavior these feed — swap, carry, crash repair —
+ * stays covered by the member-lifecycle and context-projection suites.
  */
 import { describe, expect, it } from 'vitest'
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
 import { SessionId } from '@deepseek-ai/dsh-session'
-import { isDroppedNotice } from '@wowyuarm/dsh-context-continuity'
-import { boundaryRefFor, checkpointRefFor, type AgentTeamContextProjectionState } from '../src/context-projection.ts'
+import { isDroppedNotice, type ContextProjectionState } from '@wowyuarm/dsh-context-continuity'
 import { AGENT_TEAM_PLUGIN_ID } from '../src/context-source.ts'
-import { TEAM_CONTEXT_CODEC, TeamContextContinuityHost, toEngineProjectionState } from '../src/context-continuity-host.ts'
+import { TEAM_CONTEXT_CODEC, TeamContextContinuityHost } from '../src/context-continuity-host.ts'
 import type { AgentTeamAgentMember, AgentTeamMemberId } from '../src/types.ts'
 
 const MEMBER_ID = 'member:one' as AgentTeamMemberId
@@ -158,58 +157,33 @@ describe('the Team context-continuity host', () => {
   })
 })
 
-describe('the projection bridge', () => {
-  it('maps the Team fold state onto the engine state', () => {
-    const checkpointRef = checkpointRefFor('session:one', 'call-cp')
-    const queued = createUserMessage({
-      content: [{ type: 'text', text: 'operator input' }],
-      source: { kind: 'plugin', plugin: '@wowyuarm/someone-else', form: 'notice', summary: 'notice' },
-    })
-    const state: AgentTeamContextProjectionState = {
-      checkpoints: [{ checkpointRef, name: 'anchor', resultSeq: 4, turn: 1, turnEndSeq: 6 }],
-      pending: { handoff: 'prose', toolCallId: 'call-roll', resultSeq: 9, turn: 2, turnEndSeq: -1, relatedFiles: [] },
-      continuations: [{ checkpointRef, deliveredSeq: 8 }],
-      carriedCandidates: [{ message: queued, surfacedTurn: 3, consumed: false }],
+describe('the projection read', () => {
+  it('hands the engine the registered unit\'s own state, with no translation layer', () => {
+    // The engine's fold is the only fold: the host returns the very state the
+    // registered projection unit produced, never a mapped copy. A translation
+    // would be a second authority for the same facts.
+    const state: ContextProjectionState = {
+      sessionId: 'session:one',
+      inheritedEventCount: 3,
+      checkpoints: [{ checkpointRef: 'context-checkpoint-' + 'a'.repeat(64), name: 'anchor', resultSeq: 4, turn: 1, turnEndSeq: 6 }],
+      pending: null,
+      continuations: [],
+      carriedCandidates: [],
       lastTurn: 3,
-      openCalls: [{ callId: 'call-open', name: 'context_checkpoint', arguments: '{}' }],
-      boundaries: [{ key: boundaryRefFor('session:one', 2), source: 'team-boundary', label: 'Thread facts', seq: 2, turn: 0, turnEndSeq: 5 }],
-      seenThreads: ['thread:abc'],
+      openCalls: [],
+      boundaries: [{ kind: 'team-boundary', label: 'Thread facts', resultSeq: 2, turn: 0, turnEndSeq: 5, attributions: ['thread:abc'] }],
+      seenTopics: ['thread:abc'],
       lastTurnEndSeq: 6,
     }
-
-    const engineState = toEngineProjectionState({ state, inheritedEventCount: 3 }, SESSION_ID)
-
-    expect(engineState.sessionId).toBe('session:one')
-    expect(engineState.inheritedEventCount).toBe(3)
-    expect(engineState.checkpoints).toEqual(state.checkpoints)
-    expect(engineState.pending).toEqual(state.pending)
-    expect(engineState.continuations).toEqual(state.continuations)
-    expect(engineState.carriedCandidates).toEqual([{ messageId: queued.id, surfacedTurn: 3, consumed: false }])
-    expect(engineState.lastTurn).toBe(3)
-    expect(engineState.openCalls).toEqual(state.openCalls)
-    // Team's boundary key is a Session-local anchor, not a topic: the engine's
-    // default-anchor policy sees no attribution until phase 2 supplies it.
-    expect(engineState.boundaries).toEqual([
-      { kind: 'team-boundary', label: 'Thread facts', resultSeq: 2, turn: 0, turnEndSeq: 5, attributions: [] },
-    ])
-    expect(engineState.seenTopics).toEqual(['thread:abc'])
-    expect(engineState.lastTurnEndSeq).toBe(6)
-  })
-
-  it('is what the host hands the engine, and nothing when the fold has no state', () => {
-    const state = {
-      checkpoints: [], pending: null, continuations: [], carriedCandidates: [], lastTurn: 0,
-      openCalls: [], boundaries: [], seenThreads: [], lastTurnEndSeq: -1,
-    } satisfies AgentTeamContextProjectionState
     const host = new TeamContextContinuityHost({
       agentForMember: () => undefined,
       memberForAgent: () => undefined,
-      projectionForMember: (memberId, sessionId) => (memberId === MEMBER_ID && sessionId === SESSION_ID ? { state, inheritedEventCount: 0 } : undefined),
+      projectionForMember: (memberId, sessionId) => (memberId === MEMBER_ID && sessionId === SESSION_ID ? state : undefined),
       executeTransition: () => Promise.resolve(),
       log: () => {},
     })
 
-    expect(host.projectionForSubject(MEMBER_ID, SESSION_ID)?.sessionId).toBe('session:one')
+    expect(host.projectionForSubject(MEMBER_ID, SESSION_ID)).toBe(state)
     expect(host.projectionForSubject(MEMBER_ID, SessionId('session:two'))).toBeUndefined()
   })
 })
