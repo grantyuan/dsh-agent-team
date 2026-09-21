@@ -1,3 +1,4 @@
+import { existsSync } from 'node:fs'
 import { cp, mkdtemp, mkdir, readFile, rm, symlink, writeFile } from 'node:fs/promises'
 import { join, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
@@ -30,7 +31,21 @@ try {
   // privilege-gated on Windows and can silently produce a link form the
   // analyzer's TypeScript resolution rejects; a copy is always safe and only
   // costs the package size.
-  const zodSource = join(packageRoot, 'node_modules/zod')
+  //
+  // The chain is this repository's own root install: the analysis package sits
+  // inside the harness checkout, where nothing provides zod, and `zod` is a
+  // dependency of the single root manifest. A per-package
+  // `packages/agent-team/node_modules` is NOT a resolution path any more — the
+  // workspace has one root package, so a clean install never creates it and the
+  // stale directory on a long-lived checkout must not be the only reason the
+  // build works.
+  const zodSource = join(projectRoot, 'node_modules/zod')
+  if (!existsSync(zodSource)) {
+    throw new Error(
+      `Typert analysis resolves the bundle's 'zod' dependency at '${zodSource}', which is not installed.`
+      + ' Run `corepack pnpm install` at the repository root (never npm install: it breaks the workspace links).',
+    )
+  }
   const zodTarget = join(tempPackage, 'node_modules/zod')
   if (process.platform === 'win32') {
     await cp(zodSource, zodTarget, { recursive: true, verbatimSymlinks: true })
