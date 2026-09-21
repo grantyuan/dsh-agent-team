@@ -34,6 +34,7 @@ npm run typecheck
 npm run check:docs
 npm run check:core-skills
 npm run check:boundaries
+npm run check:versions
 npm test
 npm run build
 npm run lint
@@ -49,7 +50,8 @@ Their responsibilities are:
 - `check:docs` mechanically enforces the rules in [`AGENTS.md`](AGENTS.md): every maintained document has a bilingual pair with a working switcher, every relative link resolves, and both indexes name exactly the documents that exist. It covers the four README pairs as well — the repository root and one per package — plus the root contributing pair, each set with its own switcher wording. Run it on its own for a documentation-only change.
 - `check:core-skills` mechanically enforces the shipped skill contract under `packages/agent-team/core-skills/`: the front matter names the skill after its directory and its description names real triggers, the whole skill stays inside the reviewed budget in `scripts/check-core-skills.mjs`, every relative link stays inside the skill directory (an installer copies that directory alone), and every file under `references/` is linked from `SKILL.md`.
 - `check:boundaries` mechanically enforces the package seams described below: no file under `packages/*/src/` may reach another package by a relative specifier that escapes its own package directory. `import type` is exempt because it is erased before runtime, and test files are out of scope because they deliberately wire directories together. Declared subpaths such as `@wowyuarm/dsh-agent-team/remote` are the supported way to cross a seam.
-- `test` regenerates Typert, runs `check:docs`, `check:core-skills`, and `check:boundaries`, then runs Vitest. `scripts/isolate-dsh-home.setup.ts` gives each test file an isolated `DSH_HOME`; tests needing a particular home must save and restore it. Startup does not prune ledger-unknown Member directories; explicit Member removal removes that Member's private memory.
+- `check:versions` mechanically enforces the certified-version consistency rule: the CI tag, the setup tag, the development guide, the READMEs, the architecture doc, the compatibility baseline, and the bug-report placeholder must all state the same DSH baseline (in both languages), and that baseline must be the lower bound of every `@deepseek-ai/dsh-*` peer range. It asserts mutual agreement, never a hardcoded version, so it passes unchanged on every release lane. Run it on its own after touching any version string.
+- `test` regenerates Typert, runs `check:docs`, `check:core-skills`, `check:boundaries`, and `check:versions`, then runs Vitest. `scripts/isolate-dsh-home.setup.ts` gives each test file an isolated `DSH_HOME`; tests needing a particular home must save and restore it. Startup does not prune ledger-unknown Member directories; explicit Member removal removes that Member's private memory.
 - `build` uses the restricted Node cleaner to clear package `lib/` directories, regenerates Typert, builds all three source trees, and uses Harness `tsdown` for the Client bundle. The published artifact remains one root npm package.
 - `lint` runs oxlint.
 - `duplication` runs jscpd over `packages` and `scripts` using `.jscpd.json`; treat its output as a place to look, never as a verdict, because it reports moved and restructured code as readily as copied code.
