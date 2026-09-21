@@ -28,10 +28,10 @@ import { HUMAN_PROFILE_DEFAULT_NAME, HUMAN_PROFILE_REPO_URL, HUMAN_PROFILE_SETTI
 import { humanAvatarsRoot, readHumanAvatar, removeHumanAvatar, writeHumanAvatar } from './human-avatar.ts'
 import { createHumanUpdateChecker } from './human-update-check.ts'
 import { PressurePolicyCoordinator } from './pressure-policy.ts'
-import { CONTEXT_CONTINUITY_PROJECTION_KEY, type ContextProjectionConfig, type ContextProjectionState, type ContextTimelineSource, type TransitionPlan } from '@wowyuarm/dsh-context-continuity'
+import { CONTEXT_CONTINUITY_PROJECTION_KEY, readContextTimeline, type ContextProjectionConfig, type ContextTimelineItem, type ContextTimelineSource, type TransitionPlan } from '@wowyuarm/dsh-context-continuity'
 import { createTeamContextManagement, TEAM_CONTEXT_CODEC } from './context-continuity-host.ts'
 import { AGENT_TEAM_PLUGIN_ID } from './context-source.ts'
-import { boundaryByRef, carriedInputOf, checkpointByRef, checkpointRefFor, createTeamContextProjectionConfig, createTeamContextProjectionDefinition, foldTeamContextProjection, isReminderNoticeSummary, TeamContextProjectionHost, timelineCandidates, type TimelineCandidate } from './context-projection.ts'
+import { boundaryByRef, carriedInputOf, checkpointByRef, checkpointRefFor, createTeamContextProjectionConfig, createTeamContextProjectionDefinition, foldTeamContextProjection, retainedTopicsThrough, TeamContextProjectionHost } from './context-projection.ts'
 import { AGENT_TEAM_HUMAN_MEMBER_ID, AgentTeamLedger, agentTeamHumanActor, type AgentTeamDurableMemberResult } from './ledger.ts'
 import { AGENT_TEAM_TOOL_NAMES, deepCopyCapabilities, memberMemoryDirectoryName, MemberRuntime } from './member-runtime.ts'
 import type { MemberSkillSelectionRef } from './member-skills.ts'
@@ -170,7 +170,12 @@ const MAX_CHECKPOINT_NAME_CHARS = 120
 /** Default and maximum number of timeline items one query returns. */
 const DEFAULT_TIMELINE_LIMIT = 12
 const MAX_TIMELINE_LIMIT = 24
-/** Deepest ancestor lineage the timeline and seed resolution walk. */
+/**
+ * Archived generations the timeline and seed resolution walk: the timeline
+ * reads this many ancestors behind the current generation, and the seed guard
+ * resolves a cited ref through the same depth, so the two surfaces cannot
+ * disagree about where history ends.
+ */
 const MAX_TIMELINE_ANCESTORS = 8
 /** Product pressure budget constants (see docs/team-collaboration.md). */
 const CONTEXT_HARD_LIMIT_CAP = 256_000
@@ -1731,7 +1736,7 @@ export default class AgentTeam extends TypertRemoteService {
     let sessionId: SessionId | undefined = agent.session.id
     let live = true
     let guard = 0
-    while (sessionId !== undefined && guard++ < MAX_TIMELINE_ANCESTORS) {
+    while (sessionId !== undefined && guard++ <= MAX_TIMELINE_ANCESTORS) {
       let events: readonly SessionEvent[]
       let inheritedEventCount: SessionLogOffset
       let parentSession: SessionId | undefined
@@ -1775,7 +1780,12 @@ export default class AgentTeam extends TypertRemoteService {
         const throughSeq = anchorTurnEndSeq + 1
         const prefix = events.slice(0, throughSeq)
         if (boundary !== undefined) {
-          const threads = this.threadsEnteringContext(events, anchorTurnEndSeq)
+          // The seed must stay inside one Thread's context: the retained
+          // prefix through the anchor holds exactly one Thread's facts, read
+          // from the fold's own boundary attributions — the same accumulated
+          // set the timeline shows, so a ref the timeline offered is never
+          // refused here for a reason it did not state.
+          const threads = retainedTopicsThrough(state, anchorTurnEndSeq)
           if (threads.length !== 1) {
             throw new Error(threads.length === 0
               ? `boundary '${checkpointRef}' has no single attributable Thread; write a fresh handoff instead`
@@ -1999,9 +2009,11 @@ export default class AgentTeam extends TypertRemoteService {
    * Agent-only bounded structural timeline: resolved checkpoints plus Team
    * delivery, handoff, and compaction boundaries across the current
    * generation and its archived ancestor lineage. Structural only — no
-   * transcript content. The meter prices retained/discarded tokens; entries
-   * the Host cannot prove restorable carry a rejection reason instead of
-   * silently disappearing.
+   * transcript content. The walk, the per-source folds, the pricing, and the
+   * anchor rules are the engine's `readContextTimeline`; Team contributes the
+   * fold configuration, the measurement, and the one judgement the engine
+   * leaves to its host — which Threads a boundary's retained prefix holds — so
+   * a ref this list offers is a ref `context_rollover` accepts.
    */
   async contextTimelineForAgent(agent: Agent, request: AgentTeamTimelineToolRequest): Promise<AgentTeamTimelineToolResult> {
     const member = this.memberForAgent(agent)
@@ -2014,64 +2026,100 @@ export default class AgentTeam extends TypertRemoteService {
     const limits = await this.routeLimitsForAgent(agent)
     const hardLimit = limits?.hardLimit ?? CONTEXT_HARD_LIMIT_CAP
     const handoffAt = limits?.handoffAt ?? CONTEXT_HANDOFF_AT_CAP
-    // Fold the current generation, then walk archived ancestors through their
-    // persisted logs; the same projection definition folds every source.
-    const items: AgentTeamTimelineItem[] = []
-    const seen = new Set<string>()
-    let incompleteFrom: { readonly sessionId: SessionId; readonly reason: string } | undefined
-    let sessionId: SessionId | undefined = member.sessionId
-    let live = true
-    let guard = 0
-    while (sessionId !== undefined && guard++ < MAX_TIMELINE_ANCESTORS) {
-      let state: ContextProjectionState | undefined
-      let sourceSessionId = sessionId
-      let sourceEvents: readonly SessionEvent[] = []
-      // Capture this iteration's source identity BEFORE the branch advances
-      // the lineage flag: measurement and discard pricing both key on it.
-      const sourceIsCurrent = live
-      if (live) {
-        state = foldTeamContextProjection(
-          agent.session.ownEvents(),
-          { sessionId: agent.session.id, inheritedEventCount: agent.session.inheritedEventCount },
-          this.contextProjectionHost,
-        )
-        sourceEvents = agent.session.snapshotEvents()
-        sessionId = agent.session.header.parentSession
-        live = false
-      } else {
-        const read = await this.sessionReader.read(sessionId)
-        if (!read.ok) {
-          // An unreadable ancestor ends the lineage walk here — recorded in
-          // the result, never silent, and never a Member-availability fact.
-          incompleteFrom = { sessionId, reason: `${read.failure.kind}: ${read.failure.detail}` }
-          sessionId = undefined
-        } else {
-          state = foldTeamContextProjection(
-            read.inspection.events,
-            { sessionId, inheritedEventCount: read.inspection.inheritedEventCount },
-            this.contextProjectionHost,
-          )
-          sourceEvents = read.inspection.events
-          sourceSessionId = sessionId
-          sessionId = read.inspection.header.parentSession
-        }
-      }
-      if (state === undefined) break
-      // Price every candidate of this source against the SOURCE's own
-      // replayed measurement — a small current generation never shrinks a
-      // large ancestor's real seed cost. An unmeasurable source (no meter,
-      // unreadable ancestor) prices as UNKNOWN, never as zero: the timeline
-      // marks its candidates unprovable and the return guard rejects them.
-      const sourceUsage = await this.sourceUsageTokens(sourceSessionId, sourceIsCurrent, agent)
-      for (const candidate of timelineCandidates(state, limit)) {
-        if (seen.has(candidate.ref)) continue
-        seen.add(candidate.ref)
-        items.push(this.timelineItemFor(candidate, sourceUsage, usageTokens, hardLimit, handoffAt, sourceSessionId, sourceIsCurrent, sourceEvents))
-        if (items.length >= limit) break
-      }
-      if (items.length >= limit) break
+    // One measurement per lineage source, memoized by Session: the engine
+    // measures a source once before pricing its anchors, and the boundary
+    // overlay below reads the same map to tell an unprovable budget (never
+    // priced as free) from a real budget rejection.
+    const measurements = new Map<string, number | undefined>()
+    const timeline = await readContextTimeline({
+      current: {
+        sessionId: agent.session.id,
+        header: agent.session.header,
+        inheritedEventCount: agent.session.inheritedEventCount,
+        events: agent.session.snapshotEvents(),
+      },
+      config: this.contextFoldConfig(),
+      readAncestor: sessionId => this.sessionReader.read(sessionId),
+      measureSource: source => {
+        const key = String(source.sessionId)
+        if (!measurements.has(key)) measurements.set(key, this.measureContextSourceForAgent(agent, source))
+        return measurements.get(key)
+      },
+      currentUsageTokens: usageTokens,
+      handoffAt,
+      limit,
+      // Archived ancestors the engine walks; the seed guard resolves a cited
+      // ref through the same depth, so the timeline never offers a ref the
+      // guard cannot reach.
+      maxAncestors: MAX_TIMELINE_ANCESTORS,
+    })
+    return {
+      usageTokens,
+      hardLimit,
+      handoffAt,
+      items: timeline.items.map(item => this.teamTimelineItemFor(item, agent.session.id, handoffAt, measurements)),
+      ...(timeline.incompleteFrom === undefined ? {} : { incompleteFrom: timeline.incompleteFrom }),
     }
-    return { usageTokens, hardLimit, handoffAt, items, ...(incompleteFrom === undefined ? {} : { incompleteFrom }) }
+  }
+
+  /**
+   * Map one engine timeline item onto the model-facing Team item. The engine
+   * decided the walk, the fold, the pricing, and the head, checkpoint, and
+   * measurable-source verdicts; Team restates exactly one policy of its own: a
+   * Team boundary is selectable only when the RETAINED PREFIX through it stays
+   * inside one Thread — the same proof the seed guard revalidates before it
+   * swaps a generation. The engine judges a boundary by its OWN attribution
+   * instead, so a boundary that arrived after a second Thread's facts would be
+   * offered here and refused by `context_rollover`; Team's stricter rule is
+   * what keeps the two surfaces answering one question.
+   */
+  private teamTimelineItemFor(item: ContextTimelineItem, currentSessionId: SessionId, handoffAt: number, measurements: ReadonlyMap<string, number | undefined>): AgentTeamTimelineItem {
+    const source: AgentTeamTimelineItem['source'] = item.source === 'boundary'
+      ? item.kind === 'handoff' || item.kind === 'compaction' ? item.kind : 'team-boundary'
+      : item.source === 'checkpoint' ? 'agent' : 'head'
+    const affectedThreads = item.affectedTopics
+    let restorable = item.restorable
+    let reason = item.reason
+    // A boundary's verdict is Team's to make, but only once its source is
+    // measurable: "the budget cannot be proven" is the engine's first
+    // rejection and stays first — an unmeasurable boundary is not selectable
+    // even when its prefix holds exactly one Thread.
+    if (item.source === 'boundary' && measurements.get(String(item.sourceSessionId ?? currentSessionId)) !== undefined) {
+      if (source === 'handoff' || source === 'compaction') {
+        // A handoff opens a generation and a compaction rewrites the visible
+        // surface: rewinding into either is not a proven-safe target. The
+        // engine has no vocabulary for that and would answer "no single topic
+        // is attributable", which misdescribes why.
+        restorable = false
+        reason = `source '${source}' is not a restorable checkpoint`
+      } else if (affectedThreads.length !== 1) {
+        restorable = false
+        reason = affectedThreads.length === 0
+          ? 'no single Thread is attributable to this boundary'
+          : 'multiple Threads entered the context through this boundary; write a fresh handoff instead'
+      } else if (item.retainedTokens >= handoffAt) {
+        restorable = false
+        reason = 'retained context would not materially shrink the working set'
+      } else {
+        restorable = true
+        reason = undefined
+      }
+    }
+    return {
+      checkpointRef: item.ref,
+      name: item.label,
+      source,
+      retainedTokens: item.retainedTokens,
+      discardedTokens: item.discardedTokens,
+      affectedThreads,
+      restorable,
+      ...(reason === undefined ? {} : { reason }),
+      // Team's field semantics, unchanged: every item that is not a
+      // checkpoint names the Session it anchors in — an ancestor generation's
+      // boundary is how a lineage reads — and a checkpoint is keyed to its own
+      // Session by its ref already.
+      ...(source === 'agent' ? {} : { sourceSessionId: item.sourceSessionId ?? currentSessionId }),
+    }
   }
 
   /**
@@ -2174,138 +2222,6 @@ export default class AgentTeam extends TypertRemoteService {
     if (sourceLength <= 0) return sourceUsageTokens
     const share = Math.min(1, Math.max(0, (anchorTurnEndSeq + 1) / sourceLength))
     return Math.round(sourceUsageTokens * share)
-  }
-
-  /**
-   * Threads whose facts entered this Session's model context by the given
-   * seq: delivered Team notices (their bodies quote `Thread: <ref>`
-   * structurally) and successful Team-claim mutations (their task overlays
-   * resolve to Threads through the ledger). Never from unread ledger
-   * activity — a Thread the Member never saw did not enter its context.
-   * Order-stable, deduplicated.
-   */
-  private threadsEnteringContext(events: readonly SessionEvent[], throughSeq: number): readonly AgentTeamThreadRef[] {
-    const refs: AgentTeamThreadRef[] = []
-    const openAttributions = new Map<string, { readonly name: string; readonly arguments: string }>()
-    const push = (ref: AgentTeamThreadRef | undefined): void => {
-      if (ref !== undefined && !refs.includes(ref)) refs.push(ref)
-    }
-    for (const event of events) {
-      if (event.seq > throughSeq) break
-      if (event.type === 'tool/call' && (event.data.name === 'team_claim' || event.data.name === 'team_message')) {
-        openAttributions.set(event.data.callId, { name: event.data.name, arguments: event.data.arguments })
-      } else if (event.type === 'tool/result') {
-        const block = (event.data.message as { content?: Array<{ type?: string; toolCallId?: string; isError?: boolean }> }).content?.[0]
-        if (block !== undefined && block.toolCallId !== undefined) {
-          const recorded = openAttributions.get(block.toolCallId)
-          if (recorded !== undefined && block.isError !== true) {
-            openAttributions.delete(block.toolCallId)
-            try {
-              const args = JSON.parse(recorded.arguments) as { taskRef?: unknown; threadRef?: unknown }
-              // A claim mutation resolves its Task overlay through the ledger;
-              // a team_message committed reply names its Thread in its call
-              // arguments; a committed start's Thread is born in the result
-              // and is read from the durable presentation meta.
-              if (recorded.name === 'team_claim' && typeof args.taskRef === 'string' && args.taskRef !== '') {
-                push(this.requireLedger().threadForTask(args.taskRef as AgentTeamTaskRef))
-              } else if (recorded.name === 'team_message') {
-                const meta = (event.data as { meta?: unknown }).meta
-                if (meta !== undefined && typeof meta === 'object' && (meta as { kind?: unknown }).kind === 'committed') {
-                  const metaThreadRef = (meta as { threadRef?: unknown }).threadRef
-                  if (typeof metaThreadRef === 'string' && metaThreadRef !== '') push(metaThreadRef as AgentTeamThreadRef)
-                } else if (typeof args.threadRef === 'string' && args.threadRef !== '') {
-                  push(args.threadRef as AgentTeamThreadRef)
-                }
-              }
-            } catch {
-              // Malformed call arguments contribute no attribution.
-            }
-          }
-        }
-      } else if (event.type === 'user/message') {
-        const source = event.data.source as { kind?: string; plugin?: string; form?: string; summary?: string } | undefined
-        if (source?.kind !== 'plugin') continue
-        // Reminder notices never enter attribution — a recovery instruction
-        // (or a historical progress-nudge notice, kept decodable in session
-        // logs recorded before that system was removed) is not a Team fact.
-        if (source.form === 'notice' && source.summary !== undefined && isReminderNoticeSummary(source.summary)) continue
-        const text = event.data.content.filter(block => block.type === 'text').map(block => block.text ?? '').join('\n')
-        for (const match of text.matchAll(/Thread: (thread:[0-9a-f-]{6,})/g)) {
-          push(match[1] as AgentTeamThreadRef)
-        }
-      }
-    }
-    return refs
-  }
-
-  /**
-   * Price and annotate one timeline candidate without mutating anything.
-   * Retained prices in the SOURCE Session's own replayed measurement (the
-   * monotonic anchor-share of the source log); discarded is what a return
-   * replaces — for a current-generation anchor, the measured usage beyond
-   * the anchor; for an ancestor anchor, the current generation's whole
-   * usage (an approximation: the ancestor's own suffix is not part of this
-   * generation). A small current child therefore discards little but may
-   * still retain a large ancestor seed, and both numbers say so honestly.
-   */
-  private timelineItemFor(candidate: TimelineCandidate, sourceUsage: number | undefined, currentUsage: number, _hardLimit: number, handoffAt: number, sourceSessionId: SessionId, sourceIsCurrent: boolean, sourceEvents: readonly SessionEvent[]): AgentTeamTimelineItem {
-    const retainedTokens = candidate.source === 'head'
-      ? currentUsage
-      : this.retainedEstimate(sourceUsage ?? 0, sourceEvents.length, candidate.turnEndSeq)
-    const discardedTokens = candidate.source === 'head'
-      ? 0
-      : sourceIsCurrent
-        ? Math.max(0, currentUsage - retainedTokens)
-        : currentUsage
-    const affectedThreads = candidate.turnEndSeq === -1 ? [] : this.threadsEnteringContext(sourceEvents, candidate.turnEndSeq)
-    let restorable = candidate.turnEndSeq !== -1
-    let reason: string | undefined
-    if (candidate.source === 'head') {
-      // The head is the current working set: returning to it discards
-      // nothing and is never a meaningful return target.
-      restorable = false
-      reason = 'the head is the current working set; returning to it discards nothing'
-    } else if (sourceUsage === undefined) {
-      // The source's cost cannot be measured (no meter, or the archived
-      // ancestor cannot be borrowed): the budget cannot be proven, so the
-      // candidate is not selectable. Never price an unknown as zero.
-      restorable = false
-      reason = 'the source Session\'s context cost cannot be measured, so the return budget cannot be proven'
-    } else if (candidate.source === 'handoff' || candidate.source === 'compaction') {
-      // A handoff starts a generation and a compaction rewrites the visible
-      // surface: rewinding into them is not a proven-safe V1 target.
-      restorable = false
-      reason = `source '${candidate.source}' is not a restorable checkpoint`
-    } else if (candidate.source === 'team-boundary') {
-      // A Team delivery is a selectable default checkpoint exactly when the
-      // Host can prove it stays inside one Thread's context: the boundary
-      // resolved at a completed turn AND exactly one Thread's facts entered
-      // the Session context through it. Multi-Thread or unattributable
-      // boundaries document why they are not selectable.
-      if (affectedThreads.length !== 1) {
-        restorable = false
-        reason = affectedThreads.length === 0
-          ? 'no single Thread is attributable to this boundary'
-          : 'multiple Threads entered the context through this boundary; write a fresh handoff instead'
-      } else if (retainedTokens >= handoffAt) {
-        restorable = false
-        reason = 'retained context would not materially shrink the working set'
-      }
-    } else if (candidate.source === 'agent' && retainedTokens >= handoffAt) {
-      restorable = false
-      reason = 'retained context would be at or above the handoff budget'
-    }
-    return {
-      checkpointRef: candidate.ref,
-      name: candidate.label,
-      source: candidate.source,
-      retainedTokens,
-      discardedTokens,
-      affectedThreads,
-      restorable,
-      ...(reason === undefined ? {} : { reason }),
-      ...(candidate.source === 'agent' ? {} : { sourceSessionId }),
-    }
   }
 
   /**

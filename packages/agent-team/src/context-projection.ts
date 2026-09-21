@@ -20,10 +20,11 @@
  *   yields no attribution instead of failing the fold.
  *
  * The remaining exports are read views over the engine's state that Team still
- * owns until the timeline read moves onto the engine's own `readContextTimeline`
- * (step 6, phase 3): the bounded candidate list, the checkpoint lookup, and
- * carried-message resolution — the engine keys carry candidates by message id,
- * and the durable log is where the message body lives.
+ * owns: the anchor lookups the rollover guard revalidates a cited ref through,
+ * the accumulated Thread attribution that guard and the timeline both judge a
+ * boundary by, and carried-message resolution — the engine keys carry
+ * candidates by message id, and the durable log is where the message body
+ * lives.
  * @module @wowyuarm/dsh-agent-team/context-projection
  */
 
@@ -364,49 +365,26 @@ export function createTeamContextProjectionDefinition(host: ContextProjectionHos
   return createContextProjectionDefinition(createTeamContextProjectionConfig(host))
 }
 
-/** One structural timeline candidate, projection view: anchor plus identity. */
-export interface TimelineCandidate {
-  /** Stable selection ref (checkpoint refs for agent checkpoints; the boundary key otherwise). */
-  readonly ref: string
-  /** Semantic label: the model-supplied checkpoint name or the boundary label. */
-  readonly label: string
-  /** Which structural source produced this candidate. */
-  readonly source: 'agent' | 'team-boundary' | 'handoff' | 'compaction' | 'head'
-  /** Seq of the anchoring event (the tool result or delivery message). */
-  readonly seq: number
-  /** Seq of the completed `turn/end` that resolved the candidate; -1 while unresolved. */
-  readonly turnEndSeq: number
-}
-
 /**
- * Bounded structural timeline candidates, newest first: explicit checkpoints
- * (resolved only), engine-held boundaries, then the current head. The Host
- * prices retained/discarded tokens and applies restorability guards on top;
- * this view is the single source of candidate anchors and labels until the
- * engine's own timeline read replaces it.
+ * The Threads Team's own fold attributed to boundaries resolved by one
+ * completed turn, order-stable and deduplicated: a delivered notice's first
+ * arrival, a claim mutation's Task→Thread binding, a committed Thread effect.
+ *
+ * This is the accumulated attribution of the RETAINED PREFIX through that
+ * turn, and it is one set with two readers — the timeline publishes it as the
+ * item's affected Threads, and the rollover guard refuses a boundary whose
+ * prefix spans more than one Thread, so a ref the timeline offers is a ref
+ * `context_rollover` accepts.
  */
-export function timelineCandidates(state: ContextProjectionState, limit: number): readonly TimelineCandidate[] {
-  const candidates: TimelineCandidate[] = []
-  for (const checkpoint of state.checkpoints) {
-    if (checkpoint.turnEndSeq === -1) continue
-    candidates.push({ ref: checkpoint.checkpointRef, label: checkpoint.name, source: 'agent', seq: checkpoint.resultSeq, turnEndSeq: checkpoint.turnEndSeq })
-  }
+export function retainedTopicsThrough(state: ContextProjectionState, turnEndSeq: number): readonly string[] {
+  const topics: string[] = []
   for (const boundary of state.boundaries) {
-    if (boundary.turnEndSeq === -1) continue
-    candidates.push({
-      ref: boundaryRefFor(state.sessionId, boundary.resultSeq),
-      label: boundary.label,
-      source: boundary.kind as TimelineCandidate['source'],
-      seq: boundary.resultSeq,
-      turnEndSeq: boundary.turnEndSeq,
-    })
+    if (boundary.turnEndSeq === -1 || boundary.turnEndSeq > turnEndSeq) continue
+    for (const topic of boundary.attributions) {
+      if (!topics.includes(topic)) topics.push(topic)
+    }
   }
-  if (state.lastTurnEndSeq !== -1) {
-    candidates.push({ ref: `head:${state.lastTurnEndSeq}`, label: 'current head', source: 'head', seq: state.lastTurnEndSeq, turnEndSeq: state.lastTurnEndSeq })
-  }
-  return candidates
-    .sort((a, b) => b.turnEndSeq - a.turnEndSeq || b.seq - a.seq)
-    .slice(0, Math.max(1, Math.trunc(limit)))
+  return topics
 }
 
 /** Find one resolved checkpoint entry by its stable ref, if it exists. */

@@ -2285,6 +2285,11 @@ describe('Agent Team checkpoint selection and return (ticket 02)', () => {
     const timeline = await ctx.agentTeam.contextTimelineForAgent(next, { memberId, limit: 24 })
     expect(timeline.incompleteFrom).toMatchObject({ sessionId: firstSessionId, reason: expect.stringMatching(/^refused: /) })
     expect(timeline.items.length).toBeGreaterThan(0)
+    // A generation opens on its handoff boundary: it is read with Team's own
+    // source vocabulary and is never a return target, so a return into the
+    // generation's opening is refused with a reason that names the source.
+    const handoff = timeline.items.find(item => item.source === 'handoff')
+    expect(handoff).toMatchObject({ name: 'context handoff', restorable: false, reason: "source 'handoff' is not a restorable checkpoint" })
     const status = ctx.agentTeam.members().find(entry => entry.member.memberId === memberId)!
     expect(status.availability).toBe('active')
     expect(status.presence).not.toBe('unavailable')

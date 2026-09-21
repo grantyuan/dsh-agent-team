@@ -2,9 +2,9 @@
 
 ## Status
 
-active — 引擎已独立落地并发布（`@wowyuarm/dsh-context-continuity`，发布与仓库由 @Ferry 负责），Team 侧接入走到三步中的第二步。
+active — 引擎已独立落地并发布（`@wowyuarm/dsh-context-continuity`，发布与仓库由 @Ferry 负责），Team 侧接入的三步已全部落地并提交（尚未推送）。
 
-last-checked: 2026-09-21（Team 侧 fold 迁移完成并提交；按 Human 要求「team那边先不急」，这三个提交暂不推）。
+last-checked: 2026-09-21（第三步 timeline/search 接入完成：commit A `0bf79f1` 挂载引擎检索阶梯，commit B 把 `context_timeline` 改走 `readContextTimeline` 并删除 Team 自己的 candidates 派生；按 Human 要求「team那边先不急」，这些提交暂不推）。
 
 ## 这是什么
 
@@ -16,14 +16,14 @@ Team 的 context management（rollover / checkpoint / 投影 fold / 压力策略
 
 1. ✅ coordinator + codec 接入（Team `37336bb`）
 2. ✅ 投影 fold 迁到引擎的 `contextContinuity` unit，Team 只留 host 半边（`c66bce0`）；引擎解析改为「相邻 checkout → registry 已安装包」+ 根 devDependency（`25b8f01`），干净 checkout 形状已端到端验证
-3. ⏳ **timeline / search 接入** —— ticket [`issues/01-team-timeline-search.md`](issues/01-team-timeline-search.md)，无阻塞，可直接开工
+3. ✅ **timeline / search 接入** —— ticket [`issues/01-team-timeline-search.md`](issues/01-team-timeline-search.md)：commit A `0bf79f1`（ledger 派生 Session 谱系 + `dsh-session-query` peer + 引擎 `createSearchTools` 挂载 `context_search`/`context_read`），commit B（`context_timeline` → 引擎 `readContextTimeline`，Team 只保留「保留前缀停留在单一 Thread 内」这一条更严的边界判定，`timelineCandidates` / `threadsEnteringContext` / 重复 fold 删除，每行渲染加短 `anchor` 标识）
 
-阻塞：无。第二步的三个提交（`f650835` / `c66bce0` / `25b8f01`）留在本地等 Human 发话。
+阻塞：无。全部提交留在本地等 Human 发话（第三步的两个提交同样不推）。
 
 ## 完成条件
 
-- 三步各自全绿，且 [`spec.md`](spec.md) §C.4 的四项验收在能跑完整 Team 测试的环境里做完：现有 context 测试、`dsh-developer verify` 真机跑三个 context 工具、带旧 `new_context` 事件与旧 section 名的历史日志迁移、rollover 崩溃恢复演练。**前三项尚未做**，是本工作项收尾前必须补的。
-- Team 不再持有引擎已有机制的副本（自有 fold、timeline candidates 派生）。
+- 三步各自全绿，且 [`spec.md`](spec.md) §C.4 的四项验收在能跑完整 Team 测试的环境里做完：现有 context 测试 ✅、`dsh-developer verify` 真机跑三个 context 工具 ⏳、带旧 `new_context` 事件与旧 section 名的历史日志迁移 ⏳、rollover 崩溃恢复演练 ⏳。**后三项尚未做**，是本工作项收尾前必须补的。
+- Team 不再持有引擎已有机制的副本（自有 fold、timeline candidates 派生）✅。
 
 ## 正式文档出口
 
