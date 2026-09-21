@@ -5,11 +5,17 @@
  * creation, inbox handling — happens in the Host coordinator after the
  * result is durably appended. `concludeTurn()` rides the success result of
  * `context_rollover` and `context_checkpoint`, so sibling calls settle in model
- * order before the turn closes.
+ * order before the turn closes. The retrieval ladder (`context_search`,
+ * `context_read`) is the engine's own tool definitions, mounted with Team's
+ * authorization: the ladder's argument surface, budgets, refs, wording, and
+ * renders are never re-authored here.
  * @module @wowyuarm/dsh-agent-team/context-tools
  */
 
+import type { Context } from '@deepseek-ai/cordis'
+import { createSearchTools } from '@wowyuarm/dsh-context-continuity'
 import type { AgentTeamContextCheckpointRef } from '@wowyuarm/dsh-agent-team/types'
+import { createTeamContextSearchAdapter } from '@wowyuarm/dsh-agent-team/host'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import { member, service } from './host-access.ts'
 
@@ -174,8 +180,14 @@ const contextTimeline = defineTool({
   },
 })
 
-export function registerContextTools(ctx: { readonly tools: { register(tool: unknown): void } }): void {
+export function registerContextTools(ctx: Context): void {
   ctx.tools.register(contextRollover)
   ctx.tools.register(contextCheckpoint)
   ctx.tools.register(contextTimeline)
+  // The retrieval ladder is the engine's: Team supplies the subject noun and
+  // the authorization behind it (the Member's own Session lineage), and the
+  // Host supplies the fold configuration, the meter, and the budget.
+  const retrieval = createSearchTools(createTeamContextSearchAdapter(ctx), { subjectNoun: 'Team Member' })
+  ctx.tools.register(retrieval.search)
+  ctx.tools.register(retrieval.read)
 }

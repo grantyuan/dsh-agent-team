@@ -1364,7 +1364,7 @@ describe('Agent Team Member lifecycle', () => {
   })
 
   it('validates the final Team tool marker during unpublished setup', async () => {
-    expect(AGENT_TEAM_TOOL_NAMES).toEqual(['team_inbox', 'team_thread', 'team_message', 'team_claim', 'team_view', 'context_rollover', 'context_checkpoint', 'context_timeline'])
+    expect(AGENT_TEAM_TOOL_NAMES).toEqual(['team_inbox', 'team_thread', 'team_message', 'team_claim', 'team_view', 'context_rollover', 'context_checkpoint', 'context_timeline', 'context_search', 'context_read'])
     const definition = markAgentTeamPreset({ name: 'team_message' })
     expect(Reflect.get(definition, Symbol.for('@wowyuarm/dsh-agent-team.preset'))).toBe(true)
   })
@@ -1492,7 +1492,7 @@ describe('Agent Team Member lifecycle', () => {
 describe('Agent Team fresh context_rollover rollover (ticket 01)', () => {
   it('rolls a Member over end to end: handoff first, fresh Session, archive, facts survive', async () => {
     const adapter = new ScriptedAdapter()
-    const { ctx, workspaceId, archived } = await realHarness(adapter)
+    const { ctx, workspaceId, archived, pressureState } = await realHarness(adapter)
     const channel = await ctx.agentTeam.createChannel({ requestId: requestId('rollover-channel'), workspaceId, name: 'engineering', description: 'Engineering work' })
     const added = await ctx.agentTeam.addMember({ requestId: requestId('rollover-add'), workspaceId, handle: 'builder', description: 'Builds the implementation', presetId: 'team-member', channelRefs: [channel.channel.channelRef] })
     const previousSessionId = added.status.member.sessionId
@@ -1505,6 +1505,14 @@ describe('Agent Team fresh context_rollover rollover (ticket 01)', () => {
     // The generation after the rollover consumes the handoff and replies.
     adapter.enqueue(textResponse('Continuing from the handoff.'))
     const liveBefore = ctx.agents.get(previousSessionId)!
+    // The retired generation's own source shape, captured while it is still
+    // live: this is exactly what the ladder hands the Host to price a return.
+    const retiredSource = {
+      sessionId: previousSessionId,
+      header: liveBefore.session.header,
+      inheritedEventCount: liveBefore.session.inheritedEventCount,
+      events: liveBefore.session.ownEvents(),
+    }
     liveBefore.followup(createUserMessage({ content: [{ type: 'text', text: 'Please hand off now.' }], source: { kind: 'user' } }))
 
     // The rollover completes asynchronously after the containing turn ends.
@@ -1555,6 +1563,33 @@ describe('Agent Team fresh context_rollover rollover (ticket 01)', () => {
     expect(handoffText).toContain(handoff)
     // The generation consumed the handoff and answered.
     expect(adapter.requests.length).toBeGreaterThanOrEqual(2)
+
+    // The retrieval ladder's authorization set is the real Host's answer, not
+    // the adapter's: the live generation first, then the generation the Member
+    // rolled over from — nothing else is searchable.
+    expect(ctx.agentTeam.ownedSessionIdsForAgent(liveAfter)).toEqual([newSessionId, previousSessionId])
+
+    // The handoff budget the ladder prices against comes from the Member's own
+    // route limits, and stays a number when the route cannot be resolved.
+    await expect(ctx.agentTeam.contextHandoffAtForAgent(liveAfter)).resolves.toBeGreaterThan(0)
+
+    // The ladder folds what it searches with the same configuration the
+    // timeline folds with, legacy rollover alias included.
+    const foldConfig = ctx.agentTeam.contextFoldConfig()
+    expect(foldConfig.rolloverToolNames).toContain('context_rollover')
+    expect(foldConfig.checkpointToolName).toBe('context_checkpoint')
+
+    // A live source is priced in the live Session's own tokens and a retired one
+    // through its own detached replay — never the current generation's.
+    pressureState.bySession.set(newSessionId, 777)
+    pressureState.bySession.set(previousSessionId, 4242)
+    expect(ctx.agentTeam.measureContextSourceForAgent(liveAfter, {
+      sessionId: newSessionId,
+      header: liveAfter.session.header,
+      inheritedEventCount: liveAfter.session.inheritedEventCount,
+      events: liveAfter.session.ownEvents(),
+    })).toBe(777)
+    expect(ctx.agentTeam.measureContextSourceForAgent(liveAfter, retiredSource)).toBe(4242)
   })
 
   it('an ordinary Session never receives the context_rollover tool', async () => {

@@ -28,10 +28,10 @@ import { HUMAN_PROFILE_DEFAULT_NAME, HUMAN_PROFILE_REPO_URL, HUMAN_PROFILE_SETTI
 import { humanAvatarsRoot, readHumanAvatar, removeHumanAvatar, writeHumanAvatar } from './human-avatar.ts'
 import { createHumanUpdateChecker } from './human-update-check.ts'
 import { PressurePolicyCoordinator } from './pressure-policy.ts'
-import { CONTEXT_CONTINUITY_PROJECTION_KEY, type ContextProjectionState, type TransitionPlan } from '@wowyuarm/dsh-context-continuity'
+import { CONTEXT_CONTINUITY_PROJECTION_KEY, type ContextProjectionConfig, type ContextProjectionState, type ContextTimelineSource, type TransitionPlan } from '@wowyuarm/dsh-context-continuity'
 import { createTeamContextManagement, TEAM_CONTEXT_CODEC } from './context-continuity-host.ts'
 import { AGENT_TEAM_PLUGIN_ID } from './context-source.ts'
-import { boundaryByRef, carriedInputOf, checkpointByRef, checkpointRefFor, createTeamContextProjectionDefinition, foldTeamContextProjection, isReminderNoticeSummary, TeamContextProjectionHost, timelineCandidates, type TimelineCandidate } from './context-projection.ts'
+import { boundaryByRef, carriedInputOf, checkpointByRef, checkpointRefFor, createTeamContextProjectionConfig, createTeamContextProjectionDefinition, foldTeamContextProjection, isReminderNoticeSummary, TeamContextProjectionHost, timelineCandidates, type TimelineCandidate } from './context-projection.ts'
 import { AGENT_TEAM_HUMAN_MEMBER_ID, AgentTeamLedger, agentTeamHumanActor, type AgentTeamDurableMemberResult } from './ledger.ts'
 import { AGENT_TEAM_TOOL_NAMES, deepCopyCapabilities, memberMemoryDirectoryName, MemberRuntime } from './member-runtime.ts'
 import type { MemberSkillSelectionRef } from './member-skills.ts'
@@ -143,6 +143,7 @@ export { AGENT_TEAM_HUMAN_HANDLE, AGENT_TEAM_HUMAN_MEMBER_ID, AGENT_TEAM_INITIAL
 export { HUMAN_PROFILE_DEFAULT_NAME, HUMAN_PROFILE_REPO_URL, HUMAN_PROFILE_SETTINGS_NAMESPACE, HUMAN_PROFILE_SETTINGS_SCHEMA, HUMAN_PROFILE_VERSION, assertValidHumanName, normalizeHumanName } from './human-profile.ts'
 export { humanAvatarsRoot } from './human-avatar.ts'
 export { AGENT_TEAM_TOOL_NAMES } from './member-runtime.ts'
+export { createTeamContextSearchAdapter } from './context-search.ts'
 
 /** Process-stable marker carried by the final Team message tool definition. */
 export const AGENT_TEAM_PRESET_MARKER = Symbol.for('@wowyuarm/dsh-agent-team.preset')
@@ -2075,11 +2076,11 @@ export default class AgentTeam extends TypertRemoteService {
 
   /**
    * Replayed measurement of one lineage source: the live current Session
-   * measures directly; an archived ancestor measures through a borrowed
-   * prepared Session, so a seed's retained cost is priced in the SOURCE's
-   * own tokens — never the current generation's. Returns undefined when no
-   * meter is available or the source cannot be borrowed; callers fail
-   * closed on the unknown.
+   * measures directly; an archived ancestor measures through a detached
+   * Session rebuilt from the source's own log, so a seed's retained cost is
+   * priced in the SOURCE's own tokens — never the current generation's.
+   * Returns undefined when no meter is available or the source cannot be
+   * replayed; callers fail closed on the unknown.
    */
   private async sourceUsageTokens(sessionId: SessionId, live: boolean, agent: Agent): Promise<number | undefined> {
     const meter = agent.ctx.get('tokenMeter')
@@ -2091,12 +2092,73 @@ export default class AgentTeam extends TypertRemoteService {
     // failing meter is unmeasurable and prices as UNKNOWN.
     const read = await this.sessionReader.read(sessionId)
     if (!read.ok) return undefined
+    return this.measureDetachedSource(agent, {
+      sessionId,
+      header: read.inspection.header,
+      inheritedEventCount: read.inspection.inheritedEventCount,
+      events: read.inspection.events,
+    })
+  }
+
+  /**
+   * One already-read source's replayed measurement: an archived generation is
+   * rebuilt as a detached Session and measured in its own tokens. Undefined
+   * means unmeasurable, never free.
+   */
+  private measureDetachedSource(agent: Agent, source: ContextTimelineSource): number | undefined {
+    const meter = agent.ctx.get('tokenMeter')
+    if (meter === undefined) return undefined
     try {
-      const session = Session.create(sessionId, read.inspection.events, read.inspection.header, read.inspection.inheritedEventCount)
+      const session = Session.create(source.sessionId, source.events, source.header, source.inheritedEventCount)
       return meter.measure(session)?.totalTokens
     } catch {
       return undefined
     }
+  }
+
+  /**
+   * One source's replayed measurement, in that source's own tokens, for a
+   * caller that already holds the source: the live generation measures
+   * directly, an archived one is rebuilt from the log it came with. Undefined
+   * means unmeasurable — a caller must never price an unknown source as free.
+   */
+  measureContextSourceForAgent(agent: Agent, source: ContextTimelineSource): number | undefined {
+    if (String(source.sessionId) === String(agent.session.id)) {
+      return agent.ctx.get('tokenMeter')?.measure(agent.session)?.totalTokens
+    }
+    return this.measureDetachedSource(agent, source)
+  }
+
+  /**
+   * The Sessions one Member's own history covers, newest first: the ledger's
+   * replay-derived Session lineage. The live generation is included even
+   * before its binding is recorded, because the retrieval ladder requires the
+   * active Session to sit inside the authorized set it searches.
+   */
+  ownedSessionIdsForAgent(agent: Agent): readonly SessionId[] {
+    const member = this.memberForAgent(agent)
+    if (member === undefined) throw new Error('context_search requires an active Team Member')
+    const lineage = this.requireLedger().sessionLineageForMember(member.memberId)
+    const live = agent.session.id
+    return lineage.some(id => String(id) === String(live)) ? lineage : [live, ...lineage]
+  }
+
+  /**
+   * The one fold configuration the registered projection unit and every cold
+   * fold use. The retrieval ladder folds the sources it searches with the same
+   * configuration, so a searched generation reads exactly as the timeline
+   * reads it — same codec, same boundary attribution.
+   */
+  contextFoldConfig(): ContextProjectionConfig {
+    return createTeamContextProjectionConfig(this.contextProjectionHost)
+  }
+
+  /**
+   * The retained-context budget above which a return anchor stops being worth
+   * selecting, from the calling Member's own route limits.
+   */
+  async contextHandoffAtForAgent(agent: Agent): Promise<number> {
+    return (await this.routeLimitsForAgent(agent))?.handoffAt ?? CONTEXT_HANDOFF_AT_CAP
   }
 
   /**
