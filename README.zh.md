@@ -125,6 +125,8 @@ dsh web
 
 ## 开发
 
+贡献指南：[`CONTRIBUTING.zh.md`](CONTRIBUTING.zh.md)——怎么提改动、CI 会跑什么、PR 里要写什么。
+
 维护中的文档入口是 [`docs/README.zh.md`](docs/README.zh.md)。常用检查命令：
 
 ```sh

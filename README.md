@@ -125,6 +125,8 @@ Published packages include built artifacts. A local checkout needs the adjacent 
 
 ## Development
 
+Contributing: [`CONTRIBUTING.md`](CONTRIBUTING.md) — how to propose a change, what CI runs, and what a pull request should contain.
+
 Read [`docs/README.md`](docs/README.md) for the maintained documentation index. The usual checks are:
 
 ```sh

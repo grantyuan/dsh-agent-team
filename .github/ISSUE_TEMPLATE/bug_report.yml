@@ -36,6 +36,19 @@ body:
     validations:
       required: true
 
+  - type: dropdown
+    id: startup
+    attributes:
+      label: How DSH was started
+      description: "The launch form decides which modules load: a published `dsh` runs built artifacts, while a checkout `pnpm dsh` runs source through tsx. Mixing the two forms loads two copies of the Harness modules, and members then stop activating."
+      options:
+        - Published `dsh` (global install or npx)
+        - Checkout `pnpm dsh` (runs from source)
+        - DSH Desktop app
+        - Other / not sure
+    validations:
+      required: true
+
   - type: textarea
     id: what-happened
     attributes:
