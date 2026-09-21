@@ -18,3 +18,4 @@ autoInstallPeers: false
 # install with ERR_PNPM_MINIMUM_RELEASE_AGE_VIOLATION until the version ages out.
 minimumReleaseAgeExclude:
   - '@deepseek-ai/dsh-storage-sqlite@0.1.5-rc.1'
+  - '@wowyuarm/dsh-context-continuity@0.1.0'

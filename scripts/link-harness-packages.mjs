@@ -6,15 +6,16 @@
 // discovery.ts packageInstalled). tsconfig facades cover typecheck; this
 // covers the on-disk resolution the host tests still perform.
 //
-// It also links the sibling context-continuity engine, the other external
-// plugin this bundle consumes. That checkout is a full package layout rather
-// than a Harness workspace package, so it takes the same node_modules link:
-// the bundle imports `@wowyuarm/dsh-context-continuity` by name and must
-// resolve exactly one copy of it.
+// It also provides the context-continuity engine, the other external plugin
+// this bundle consumes, when the resolution is a sibling checkout
+// (scripts/continuity-dir.mjs): the bundle imports
+// `@wowyuarm/dsh-context-continuity` by name and must resolve exactly one copy
+// of it. A clean checkout resolves the published package the package manager
+// already installed instead, and then there is nothing to link.
 import { existsSync, mkdirSync, readdirSync, readFileSync, symlinkSync } from 'node:fs'
 import { dirname, join, relative, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { continuityDir, continuityEntry } from './continuity-dir.mjs'
+import { continuityDir, continuityEntry, continuityFromSibling } from './continuity-dir.mjs'
 import { harnessDir } from './harness-dir.mjs'
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..')
@@ -73,18 +74,21 @@ if (existsSync(vendorRoot)) {
     linkPackage(name, join(vendorRoot, entry.name))
   }
 }
-// The sibling context-continuity engine: the bundle imports it by package
-// name, and until it is published this link is what makes that name resolve
-// (scripts/continuity-dir.mjs owns which checkout). The link is a real
-// package layout, so an unbuilt engine fails here rather than as a resolution
-// error inside a test that has nothing to do with it.
+// The context-continuity engine: a sibling checkout is linked in by package
+// name (scripts/continuity-dir.mjs owns which checkout), while an installed
+// package is already where that name resolves. Either way the built entry must
+// exist, so an unbuilt engine fails here rather than as a resolution error
+// inside a test that has nothing to do with it.
 if (!existsSync(continuityEntry)) {
   throw new Error(
-    `The context-continuity engine at '${continuityDir}' has no built lib/index.js.`
-    + ` Run 'npm run build' in that checkout, then rerun this script.`,
+    continuityFromSibling
+      ? `The context-continuity engine at '${continuityDir}' has no built lib/index.js.`
+        + ` Run 'npm run build' in that checkout, then rerun this script.`
+      : `The installed context-continuity engine at '${continuityDir}' has no lib/index.js.`
+        + ` Reinstall it (pnpm install), then rerun this script.`,
   )
 }
-linkPackage('@wowyuarm/dsh-context-continuity', continuityDir)
+if (continuityFromSibling) linkPackage('@wowyuarm/dsh-context-continuity', continuityDir)
 // The bundle's own self-reference must resolve for preset rows that name it.
 const selfRef = join(repoRoot, 'node_modules', '@wowyuarm')
 mkdirSync(selfRef, { recursive: true })

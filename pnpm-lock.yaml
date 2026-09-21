@@ -30,6 +30,9 @@ importers:
       '@types/react-dom':
         specifier: ~18.3.7
         version: 18.3.7(@types/react@18.3.31)
+      '@wowyuarm/dsh-context-continuity':
+        specifier: ^0.1.0
+        version: 0.1.0
       jscpd:
         specifier: ^5.0.16
         version: 5.0.16
@@ -525,6 +528,18 @@ packages:
   '@vitest/utils@4.1.10':
     resolution: {integrity: sha512-fy9am/HWxbaGt/Sawrp90vt6Y6jQwf1RX77cz3uwoJwJVMli/e1IEwRPnMNJ7vKfPTwo0diXifkpPvwH9v7nGA==}
 
+  '@wowyuarm/dsh-context-continuity@0.1.0':
+    resolution: {integrity: sha512-91bAAd/jyfwTqZxkhwdFH66oDMSpevDj5Nc3BSNjtY8RsZiX6YuJIZfiduf90FZ8SqAUg8f+eU3GOnTayBbO6g==}
+    peerDependencies:
+      '@deepseek-ai/cordis': ^4.0.1
+      '@deepseek-ai/dsh-agent': '>=0.1.5-rc.1 <0.1.6'
+      '@deepseek-ai/dsh-llm': '>=0.1.5-rc.1 <0.1.6'
+      '@deepseek-ai/dsh-session': '>=0.1.5-rc.1 <0.1.6'
+      '@deepseek-ai/dsh-session-persistence': '>=0.1.5-rc.1 <0.1.6'
+      '@deepseek-ai/dsh-session-projection': '>=0.1.5-rc.1 <0.1.6'
+      '@deepseek-ai/dsh-session-query': '>=0.1.5-rc.1 <0.1.6'
+      '@deepseek-ai/dsh-tools': '>=0.1.5-rc.1 <0.1.6'
+
   ansi-regex@5.0.1:
     resolution: {integrity: sha512-quJQXlTSUGL2LH9SUXo8VwsY4soanhgo6LNSm84E1LBcE8s3O0wpdiRzyR9z/ZZJMlMWv37qOOb9pdJlMUEKFQ==}
     engines: {node: '>=8'}
@@ -959,6 +974,9 @@ packages:
   zod@4.4.3:
     resolution: {integrity: sha512-ytENFjIJFl2UwYglde2jchW2Hwm4GJFLDiSXWdTrJQBIN9Fcyp7n4DhxJEiWNAJMV1/BqWfW/kkg71UDcHJyTQ==}
 
+  zod@4.6.5:
+    resolution: {integrity: sha512-v5l/aFXZQeai4awLbOpSoHecE9UiMrnfx75tEXLjNonXVARxQ5mOeipTjROUchszUNCqnE+hqAMujRsRHsut2Q==}
+
 snapshots:
 
   '@asamuzakjp/css-color@6.0.7':
@@ -1274,6 +1292,10 @@ snapshots:
       '@vitest/pretty-format': 4.1.10
       convert-source-map: 2.0.0
       tinyrainbow: 3.1.1
+
+  '@wowyuarm/dsh-context-continuity@0.1.0':
+    dependencies:
+      zod: 4.6.5
 
   ansi-regex@5.0.1: {}
 
@@ -1667,3 +1689,5 @@ snapshots:
   xmlchars@2.2.0: {}
 
   zod@4.4.3: {}
+
+  zod@4.6.5: {}
