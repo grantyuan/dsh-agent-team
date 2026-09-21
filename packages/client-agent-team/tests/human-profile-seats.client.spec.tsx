@@ -57,6 +57,31 @@ describe('Human identity in the Team surfaces', () => {
     expect(page.querySelector('img')).toBeNull()
   })
 
+  it('keeps the uploaded avatar off Agent rows in the channel feed', async () => {
+    const { page } = await openSeededChannel({
+      humanProfile: { name: 'Ada', avatarRef: 'avatar:1' },
+      seededMessages: [
+        { body: 'human note', occurredAt: '2026-08-21T10:00:00.000Z', sender: 'human' },
+        { body: 'agent note', occurredAt: '2026-08-21T10:05:00.000Z', sender: 'agent' },
+      ],
+    })
+    // The profile picture belongs to the Human's own seat: an Agent row keeps
+    // its own hue and initial, so the feed never paints two people alike.
+    const seats = await waitFor(() => {
+      const rows = [...page.querySelectorAll('article')]
+      if (rows.length < 2) throw new Error('feed rows not mounted')
+      return rows.map(row => ({
+        human: row.hasAttribute('data-human'),
+        seat: row.querySelector('[data-avatar]')?.getAttribute('data-avatar'),
+        src: row.querySelector('img')?.getAttribute('src'),
+      }))
+    })
+    expect(seats).toEqual([
+      { human: true, seat: 'image', src: 'data:image/png;base64,AAAA' },
+      { human: false, seat: 'initial', src: undefined },
+    ])
+  })
+
   it('chips an agent message that wrote the historic human handle as the renamed Human', async () => {
     const { page } = await openSeededChannel({
       humanProfile: { name: 'Ada' },

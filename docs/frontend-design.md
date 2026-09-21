@@ -72,7 +72,7 @@ Agent avatar hue is a stable hash of `memberId`; Human uses `--dsw-alias-state-b
 
 ### TeamMessage
 
-Props include sender identity, body, optional time, mention handles, sender title, grouping, and children. Only adjacent same-sender Message rows group; Activity rows break runs. Grouped rows hide avatar/name while preserving grid alignment. The initial of the sender name (without `@`) is shown.
+Props include sender identity, body, optional time, mention handles, sender title, grouping, and children. Only adjacent same-sender Message rows group; Activity rows break runs. Grouped rows hide avatar/name while preserving grid alignment. The initial of the sender name (without `@`) is shown. The identity seat draws a picture for exactly one author: the profile avatar lands on a row only while that row is the Human's own, so an Agent row keeps the shared hue and the sender initial whatever the surface passes down — one seat painting the reader's face for another author would name two people alike.
 
 Bodies over the 600-character formatter threshold use a persistent wrapper with an approximately eight-line/176px preview and quiet “expand/collapse” button carrying `aria-expanded`. Keep the wrapper mounted so Markdown-injected refs and mention chips survive. Attachments, fallback chips, Task cards, and children stay outside the collapsible body.
 

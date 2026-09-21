@@ -28,7 +28,8 @@ export interface TeamMessageProps {
       hairline-separated entry stays self-identifying. */
   readonly showGroupedTime?: boolean
   readonly attachments?: readonly AgentTeamMessageAttachment[] | undefined
-  /** The Human's uploaded avatar; absent draws the initial on the business-tinted chip. */
+  /** The Human's uploaded avatar; only the Human's own row draws it, and absent
+   * or undecodable bytes draw the initial on the business-tinted chip. */
   readonly avatarUrl?: string | undefined
   /** Cache readback for thumbnails; absent on surfaces without the remotes. */
   readonly loadAttachment?: TeamConversationProps['getAttachment'] | undefined
@@ -58,9 +59,11 @@ export interface TeamMessageProps {
  */
 export const TeamMessage = memo(function TeamMessage({ senderName, memberId, human, avatarUrl, body, occurredAt, mentionNames, senderTitle, grouped, showGroupedTime, attachments, loadAttachment, t, onOpenRef, onResolveTaskRefs, onResolveThreadRefs, channelNameOf, memberOf, onOpenMemberSession, children }: TeamMessageProps) {
   const avatarStyle = human ? undefined : { '--team-avatar-hue': memberHue(memberId) } as CSSProperties
-  // A seat draws the sender's picture only while those bytes decode; anything
-  // else keeps the initial, which is what the fallback promises.
-  const identityImage = useAvatarImage(avatarUrl)
+  // Only the Human's own row may draw a picture: the profile owns those bytes,
+  // and one seat painting the reader's face for another author would name two
+  // people alike. A seat draws it while those bytes decode; anything else keeps
+  // the initial, which is what the fallback promises.
+  const identityImage = useAvatarImage(human ? avatarUrl : undefined)
   // Literal bodies carry mention chips inline — Human input always, and
   // plain-prose Agent bodies where literal rendering loses nothing. Rich
   // Markdown keeps unmatched structured mentions in the trailing row.

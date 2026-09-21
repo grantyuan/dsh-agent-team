@@ -2431,6 +2431,12 @@ it('configures the Human profile from Settings in real Web', async () => {
   await row.waitFor()
   await expect.poll(async () => await row.textContent()).toContain('Ada')
   expect(await row.textContent()).not.toContain('Human')
+  // The picture lands on the row the profile describes: the Human's own message
+  // draws it in the assembled bundle (the Agent row keeping its initial is
+  // pinned by the component suite, which seeds both authors into one feed).
+  const humanPicture = row.locator('[data-avatar="image"]')
+  await expect.poll(async () => await humanPicture.count()).toBe(1)
+  expect(await humanPicture.getAttribute('src')).toMatch(/^data:image\/png;base64,/)
   await page.screenshot({ path: join(UI09_SHOTS, 'renamed-human-in-timeline.png'), fullPage: true })
 
   // The identity is not page-local either. The Inbox row that names the Human
