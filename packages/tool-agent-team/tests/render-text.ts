@@ -19,13 +19,10 @@ export function teamTools(): Map<string, ToolDefinition> {
 
 export function contextTools(): Map<string, ToolDefinition> {
   const registered = new Map<string, ToolDefinition>()
-  // The context rows resolve the Host and the query service at call time, so
-  // the render harness only needs the registry — a `get` that answers nothing
-  // keeps that laziness honest instead of faking a service.
   registerContextTools({ tools: { register: (tool: unknown) => {
     const definition = tool as ToolDefinition
     registered.set(definition.name, definition)
-  } }, get: () => undefined } as never)
+  } } })
   return registered
 }
 

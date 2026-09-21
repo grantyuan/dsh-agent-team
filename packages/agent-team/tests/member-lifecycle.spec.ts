@@ -1364,7 +1364,7 @@ describe('Agent Team Member lifecycle', () => {
   })
 
   it('validates the final Team tool marker during unpublished setup', async () => {
-    expect(AGENT_TEAM_TOOL_NAMES).toEqual(['team_inbox', 'team_thread', 'team_message', 'team_claim', 'team_view', 'context_rollover', 'context_checkpoint', 'context_timeline', 'context_search', 'context_read'])
+    expect(AGENT_TEAM_TOOL_NAMES).toEqual(['team_inbox', 'team_thread', 'team_message', 'team_claim', 'team_view', 'context_rollover', 'context_checkpoint', 'context_timeline'])
     const definition = markAgentTeamPreset({ name: 'team_message' })
     expect(Reflect.get(definition, Symbol.for('@wowyuarm/dsh-agent-team.preset'))).toBe(true)
   })
@@ -1506,7 +1506,7 @@ describe('Agent Team fresh context_rollover rollover (ticket 01)', () => {
     adapter.enqueue(textResponse('Continuing from the handoff.'))
     const liveBefore = ctx.agents.get(previousSessionId)!
     // The retired generation's own source shape, captured while it is still
-    // live: this is exactly what the ladder hands the Host to price a return.
+    // live: this is exactly what the timeline hands the Host to price a row.
     const retiredSource = {
       sessionId: previousSessionId,
       header: liveBefore.session.header,
@@ -1564,17 +1564,8 @@ describe('Agent Team fresh context_rollover rollover (ticket 01)', () => {
     // The generation consumed the handoff and answered.
     expect(adapter.requests.length).toBeGreaterThanOrEqual(2)
 
-    // The retrieval ladder's authorization set is the real Host's answer, not
-    // the adapter's: the live generation first, then the generation the Member
-    // rolled over from — nothing else is searchable.
-    expect(ctx.agentTeam.ownedSessionIdsForAgent(liveAfter)).toEqual([newSessionId, previousSessionId])
-
-    // The handoff budget the ladder prices against comes from the Member's own
-    // route limits, and stays a number when the route cannot be resolved.
-    await expect(ctx.agentTeam.contextHandoffAtForAgent(liveAfter)).resolves.toBeGreaterThan(0)
-
-    // The ladder folds what it searches with the same configuration the
-    // timeline folds with, legacy rollover alias included.
+    // The timeline folds its sources with the same configuration the
+    // projection folds with, legacy rollover alias included.
     const foldConfig = ctx.agentTeam.contextFoldConfig()
     expect(foldConfig.rolloverToolNames).toContain('context_rollover')
     expect(foldConfig.checkpointToolName).toBe('context_checkpoint')

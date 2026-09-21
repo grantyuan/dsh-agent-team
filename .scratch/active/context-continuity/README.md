@@ -4,7 +4,7 @@
 
 active — 引擎已独立落地并发布（`@wowyuarm/dsh-context-continuity`，发布与仓库由 @Ferry 负责），Team 侧接入的三步已全部落地并提交（尚未推送）。
 
-last-checked: 2026-09-21（第三步 timeline/search 接入完成：commit A `0bf79f1` 挂载引擎检索阶梯，commit B 把 `context_timeline` 改走 `readContextTimeline` 并删除 Team 自己的 candidates 派生；随后补上 §C.4 第 4 项 rollover 崩溃恢复演练的两个分支覆盖。按 Human 要求「team那边先不急」，这些提交暂不推）。
+last-checked: 2026-09-21（第三步 timeline/search 接入完成：commit A `0bf79f1` 挂载引擎检索阶梯，commit B 把 `context_timeline` 改走 `readContextTimeline` 并删除 Team 自己的 candidates 派生；随后补上 §C.4 第 4 项 rollover 崩溃恢复演练的两个分支覆盖。**同日 23:00 Human 决定把检索阶梯整个撤回**——`context_search` / `context_read`、`packages/agent-team/src/context-search.ts` 与 `dsh-session-query` peer 全部移除（适配成本 + 额外 peer），Team 最终只发八个工具，timeline 半边保持不变；该移除是一个本地 revert 式提交。按 Human 要求「team那边先不急」，这些提交暂不推）。
 
 ## 这是什么
 
@@ -16,7 +16,7 @@ Team 的 context management（rollover / checkpoint / 投影 fold / 压力策略
 
 1. ✅ coordinator + codec 接入（Team `37336bb`）
 2. ✅ 投影 fold 迁到引擎的 `contextContinuity` unit，Team 只留 host 半边（`c66bce0`）；引擎解析改为「相邻 checkout → registry 已安装包」+ 根 devDependency（`25b8f01`），干净 checkout 形状已端到端验证
-3. ✅ **timeline / search 接入** —— ticket [`issues/01-team-timeline-search.md`](issues/01-team-timeline-search.md)：commit A `0bf79f1`（ledger 派生 Session 谱系 + `dsh-session-query` peer + 引擎 `createSearchTools` 挂载 `context_search`/`context_read`），commit B（`context_timeline` → 引擎 `readContextTimeline`，Team 只保留「保留前缀停留在单一 Thread 内」这一条更严的边界判定，`timelineCandidates` / `threadsEnteringContext` / 重复 fold 删除，每行渲染加短 `anchor` 标识）
+3. ✅ **timeline 接入**；检索阶梯（search）已于同日撤回 —— ticket [`issues/01-team-timeline-search.md`](issues/01-team-timeline-search.md)：commit A `0bf79f1`（ledger 派生 Session 谱系 + `dsh-session-query` peer + 引擎 `createSearchTools` 挂载 `context_search`/`context_read`——**该阶梯已整体移除**），commit B（`context_timeline` → 引擎 `readContextTimeline`，Team 只保留「保留前缀停留在单一 Thread 内」这一条更严的边界判定，`timelineCandidates` / `threadsEnteringContext` / 重复 fold 删除，每行渲染加短 `anchor` 标识）
 
 阻塞：无。全部提交留在本地等 Human 发话（第三步的两个提交同样不推）。
 

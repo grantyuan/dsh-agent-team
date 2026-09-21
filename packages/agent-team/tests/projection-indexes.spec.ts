@@ -302,14 +302,13 @@ describe('large-ledger projection equivalence (issue #21)', () => {
       observationsA0: source.threadObservations(human, { workspaceId: alpha, taskRef: thread.taskRef! }),
       observationsA5: source.threadObservations(human, { workspaceId: alpha, threadRef: thread.threadRef }),
       taskNumbers: source.view({ workspaceId: alpha, limit: 1 }).taskNumbers,
-      sessionLineageA: source.sessionLineageForMember('member:agent-a' as AgentTeamMemberId),
     }
   }
 
-  // The Session lineage is the authorization set a Member's own history search
-  // runs against, so it must be complete and ordered without reading one
-  // Session log — and a restart must rebuild it from the operation table alone.
-  it('derives the whole Session lineage per Member from the transition records, newest first', async () => {
+  // The previous-Session index feeds crash recovery, so it must be derived
+  // without reading a Session log — and a restart must rebuild it from the
+  // operation table alone.
+  it('derives each Member\'s previous Session and last transition from the transition records', async () => {
     const { ledger, table } = await openLedger()
     await ledger.initialize()
     const channel = (await ledger.createChannel({ requestId: requestId('lineage-channel'), workspaceId: alpha, name: 'lineage', description: 'Lineage', memberIds: [], actor: human })).value.channel
@@ -320,27 +319,24 @@ describe('large-ledger projection equivalence (issue #21)', () => {
       channelRefs: [channel.channelRef], actor: human,
       member: { memberId, sessionId: session('0'), workspaceId: alpha, handle: 'lineage', description: 'Lineage member', presetId: 'team-member', privateMemoryPath: '/tmp/lineage', state: 'enabled' },
     })
-    // A Member that never moved has exactly its current binding.
-    expect(ledger.sessionLineageForMember(memberId)).toEqual([session('0')])
+    // A Member that never moved has left no Session behind.
     expect(ledger.previousSessionForMember(memberId)).toBeUndefined()
 
     // Human renewal, then a Member's own rollover, then another renewal: both
-    // writers feed one chain.
+    // writers feed the same index.
     await ledger.renewMemberSession({ requestId: requestId('lineage-renew-1'), workspaceId: alpha, memberId, sessionId: session('1'), actor: human })
     await ledger.rolloverMemberSession({ requestId: requestId('lineage-rollover'), workspaceId: alpha, memberId, actor: memberActor(memberId, 'lineage'),
       previousSessionId: session('1'), newSessionId: session('2'), handoffEventSeq: 7 as never, trigger: 'model' })
     await ledger.renewMemberSession({ requestId: requestId('lineage-renew-2'), workspaceId: alpha, memberId, sessionId: session('3'), actor: human })
 
-    expect(ledger.sessionLineageForMember(memberId)).toEqual([session('3'), session('2'), session('1'), session('0')])
     expect(ledger.previousSessionForMember(memberId)).toBe(session('2'))
     expect(ledger.lastTransitionForMember(memberId)).toEqual({ previousSessionId: session('2'), targetSessionId: session('3') })
 
-    // Independent replay over the same table rebuilds the identical chain.
+    // Independent replay over the same table rebuilds the identical index.
     expect(() => ledger.validate()).not.toThrow()
     const fresh = new AgentTeamLedger(table)
-    expect(fresh.sessionLineageForMember(memberId)).toEqual(ledger.sessionLineageForMember(memberId))
     expect(fresh.previousSessionForMember(memberId)).toBe(session('2'))
     // An unknown Member owns nothing rather than failing the read.
-    expect(fresh.sessionLineageForMember('member:unknown' as AgentTeamMemberId)).toEqual([])
+    expect(fresh.previousSessionForMember('member:unknown' as AgentTeamMemberId)).toBeUndefined()
   })
 })

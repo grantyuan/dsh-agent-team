@@ -143,7 +143,6 @@ export { AGENT_TEAM_HUMAN_HANDLE, AGENT_TEAM_HUMAN_MEMBER_ID, AGENT_TEAM_INITIAL
 export { HUMAN_PROFILE_DEFAULT_NAME, HUMAN_PROFILE_REPO_URL, HUMAN_PROFILE_SETTINGS_NAMESPACE, HUMAN_PROFILE_SETTINGS_SCHEMA, HUMAN_PROFILE_VERSION, assertValidHumanName, normalizeHumanName } from './human-profile.ts'
 export { humanAvatarsRoot } from './human-avatar.ts'
 export { AGENT_TEAM_TOOL_NAMES } from './member-runtime.ts'
-export { createTeamContextSearchAdapter } from './context-search.ts'
 
 /** Process-stable marker carried by the final Team message tool definition. */
 export const AGENT_TEAM_PRESET_MARKER = Symbol.for('@wowyuarm/dsh-agent-team.preset')
@@ -2178,35 +2177,12 @@ export default class AgentTeam extends TypertRemoteService {
   }
 
   /**
-   * The Sessions one Member's own history covers, newest first: the ledger's
-   * replay-derived Session lineage. The live generation is included even
-   * before its binding is recorded, because the retrieval ladder requires the
-   * active Session to sit inside the authorized set it searches.
-   */
-  ownedSessionIdsForAgent(agent: Agent): readonly SessionId[] {
-    const member = this.memberForAgent(agent)
-    if (member === undefined) throw new Error('context_search requires an active Team Member')
-    const lineage = this.requireLedger().sessionLineageForMember(member.memberId)
-    const live = agent.session.id
-    return lineage.some(id => String(id) === String(live)) ? lineage : [live, ...lineage]
-  }
-
-  /**
    * The one fold configuration the registered projection unit and every cold
-   * fold use. The retrieval ladder folds the sources it searches with the same
-   * configuration, so a searched generation reads exactly as the timeline
-   * reads it — same codec, same boundary attribution.
+   * fold use, so a generation read back for the timeline reads exactly as the
+   * projection folded it — same codec, same boundary attribution.
    */
   contextFoldConfig(): ContextProjectionConfig {
     return createTeamContextProjectionConfig(this.contextProjectionHost)
-  }
-
-  /**
-   * The retained-context budget above which a return anchor stops being worth
-   * selecting, from the calling Member's own route limits.
-   */
-  async contextHandoffAtForAgent(agent: Agent): Promise<number> {
-    return (await this.routeLimitsForAgent(agent))?.handoffAt ?? CONTEXT_HANDOFF_AT_CAP
   }
 
   /**

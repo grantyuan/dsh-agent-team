@@ -378,13 +378,8 @@ interface Projection {
   /** Ref index over the Message facts, written by `appendMessageFact` alone. */
   readonly messagesByRef: Map<AgentTeamMessageRef, AgentTeamMessage>
   readonly attentionByThread: Map<AgentTeamThreadRef, Set<AgentTeamMemberId>>
-  /**
-   * Retired Session ids per Member, newest first, from the renewal and rollover
-   * records. The Member record names the current binding, so this index plus
-   * that binding is the Member's whole Session lineage — the authorization set
-   * a Member's own history search runs against.
-   */
-  readonly retiredSessionsByMember: Map<AgentTeamMemberId, readonly SessionId[]>
+  /** Latest retired Session id per Member, from the most recent renewal or rollover record. */
+  readonly previousSessions: Map<AgentTeamMemberId, SessionId>
   /** Latest rollover seed envelope per Member, keyed to its target Session; absent on fresh rollovers and renewals. */
   readonly rolloverSeeds: Map<AgentTeamMemberId, { readonly targetSessionId: SessionId; readonly sourceSessionId: SessionId; readonly sourceThroughSeq: SessionLogOffset; readonly checkpointRef: AgentTeamContextCheckpointRef }>
   /** Top-level anchor Message per Thread; the first topLevel Message wins, like the linear scan it replaces. */
@@ -416,7 +411,7 @@ function emptyProjection(): Projection {
     claims: new Map(), tasks: new Map(), threads: new Map(), attention: new Map(), directMarkers: new Map(), activityMarkers: new Map(),
     orderedFacts: [], factsByThread: new Map(), channelRefByThread: new Map(), mentionsByMessage: new Map(), messageCountByThread: new Map(),
     messagesByRef: new Map(),
-    attentionByThread: new Map(), retiredSessionsByMember: new Map(), rolloverSeeds: new Map(),
+    attentionByThread: new Map(), previousSessions: new Map(), rolloverSeeds: new Map(),
     anchorByThread: new Map(), taskNumberByTask: new Map(), taskCountByChannel: new Map(), attentionThreadsByMember: new Map(),
     threadsByWriter: new Map(),
     directMarkersByMember: new Map(), activityMarkersByMember: new Map(), observationsByThread: new Map() }
@@ -802,24 +797,11 @@ export class AgentTeamLedger {
    * The retired Session this Member most recently left through a renewal or
    * rollover — the lineage parent a crash between the durable binding commit
    * and the new Session's activation must reconstruct a handoff from. Read
-   * from the Session lineage index; the Member record itself only names the
+   * from the audit projection; the Member record itself only names the
    * current Session.
    */
   previousSessionForMember(memberId: AgentTeamMemberId): SessionId | undefined {
-    return this.state.retiredSessionsByMember.get(memberId)?.[0]
-  }
-
-  /**
-   * Every Session this Member has lived in, newest first: the current durable
-   * binding followed by each retired generation, oldest last. Replay-derived
-   * from the renewal and rollover records, so it survives a restart without
-   * reading one Session log — and it is the authorization set a Member's own
-   * history search runs against.
-   */
-  sessionLineageForMember(memberId: AgentTeamMemberId): readonly SessionId[] {
-    const member = this.state.members.get(memberId)
-    const retired = this.state.retiredSessionsByMember.get(memberId) ?? []
-    return member === undefined ? [...retired] : [member.sessionId, ...retired]
+    return this.state.previousSessions.get(memberId)
   }
 
   /**
@@ -831,7 +813,7 @@ export class AgentTeamLedger {
    * itself already landed.
    */
   lastTransitionForMember(memberId: AgentTeamMemberId): { readonly previousSessionId: SessionId; readonly targetSessionId: SessionId } | undefined {
-    const previousSessionId = this.previousSessionForMember(memberId)
+    const previousSessionId = this.state.previousSessions.get(memberId)
     const member = this.state.members.get(memberId)
     if (previousSessionId === undefined || member === undefined) return undefined
     return { previousSessionId, targetSessionId: member.sessionId }
@@ -2808,16 +2790,6 @@ export class AgentTeamLedger {
     if (scopes === undefined || scopes.length !== 0) this.projectionVersion = operation.sequence
   }
 
-  /**
-   * Record one retired Session on its Member's lineage index, newest first. A
-   * Session transition never targets a Session id the Member already left
-   * (both writers reject re-binding the current one), so the chain stays a
-   * chain.
-   */
-  private retireSession(target: Projection, memberId: AgentTeamMemberId, sessionId: SessionId): void {
-    target.retiredSessionsByMember.set(memberId, [sessionId, ...target.retiredSessionsByMember.get(memberId) ?? []])
-  }
-
   private applyTo(target: Projection, operation: AgentTeamOperation): void {
     target.ordered.push(operation)
     target.byRequest.set(operation.requestId, operation)
@@ -2852,7 +2824,7 @@ export class AgentTeamLedger {
     }
     if (operation.kind === 'team/member-session-renewed') {
       target.members.set(operation.data.member.memberId, operation.data.member)
-      this.retireSession(target, operation.data.member.memberId, operation.data.previousSessionId)
+      target.previousSessions.set(operation.data.member.memberId, operation.data.previousSessionId)
       // A Human-side renewal is always a fresh start: a stale checkpoint
       // seed from an earlier rollover must never re-seed it.
       target.rolloverSeeds.delete(operation.data.member.memberId)
@@ -2860,7 +2832,7 @@ export class AgentTeamLedger {
     }
     if (operation.kind === 'team/member-session-rolled-over') {
       target.members.set(operation.data.member.memberId, operation.data.member)
-      this.retireSession(target, operation.data.member.memberId, operation.data.previousSessionId)
+      target.previousSessions.set(operation.data.member.memberId, operation.data.previousSessionId)
       // A checkpoint return records its seed envelope: a crash between this
       // commit and the new Session's activation rebuilds the child from the
       // recorded source instead of an empty context.
