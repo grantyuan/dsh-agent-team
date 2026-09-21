@@ -3233,6 +3233,66 @@ describe('Agent Team recovery hardening (ticket 04)', () => {
     expect(() => ctx.agentTeam.validateLedger()).not.toThrow()
   })
 
+  it('finishes a spent rollover intent at activation when a restart lands after the turn ended but before the swap', async () => {
+    // The crash window no other test reaches: the rollover result is durable,
+    // the containing turn HAS ended, the lifecycle commit seam refused the
+    // swap, and the process died before any retry. Activation then replays the
+    // Session, re-derives the spent intent, and must complete the transition
+    // itself — commenting the recovery hook out of the activation path leaves
+    // every other test in this suite green, so this case is its only guard.
+    const adapter = new ScriptedAdapter()
+    const { ctx, workspaceId, jobsState, teamFiber: initialFiber } = await realHarness(adapter)
+    const channel = await ctx.agentTeam.createChannel({ requestId: requestId('recb-channel'), workspaceId, name: 'engineering', description: 'Engineering work' })
+    const added = await ctx.agentTeam.addMember({ requestId: requestId('recb-add'), workspaceId, handle: 'builder', description: 'Builds the implementation', presetId: 'team-member', channelRefs: [channel.channel.channelRef] })
+    const memberId = added.status.member.memberId
+    const sessionId = added.status.member.sessionId
+    const live = ctx.agents.get(sessionId)!
+
+    // A job that starts between the durable result and the swap makes the seam
+    // refuse the transition, leaving a SPENT pending intent in the projection
+    // while the old generation stays bound — the recoverable poison state.
+    const disposeObserver = ctx.on('session/event', (session, event) => {
+      if (session.id !== sessionId || event.type !== 'turn/end') return
+      jobsState.jobs = [{ id: 'bash-recb', label: 'racing job', status: 'running', reported: false }]
+    })
+    adapter.enqueue(toolCallResponse('call-recb-nc', 'context_rollover', { handoff: 'the handoff a restart must finish' }))
+    live.followup(createUserMessage({ content: [{ type: 'text', text: 'roll over while a job races the seam' }], source: { kind: 'user' } }))
+    await waitForIdle(ctx, live)
+    await new Promise(resolve => setTimeout(resolve, 100))
+    disposeObserver()
+
+    const poisoned = foldTeamContextProjection(live.session.ownEvents(), { sessionId: live.session.id, inheritedEventCount: live.session.inheritedEventCount })
+    expect(poisoned.pending).toMatchObject({ toolCallId: 'call-recb-nc', handoff: 'the handoff a restart must finish' })
+    expect(poisoned.pending?.turnEndSeq).not.toBe(-1)
+    expect(ctx.agentTeam.members().find(status => status.member.memberId === memberId)!.member.sessionId).toBe(sessionId)
+
+    // Host restart over the same ledger and Session store, with the job
+    // settled: activation alone must finish the interrupted transition.
+    jobsState.jobs = []
+    adapter.enqueue(textResponse('continuing after the recovered swap.'))
+    await initialFiber.dispose()
+    await new Promise(resolve => setImmediate(resolve))
+    await ctx.plugin(AgentTeam)
+
+    const renewed = await waitFor(() => {
+      const status = ctx.agentTeam.members().find(entry => entry.member.memberId === memberId)
+      return status !== undefined && status.member.sessionId !== sessionId ? status : undefined
+    })
+    const next = await waitFor(() => ctx.agents.get(renewed.member.sessionId)!)
+    await waitFor(() => next.session.ownEvents().some(event => event.type === 'user/message') ? true : undefined)
+    await next.whenIdle()
+    await new Promise(resolve => setTimeout(resolve, 100))
+
+    // The recovered swap delivers the ORIGINAL intent's handoff exactly once.
+    const delivered = next.session.ownEvents().flatMap(event => event.type === 'user/message' && isHandoffMessage(event.data) ? [handoffOf(event.data)] : [])
+    expect(delivered).toHaveLength(1)
+    expect(delivered[0]?.previousSessionId).toBe(sessionId)
+    expect(delivered[0]?.newSessionId).toBe(renewed.member.sessionId)
+    expect(delivered[0]?.sections.find(section => section.name === 'HANDOFF')?.text).toBe('the handoff a restart must finish')
+    expect(archivedHandoffs(next)).toHaveLength(1)
+    expect(() => ctx.agentTeam.validateLedger()).not.toThrow()
+  })
+
   it('skips the carried-input replay once the current generation already ran, even when the previous Session log is corrupt', async () => {
     const adapter = new ScriptedAdapter()
     const { ctx, workspaceId, presets, teamFiber: initialFiber } = await realHarness(adapter)

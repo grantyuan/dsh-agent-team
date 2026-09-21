@@ -1,17 +1,19 @@
 /**
  * Team's binding of the context-continuity engine: the message codec Team
  * writes through, the durable rollover identity the host derives, the notice
- * rule the engine consults, and the projection state the host hands back
- * untranslated. The lifecycle behavior these feed — swap, carry, crash repair —
- * stays covered by the member-lifecycle and context-projection suites.
+ * rule the engine consults, the projection state the host hands back
+ * untranslated, and which recovery branch activation takes on a spent rollover
+ * intent. The lifecycle behavior these feed — the swap, carried input, the
+ * end-to-end restart repair — stays covered by the member-lifecycle and
+ * context-projection suites.
  */
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
-import { SessionId } from '@deepseek-ai/dsh-session'
-import { isDroppedNotice, type ContextProjectionState } from '@wowyuarm/dsh-context-continuity'
+import { SessionId, type SessionEvent } from '@deepseek-ai/dsh-session'
+import { isDroppedNotice, type ContextProjectionState, type TransitionPlan } from '@wowyuarm/dsh-context-continuity'
 import { AGENT_TEAM_PLUGIN_ID } from '../src/context-source.ts'
-import { TEAM_CONTEXT_CODEC, TeamContextContinuityHost } from '../src/context-continuity-host.ts'
+import { TEAM_CONTEXT_CODEC, TeamContextContinuityHost, createTeamContextManagement } from '../src/context-continuity-host.ts'
 import type { AgentTeamAgentMember, AgentTeamMemberId } from '../src/types.ts'
 
 const MEMBER_ID = 'member:one' as AgentTeamMemberId
@@ -154,6 +156,44 @@ describe('the Team context-continuity host', () => {
     expect(isDroppedNotice(TEAM_CONTEXT_CODEC, host, handoff)).toBe(false)
     expect(isDroppedNotice(TEAM_CONTEXT_CODEC, host, teamNotice)).toBe(true)
     expect(isDroppedNotice(TEAM_CONTEXT_CODEC, host, foreign)).toBe(false)
+  })
+
+  it('parks a recovered intent whose turn never ended, then finishes it on the live turn end', async () => {
+    // The two branches `recoverPendingTransition` can take on a spent rollover
+    // intent. Team's Member-lifecycle suite reaches the "turn already ended"
+    // one end to end through a real restart; the "turn still open" one — a
+    // restart landing before the containing turn ends durably — has no other
+    // guard, and swapping a generation under an open turn is exactly the
+    // mistake it exists to prevent.
+    const executeTransition = vi.fn((_memberId: AgentTeamMemberId, _plan: TransitionPlan) => Promise.resolve())
+    const live = { id: 'agent:one', whenIdle: () => Promise.resolve() } as unknown as Agent
+    const management = createTeamContextManagement({
+      agentForMember: id => (id === MEMBER_ID ? live : undefined),
+      memberForAgent: candidate => (candidate === live ? member : undefined),
+      projectionForMember: () => ({
+        pending: { toolCallId: 'call-1', resultSeq: 4, turn: 2, handoff: 'Handoff prose.', relatedFiles: [], turnEndSeq: -1 },
+        checkpoints: [],
+      }) as unknown as ContextProjectionState,
+      executeTransition,
+      log: () => {},
+    })
+
+    management.recoverPendingTransition(MEMBER_ID, live, SESSION_ID)
+
+    // Nothing ended the containing turn durably, so recovery is registration
+    // alone: the intent waits for the live turn end, and no swap may run yet.
+    expect(management.isTransitioning(MEMBER_ID)).toBe(true)
+    expect(executeTransition).not.toHaveBeenCalled()
+
+    management.onSessionEvent(MEMBER_ID, live, { type: 'turn/end' } as SessionEvent)
+    await new Promise(resolve => setImmediate(resolve))
+
+    // The parked intent then completes through the ordinary idle-boundary
+    // path, carrying the ORIGINAL intent's handoff rather than a re-derived one.
+    expect(executeTransition).toHaveBeenCalledTimes(1)
+    expect(executeTransition.mock.calls[0]?.[0]).toBe(MEMBER_ID)
+    expect(executeTransition.mock.calls[0]?.[1]).toMatchObject({ handoff: 'Handoff prose.', trigger: 'model' })
+    expect(management.isTransitioning(MEMBER_ID)).toBe(false)
   })
 })
 

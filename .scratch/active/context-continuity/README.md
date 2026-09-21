@@ -4,7 +4,7 @@
 
 active — 引擎已独立落地并发布（`@wowyuarm/dsh-context-continuity`，发布与仓库由 @Ferry 负责），Team 侧接入的三步已全部落地并提交（尚未推送）。
 
-last-checked: 2026-09-21（第三步 timeline/search 接入完成：commit A `0bf79f1` 挂载引擎检索阶梯，commit B 把 `context_timeline` 改走 `readContextTimeline` 并删除 Team 自己的 candidates 派生；按 Human 要求「team那边先不急」，这些提交暂不推）。
+last-checked: 2026-09-21（第三步 timeline/search 接入完成：commit A `0bf79f1` 挂载引擎检索阶梯，commit B 把 `context_timeline` 改走 `readContextTimeline` 并删除 Team 自己的 candidates 派生；随后补上 §C.4 第 4 项 rollover 崩溃恢复演练的两个分支覆盖。按 Human 要求「team那边先不急」，这些提交暂不推）。
 
 ## 这是什么
 
@@ -22,7 +22,7 @@ Team 的 context management（rollover / checkpoint / 投影 fold / 压力策略
 
 ## 完成条件
 
-- 三步各自全绿，且 [`spec.md`](spec.md) §C.4 的四项验收在能跑完整 Team 测试的环境里做完：现有 context 测试 ✅、`dsh-developer verify` 真机跑三个 context 工具 ⏳、带旧 `new_context` 事件与旧 section 名的历史日志迁移 ⏳、rollover 崩溃恢复演练 ⏳。**后三项尚未做**，是本工作项收尾前必须补的。
+- 三步各自全绿，且 [`spec.md`](spec.md) §C.4 的四项验收在能跑完整 Team 测试的环境里做完：现有 context 测试 ✅、`dsh-developer verify` 真机跑三个 context 工具 ⏳、带旧 `new_context` 事件与旧 section 名的历史日志迁移 ⏳（fold 旧工具名与旧 section 读回已由 `context-projection.spec.ts`、`context-source-migration.spec.ts` 覆盖；缺的是「旧名 pending 走完一次真实 rollover」那一段）、rollover 崩溃恢复演练 ✅。崩溃恢复的两支都有守卫：`member-lifecycle.spec.ts` 的「finishes a spent rollover intent at activation…」用真实 Host 重启跑通「turn 已结束、swap 未做」那一支；`context-continuity-host.spec.ts` 的「parks a recovered intent whose turn never ended…」覆盖「turn 未结束」那一支（先只登记不换 generation，再随 live `turn/end` 走完）。两处都做过变异验证：把引擎里对应的 `turnEndSeq === -1` 分支或 Team 的 `recoverPendingTransition` 调用点去掉，测试即失败。**剩下 `dsh-developer verify` 与历史迁移演练的收尾**，是本工作项收尾前必须补的。
 - Team 不再持有引擎已有机制的副本（自有 fold、timeline candidates 派生）✅。
 
 ## 正式文档出口
