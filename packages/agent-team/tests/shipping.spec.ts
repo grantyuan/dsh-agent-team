@@ -218,7 +218,11 @@ describe('Agent Team shipping contract', () => {
     expect(manifest.files).toContain('packages/agent-team/lib/**/*')
     expect(manifest.files).toContain('packages/client-agent-team/lib/**/*')
     expect(manifest.name).toBe('@wowyuarm/dsh-agent-team')
-    expect(manifest.dependencies).toEqual({ zod: '^4.4.3' })
+    // The context-continuity engine rides as a regular dependency, never a
+    // peer: profiles set autoInstallPeers: false, so a peer nothing else
+    // provides resolves for nobody — the external-layout e2e crashed exactly
+    // there before this was fixed (0.1.14 gate, 2026-09-22).
+    expect(manifest.dependencies).toEqual({ '@wowyuarm/dsh-context-continuity': '^0.1.0', zod: '^4.4.3' })
     expect(bundleManifest.dsh.client).toEqual({
       platform: 'web',
       // The Client half classifies a stream end with the Gateway's carrier-error
