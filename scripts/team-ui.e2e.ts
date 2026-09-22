@@ -216,6 +216,23 @@ async function installLocalBundle(clearArtifacts = true): Promise<void> {
       return !normalized.includes('/node_modules') && !normalized.includes('/src') && !normalized.includes('/artifacts') && !normalized.includes('/.hoplite')
     },
   })
+  // Production installs the bundle's regular dependencies with it (pnpm,
+  // hoisted); this manual staging runs no installer, so stage the same
+  // closure or a boot-time bare import resolves nowhere — before this, zod
+  // passed only because the installation fallback heals its own copy. Stage
+  // them INSIDE the bundle dir: the shared profiles/node_modules root is
+  // dsh-managed healed state, and the healer rejects foreign real entries.
+  const { dependencies } = JSON.parse(await readFile(join(TEAM_ROOT, 'package.json'), 'utf8')) as { dependencies: Record<string, string> }
+  const bundleModules = join(scope, 'dsh-agent-team', 'node_modules')
+  for (const name of Object.keys(dependencies)) {
+    // No filter: the source root itself lives under node_modules (the
+    // bundle filter above would reject it), and a store package never nests
+    // its own node_modules — pnpm keeps siblings beside it instead.
+    await cp(join(TEAM_ROOT, 'node_modules', name), join(bundleModules, ...name.split('/')), {
+      recursive: true,
+      dereference: true,
+    })
+  }
   // The routed ledger backend travels inside the staged copy: it is vendored
   // under this bundle's own package name (see cordis.patch.yml), so no host
   // node_modules link is staged here.
