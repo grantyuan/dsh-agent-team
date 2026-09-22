@@ -124,6 +124,8 @@ node scripts/sync-paths.mjs
 
 `tsconfig*.json` path facades 不应添加 `include` 或 `files`；它们需要保持对当前仓库文件和相邻 Harness source/declaration 的匹配行为。
 
+`generate:typert` 分析的是 Harness checkout 内的一份 Host face 副本，因此它自己准备那个临时包的外部依赖：context-continuity 引擎的已构建声明被复制进去，而 `zod` 从本仓库根安装链接过去——POSIX 上是 symlink，Windows 上是目录 junction（那里真正的 symlink 需要特权）。`zod` 必须保持为链接：复制会把 zod 自己的声明放进被分析的包内，分析器的 reachable-files 遍历会因此排入一个 program 从未加载的声明文件，以 `TypeError` 而非可诊断错误终止；反之链接若解析不到，才会以每个引用文件都报 `TS2307: Cannot find module 'zod'` 的形式暴露。
+
 ## Package 接缝与模块布局
 
 发布物是一个根 npm 包 `@wowyuarm/dsh-agent-team`，由根 `package.json` 及其 `exports` map 声明。三个 `packages/*` 目录没有自己的 manifest：它们是这个单一包的构建与导出接缝，各自有构建目标和 `exports` 条目。
@@ -200,7 +202,7 @@ invariant companion 是"被覆盖"而不是"要扩展"：`invariant.ts` 注册�
 | `DSH_HARNESS_DIR` | 仅认证场景 | 指向带 tag 后缀的相邻 checkout；日常保持未设——默认名即契约 |
 | `DEEPSEEK_API_KEY` | `npm run preview` | 真实模型预览缺它即刻失败；测试与浏览器路径从不需要 |
 
-**环境错误而非代码错误的症状**：大面积 `TypeError ... reading 'UNLOADING'` / `FiberState` undefined 失败 = Vitest 解析到了缺失或过期的 Harness checkout；`Cannot find module 'zod'` = npm 破坏了 pnpm 链接。先修环境，再查 diff。
+**环境错误而非代码错误的症状**：大面积 `TypeError ... reading 'UNLOADING'` / `FiberState` undefined 失败 = Vitest 解析到了缺失或过期的 Harness checkout；`Cannot find module 'zod'` = npm 破坏了 pnpm 链接——但若来自 `generate:typert`，那是它自己配置的那条链接出了问题（见 生成文件）。先修环境，再查 diff。
 
 **工作树上方不得有遗留 `node_modules`。** TypeScript `typeRoots` 与 Node 模块解析都会沿祖先目录上爬，home 目录下一次误跑 `npm install` 留下的 `node_modules\@types` 会把它的类型静默注入每次编译——实测表现为 harness 构建报出 lockfile 解释不了的 React 19 类型错误（实际锁的是 18）。全新 checkout typecheck 报出 lockfile 无法解释的类型错误时，先逐级检查祖先目录有无遗留 `node_modules`，再查代码。
 

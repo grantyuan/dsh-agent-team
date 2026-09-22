@@ -117,6 +117,8 @@ node scripts/sync-paths.mjs
 
 The `tsconfig*.json` facades must not gain `include` or `files`; they must continue matching repository files and adjacent Harness source/declarations.
 
+`generate:typert` analyses a copy of the Host face inside the Harness checkout, so it provisions that temp package's external dependencies itself: the context-continuity engine's built declarations are copied in, and `zod` is linked from this repository's root install — a symlink on POSIX, a directory junction on Windows, where a real symlink is privilege-gated. Keep `zod` a link: a copy puts zod's own declarations inside the analysed package, where the analyzer's reachable-files walk queues a declaration file the program never loaded and dies with a `TypeError` rather than a diagnostic; a link that does not resolve instead surfaces as `TS2307: Cannot find module 'zod'` in every importing file.
+
 ## Package seams and module layout
 
 The published artifact is one root npm package, `@wowyuarm/dsh-agent-team`, declared by the root `package.json` and its `exports` map. The three `packages/*` directories have no manifest of their own: they are the build and export seams of that single package, each with its own build target and its own entry in `exports`.
@@ -193,7 +195,7 @@ This applies to any fresh environment: a new clone **or a `git worktree`**. A wo
 | `DSH_HARNESS_DIR` | certification escapes only | Points at a tag-suffixed sibling checkout; unset for everyday work — the default name is the contract |
 | `DEEPSEEK_API_KEY` | `npm run preview` | Real-model preview fails fast without it; test and browser paths never need it |
 
-**Symptoms of a wrong environment, not wrong code:** mass `TypeError ... reading 'UNLOADING'` / `FiberState` undefined failures mean Vitest resolved a stale or missing Harness checkout; `Cannot find module 'zod'` means npm broke the pnpm links. Fix the environment before debugging the diff.
+**Symptoms of a wrong environment, not wrong code:** mass `TypeError ... reading 'UNLOADING'` / `FiberState` undefined failures mean Vitest resolved a stale or missing Harness checkout; `Cannot find module 'zod'` means npm broke the pnpm links — unless it comes from `generate:typert`, which provisions its own link (see Generated files). Fix the environment before debugging the diff.
 
 **No stray `node_modules` above the working tree.** TypeScript `typeRoots` and Node module resolution both walk ancestor directories, so a leftover `node_modules\@types` in a home directory (from an accidental `npm install` run there once) silently injects its types into every compile — observed as React-19-typed errors against a React-18 lockfile on the harness build. If a fresh checkout fails typecheck with type errors the lockfile cannot explain, check each ancestor directory for a stray `node_modules` before debugging the code.
 

@@ -1,4 +1,4 @@
-import { existsSync } from 'node:fs'
+import { existsSync, realpathSync } from 'node:fs'
 import { cp, mkdtemp, mkdir, readFile, rm, symlink, writeFile } from 'node:fs/promises'
 import { join, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
@@ -26,11 +26,18 @@ try {
     },
   }))
   await mkdir(join(tempPackage, 'node_modules'), { recursive: true })
-  // Resolve zod once through the real node_modules chain and COPY it into the
-  // temp analysis package. A 'file' symlink is the cheap Linux path but is
-  // privilege-gated on Windows and can silently produce a link form the
-  // analyzer's TypeScript resolution rejects; a copy is always safe and only
-  // costs the package size.
+  // Resolve zod once through the real node_modules chain and LINK it into the
+  // temp analysis package: a symlink on POSIX, a directory junction on Windows,
+  // where a real symlink needs a privilege the runner may not have
+  // (link-harness-packages.mjs uses junctions for the same reason). Either form
+  // leaves zod's real path in this repository's install, OUTSIDE the analysed
+  // package, which is what the analyzer's reachable-files walk assumes.
+  //
+  // A copy is not equivalent, however tempting: zod's declarations then sit
+  // under the analysed root, and resolving `index.d.cts`'s own
+  // `./v4/classic/external.cjs` inside that copy reaches a declaration file the
+  // program never loaded, which the walk queues as undefined and dies on —
+  // a TypeError instead of a diagnosable error.
   //
   // The chain is this repository's own root install: the analysis package sits
   // inside the harness checkout, where nothing provides zod, and `zod` is a
@@ -48,7 +55,9 @@ try {
   }
   const zodTarget = join(tempPackage, 'node_modules/zod')
   if (process.platform === 'win32') {
-    await cp(zodSource, zodTarget, { recursive: true, verbatimSymlinks: true })
+    // Junction to the resolved directory: no privilege needed, and the entry
+    // still reports zod's real path under this repository's install.
+    await symlink(realpathSync(zodSource), zodTarget, 'junction')
   } else {
     await symlink(zodSource, zodTarget, 'file')
   }
