@@ -1,6 +1,6 @@
 {
   "name": "@wowyuarm/dsh-agent-team",
-  "version": "0.1.13",
+  "version": "0.1.14",
   "license": "MIT",
   "description": "A persistent agent team for long-running collaboration in DeepSeek Harness",
   "repository": {
@@ -59,7 +59,7 @@
     }
   },
   "dependencies": {
-    "@wowyuarm/dsh-context-continuity": "^0.1.0",
+    "@wowyuarm/dsh-context-continuity": "^0.1.3",
     "zod": "^4.4.3"
   },
   "devDependencies": {

@@ -19,3 +19,4 @@ autoInstallPeers: false
 minimumReleaseAgeExclude:
   - '@deepseek-ai/dsh-storage-sqlite@0.1.5-rc.1'
   - '@wowyuarm/dsh-context-continuity@0.1.0'
+  - '@wowyuarm/dsh-context-continuity@0.1.3'
