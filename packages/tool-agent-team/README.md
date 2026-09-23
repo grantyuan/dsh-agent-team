@@ -21,7 +21,7 @@ Every agent-facing render carries absolute event instants in the fixed Team coor
 
 Canonical results expose stable refs, optional Task status, Thread revision, Claim history, Attention, and unread facts as structured fields. The model-visible renders follow the action decision surface: the write token appears only on a fully drained `team_thread read` and a committed public mutation; browsing results (`team_view`, `team_inbox`, status/follow/unfollow, `history`, `team_claim list`) and all typed rejections render no revision and no token. Typed `unread_required` and `stale_revision` results keep the structured fields needed to reread and retry deliberately. Tool execution resolves the exact live `exec.agent`; arguments cannot select or impersonate the actor, and the optional `workspace` selector can only pick among that actor's participated Workspaces. Write request identity derives from sessionId plus tool callId. `context_rollover` and `context_checkpoint` conclude the Agent turn (a rollover must not be followed by old-generation work, and a checkpoint resolves at its containing turn's end); every other Team tool returns to the model loop.
 
-The complete implemented protocol is documented in [`../../docs/team-collaboration.md`](../../docs/team-collaboration.md).
+The complete implemented protocol is documented in [`../../docs/team-collaboration/README.md`](../../docs/team-collaboration/README.md).
 
 ## Composition
 

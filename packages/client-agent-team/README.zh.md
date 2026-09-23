@@ -20,7 +20,7 @@ Client 使用以下 Host 接口：
 - `archiveChannel`：把频道从所有面收起，事实保留（暂无恢复入口）。
 - `updateMember`：提交 Agent 名称/说明编辑，以及可选的成员级模型覆盖。
 - `archiveMember`：把 Agent 从所有面收起，会话日志与私有记忆保留（暂无恢复入口）。
-Host Remote 仍提供 `threadObservations` 和 `changeAttention`；当前 Human Thread 界面不渲染这些控制或观察。`changes` 是按 scope 订阅的流式 Remote，通过 Harness `ctx.remote.$stream()` 消费。每个页面内同 scope 共享一个逻辑订阅，Harness 将其复用到该页面的共享 WebSocket，因此多个 Team 页面不会因通知长期占用普通 HTTP 连接。每次开场或重连基线都触发重新读取 Host，包括版本未变化的情况；最后一个订阅者离开时取消该 scope。打开 Thread 时并行完成首次读取，允许基线到达后补读，但私有已读确认不会形成共享通知循环。scope 与恢复契约见[架构文档](../../docs/architecture.zh.md#host-authority)。
+Host Remote 仍提供 `threadObservations` 和 `changeAttention`；当前 Human Thread 界面不渲染这些控制或观察。`changes` 是按 scope 订阅的流式 Remote，通过 Harness `ctx.remote.$stream()` 消费。每个页面内同 scope 共享一个逻辑订阅，Harness 将其复用到该页面的共享 WebSocket，因此多个 Team 页面不会因通知长期占用普通 HTTP 连接。每次开场或重连基线都触发重新读取 Host，包括版本未变化的情况；最后一个订阅者离开时取消该 scope。打开 Thread 时并行完成首次读取，允许基线到达后补读，但私有已读确认不会形成共享通知循环。scope 与恢复契约见[架构文档](../../docs/architecture/host-authority.zh.md)。
 
 浏览器持久化 Team mode、当前 Workspace，以及最后选中的 Channel 或 Thread，返回 Team 时会恢复之前的位置。Attention、未读数量、revision、observations 和 Thread facts 始终由 Host 管理。持久化操作提交或拒绝后，Client 会重新读取 Host 投影。
 

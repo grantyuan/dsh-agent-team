@@ -17,7 +17,7 @@ Keep production code self-explanatory through clear names, types, and structure.
 
 ## Reading guidance
 
-- Use [`docs/architecture.md`](docs/architecture.md) for package ownership, Host authority, Remote, preset, and Client boundaries — not before every edit, only when a change crosses those boundaries.
+- Use the `docs/architecture/` pages for package ownership, Host authority, Remote, preset, and Client boundaries — not before every edit, only when a change crosses those boundaries: [`package-ownership.md`](docs/architecture/package-ownership.md), [`host-authority.md`](docs/architecture/host-authority.md), [`tools-and-preset.md`](docs/architecture/tools-and-preset.md), [`client-and-remote.md`](docs/architecture/client-and-remote.md), [`workspace-session-storage.md`](docs/architecture/workspace-session-storage.md).
 - Use [`docs/harness-navigation.md`](docs/harness-navigation.md) for cross-repository routes when a change consumes a Harness capability.
 - Treat `.scratch/` as background context, not as a specification to implement blindly. New cross-session work belongs in one `.scratch/active/<work>/` directory; close it into the archive only after durable conclusions have moved to maintained documents.
 
@@ -45,14 +45,14 @@ Keep production code self-explanatory through clear names, types, and structure.
 
 ## Checks
 
-Run the narrowest applicable check, then escalate for the changed surface. The exact workflow is in [`docs/development.md`](docs/development.md).
+Run the narrowest applicable check, then escalate for the changed surface. The exact workflow is in [`docs/development/start-and-checks.md`](docs/development/start-and-checks.md).
 
 `npm run test:browser` is required for changes that can affect the assembled Web bundle, Client loading, slot takeover, Remote activation, or visible UI. It uses the adjacent Harness checkout and a temporary profile; it does not modify the Harness repository permanently.
 
-Release cadence is batched: between releases the operator daily-drives a locally linked build as a lightweight acceptance channel, so choose the narrowest applicable check per change instead of demanding full acceptance for every small fix. When asking the operator to preview or accept a change, point them at the dev profile (`dsh web --profile web-dev`); the default `web` profile stays on the published stable release. See "Profile 模式与发布节奏" in [`docs/development.md`](docs/development.md).
+Release cadence is batched: between releases the operator daily-drives a locally linked build as a lightweight acceptance channel, so choose the narrowest applicable check per change instead of demanding full acceptance for every small fix. When asking the operator to preview or accept a change, point them at the dev profile (`dsh web --profile web-dev`); the default `web` profile stays on the published stable release. See "Profile 模式与发布节奏" in [`docs/development/environments-and-install.md`](docs/development/environments-and-install.md).
 
 ## Further reading
 
-- Domain and Host behavior: `packages/agent-team/src/`, its tests, and `docs/architecture.md`.
+- Domain and Host behavior: `packages/agent-team/src/`, its tests, and `docs/architecture/README.md`.
 - Tools and preset: `packages/tool-agent-team/`, `packages/agent-team/preset/`, and the matching Harness subsystem docs.
-- Client or UI: `packages/client-agent-team/src/client/`, `docs/architecture.md`, and `docs/harness-navigation.md`; consult the relevant `.scratch/archive/` work history only when needed, and verify all behavior in code and tests.
+- Client or UI: `packages/client-agent-team/src/client/`, `docs/architecture/README.md`, and `docs/harness-navigation.md`; consult the relevant `.scratch/archive/` work history only when needed, and verify all behavior in code and tests.

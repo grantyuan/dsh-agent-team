@@ -98,7 +98,7 @@ Any bundle, Client module, Remote activation, slot, or DSH Client package change
 npm run test:browser
 ```
 
-Run it against the candidate Harness checkout and verify ordinary DSH → Team mode → ordinary DSH restoration. Cover Remote mounting, Team entry/reload/exit, existing Channel/Thread/Member flows, 390×844 layout, keyboard focus/dialogs, and absence of Team tools, guidance, and UI in ordinary Sessions. Handle browser output as described in `development.md`; do not commit routine screenshots or temporary Harness tests.
+Run it against the candidate Harness checkout and verify ordinary DSH → Team mode → ordinary DSH restoration. Cover Remote mounting, Team entry/reload/exit, existing Channel/Thread/Member flows, 390×844 layout, keyboard focus/dialogs, and absence of Team tools, guidance, and UI in ordinary Sessions. Handle browser output as described in `development/generated-and-seams.md`; do not commit routine screenshots or temporary Harness tests.
 
 ### 3.5 Dependency graph installation
 
@@ -106,20 +106,40 @@ When the candidate is outside current peers, resolve an installation in an empty
 
 ### 3.6 Upgrade viability
 
-Sections 3.3–3.5 all build their evidence from **newly created** Sessions, which are written in the candidate's native format and never traverse a released-format migration. Two failure classes are therefore invisible to them, and both have shipped: a Member preset row whose config no longer matches its plugin schema (runtime-only), and released artifact content that the candidate's migration audit refuses. Add both checks whenever the candidate changes the Session format, the message-source vocabulary, or any shipped preset row:
+Sections 3.3–3.5 all build their evidence from **newly created** Sessions, which are written in the candidate's native format and never traverse a released-format migration.
+
+Two failure classes are therefore invisible to them, and both have shipped: a Member preset row whose config no longer matches its plugin schema (runtime-only), and released artifact content that the candidate's migration audit refuses.
+
+Add both checks whenever the candidate changes the Session format, the message-source vocabulary, or any shipped preset row:
 
 - **Existing-history upgrade.** Take a profile that already holds Member Sessions written by the previous certified line — including at least one rolled-over generation — and open them under the candidate. Every one must load; a refusal is a release blocker, not a data problem, because the audit is fail-closed and leaves the source artifact unchanged. Record the artifact count checked and the result per artifact.
 - **Published-bundle viability.** Determine whether the **currently published** Team bundle still functions on the candidate DSH, not just the candidate bundle. Install the published version against the candidate in an empty directory, boot it, and exercise Member creation. This decides release urgency: when `latest` has already moved to the candidate, an incompatible published bundle breaks new installs outright, which makes the round release-blocking rather than routine.
 
-A custom Session message source kind is the durable trap behind the first check: `@deepseek-ai/dsh-llm` documents `MessageSourceMap` as merge-extensible, but the released-format migration audit admits a closed, build-static list of source kinds, so a plugin that adds one writes logs that a later format generation refuses wholesale. The trap has a second half: the audit also pins a `plugin` source's members to `kind`, `plugin`, `form`, `sections`, and `summary`, so re-opening the same payload under the admitted kind still fails on any bespoke envelope field. Both halves are fail-closed and report different errors, so certification evidence must exercise the sources the package actually produces, not just the kind they declare.
+A custom Session message source kind is the durable trap behind the first check: `@deepseek-ai/dsh-llm` documents `MessageSourceMap` as merge-extensible, but the released-format migration audit admits a closed, build-static list of source kinds, so a plugin that adds one writes logs that a later format generation refuses wholesale.
 
-Encode plugin semantics in the admitted shape instead: structured payload as named `{ name, text }` sections under `form: 'snapshot'`, a human-readable one-liner as `summary` under `form: 'notice'`, and any further prose in the model-facing body, which is unconstrained. A section's `text` is the plugin's own string and is read back verbatim, so encode a list as JSON rather than as a delimiter-joined string: a path or name may itself contain the delimiter, and the split then recovers different values than were written. There is no general slot for extra members — the upstream `compact` plugin obtained one only by special-casing its plugin id — so a plugin that needs bespoke members must request that upstream.
+The trap has a second half: the audit also pins a `plugin` source's members to `kind`, `plugin`, `form`, `sections`, and `summary`, so re-opening the same payload under the admitted kind still fails on any bespoke envelope field.
+
+Both halves are fail-closed and report different errors, so certification evidence must exercise the sources the package actually produces, not just the kind they declare.
+
+Encode plugin semantics in the admitted shape instead: structured payload as named `{ name, text }` sections under `form: 'snapshot'`, a human-readable one-liner as `summary` under `form: 'notice'`, and any further prose in the model-facing body, which is unconstrained.
+
+A section's `text` is the plugin's own string and is read back verbatim, so encode a list as JSON rather than as a delimiter-joined string: a path or name may itself contain the delimiter, and the split then recovers different values than were written.
+
+There is no general slot for extra members — the upstream `compact` plugin obtained one only by special-casing its plugin id — so a plugin that needs bespoke members must request that upstream.
 
 ### 3.7 Competing Team implementations
 
-The Harness ships an experimental Agent Teams feature as its own profile bundles (`@deepseek-ai/dsh-experimental-agent-team-profile`, `@deepseek-ai/dsh-experimental-agent-team-web-profile`). It is a competing Team implementation, not an extension point this bundle builds on: it registers its own model-facing tool family (`spawn_teammate`, `send_message`, `list_agents`, `wait_agent`, `interrupt_agent`, `team_task_*`), disables the shipped global subagent rows in its profile patch to free those names, and carries its own members, tasks, store, and client panel. This bundle's tools are `team_view`, `team_inbox`, `team_thread`, `team_message`, and `team_claim`, registered only inside its `team-member` preset.
+The Harness ships an experimental Agent Teams feature as its own profile bundles (`@deepseek-ai/dsh-experimental-agent-team-profile`, `@deepseek-ai/dsh-experimental-agent-team-web-profile`).
 
-Certification covers profiles that do not mount the experimental packages, and mounting both at once is **unsupported**: two Team authorities, two tool families, and two UI surfaces would be live with no shared authority or naming rule between them. Choose one Team profile per profile. This position is recorded rather than tested — a coexistence run has not been performed, and nothing in this bundle inspects or defers to the experimental implementation.
+It is a competing Team implementation, not an extension point this bundle builds on: it registers its own model-facing tool family (`spawn_teammate`, `send_message`, `list_agents`, `wait_agent`, `interrupt_agent`, `team_task_*`), disables the shipped global subagent rows in its profile patch to free those names, and carries its own members, tasks, store, and client panel.
+
+This bundle's tools are `team_view`, `team_inbox`, `team_thread`, `team_message`, and `team_claim`, registered only inside its `team-member` preset.
+
+Certification covers profiles that do not mount the experimental packages, and mounting both at once is **unsupported**: two Team authorities, two tool families, and two UI surfaces would be live with no shared authority or naming rule between them.
+
+Choose one Team profile per profile.
+
+This position is recorded rather than tested — a coexistence run has not been performed, and nothing in this bundle inspects or defers to the experimental implementation.
 
 ## 4. Results and release gates
 
@@ -143,18 +163,46 @@ Record candidate tag, symptom, affected interface, reproduction command, and nex
 
 ## 6. Current baseline
 
-The current certified baseline is DSH `0.1.5-rc.1`, with `0.1.5-rc.2` certified on the same peers (last paragraph of this section). Certification covered Typert generation, full typecheck, 499 tests (1 skipped), build, pack checks, lint, and real browser composition with published-layout installation, Remote mount, Team entry/exit, and ordinary DSH restoration. The DSH peers state exactly that certified line, `>=0.1.5-rc.1 <0.1.6`, narrowed from `>=0.1.5-rc.1 <0.2.0` so no later stable `0.1.x` release installs under an unverified compatibility claim. The routed sqlite backend is a vendored fork, not a dependency at all (GitHub issue #28): the upstream package stays a devDependency pinned at the fork source, 0.1.5-rc.2, as the byte-compatibility fixture reference, and every compat round diffs the fork against that version's file before anything else.
+The current certified baseline is DSH `0.1.5-rc.1`, with `0.1.5-rc.2` certified on the same peers (last paragraph of this section).
 
-This candidate fell outside the previous `>=0.1.2-rc.1 <0.2.0` peers and required source adaptation, so peers moved as a hard cut to `>=0.1.5-rc.1 <0.2.0`; the bundle no longer runs on the `0.1.2-rc.1` line. Seven upstream breaks drove it: `ctx.agent` left `AgentSetup` (setup now receives the live `Agent` as its second argument); the root `conversation` slot became a keyed `main` entry (Team registers `main` with key `conversation` at priority `-100`, and the harness renders with `renderSlot('main', {}, { entryKey: 'conversation' })`); `SessionPersistence.inspect()`/`borrowSession()` were replaced by the handle API (`open(id, 'read')` + `read()` + `close()`, `stat()` returning header snapshots, and the detached `Session.create` factory); the `assistant/chunk` event type left the Session vocabulary; `MessageText` left `dsh-client-ui-primitives` (TeamMessage renders its text directly); keyed-slot conflict diagnostics replaced the single-slot wording in tests; and the `dsh-persona` row renamed its config key `text` → `prefix`. That last one is runtime-only: the member preset composes from disk, so typecheck, unit tests, and build all stayed green while every Member failed to activate with `preset "team-member" failed to mount: … $.prefix missing required value`.
+Certification covered Typert generation, full typecheck, 499 tests (1 skipped), build, pack checks, lint, and real browser composition with published-layout installation, Remote mount, Team entry/exit, and ordinary DSH restoration.
 
-Preset composition has no compile-time or unit-test guard: the member specs compose a synthetic preset, so a row whose config no longer matches its plugin schema surfaces only in the real browser journey. Treat `npm run test:browser` as the certification gate for shipped preset rows.
+The DSH peers state exactly that certified line, `>=0.1.5-rc.1 <0.1.6`, narrowed from `>=0.1.5-rc.1 <0.2.0` so no later stable `0.1.x` release installs under an unverified compatibility claim.
 
-Section 3.6 closes a blind spot in the checks above: they build their evidence from newly created Sessions, which never traverse a released-format migration. A migration refusal is fail-closed and leaves the source artifact byte-identical, so the effect is unreadable Sessions rather than damaged data; an incompatible published bundle is equally invisible to installation checks, surfacing only when a Member is created. Both classes are release-blocking while npm `latest` points at the candidate.
+The routed sqlite backend is a vendored fork, not a dependency at all (GitHub issue #28): the upstream package stays a devDependency pinned at the fork source, 0.1.5-rc.2, as the byte-compatibility fixture reference, and every compat round diffs the fork against that version's file before anything else.
 
-Existing-history upgrade viability was measured, not assumed. The 0.1.5 candidate's closed source-kind audit refuses every Member artifact the released line wrote, so the Team bundle added a startup remediation that publishes a current-format sibling for exactly those artifacts (mechanism in [architecture.md](architecture.md) § "Workspace, Session, and storage reuse"). Across this machine's full store the pass repaired 44 refused artifacts, left 6 untouched for structural Session defects, wrote no byte into any pre-existing artifact, and published nothing on a second walk. The conclusion for the baseline is therefore exact: **readability of history written by the previous certified line comes from the Team bundle's remediation, not from the candidate**.
+The bundle's dependence on that line is structural rather than incidental. A candidate that changes any of the following is a peer-range change, not a patch:
 
-One verification fact is still recorded without patching: `npm run typecheck` before `npm run build` fails on the `@wowyuarm/dsh-agent-team/time-format` and `member-time-context` imports, which resolve through the built `lib/` self-link rather than the sync-paths `own` map; build first (a latent repo gap, not a compatibility defect). An isolated Harness checkout likewise needs `pnpm build:native-system` before the Team suite (see [development.md](development.md)); skipping it fails host Team activation instead of reporting a missing module.
+- The root `main` slot is registered as a keyed entry (key `conversation`, priority `-100`) and rendered through `renderSlot('main', {}, { entryKey: 'conversation' })`.
+- Sessions are reached through the handle API (`open(id, 'read')` + `read()` + `close()`, with `stat()` returning header snapshots).
+- The member preset's `dsh-persona` row carries its config under `prefix`.
 
-DSH `0.1.5-rc.2` is certified on the same peers with no manifest change. It is a release-hygiene cut rather than a new line: the real source changes stay inside client packages with no added, renamed, or deleted package paths. Every `dsh-client-ui-primitives` symbol this bundle imports still exists at rc.2, and the Session format, the message-source vocabulary, and the shipped preset rows are untouched, so §3.6's existing-history check is not re-triggered. In an isolated checkout at the tag the bundle builds, typechecks, passes 513 tests (1 skipped), packs 206 files, and completes the real browser journey (Team entry, Remote mount, ordinary DSH restoration).
+Preset composition has no compile-time or unit-test guard: the member specs compose a synthetic preset, so a row whose config no longer matches its plugin schema surfaces only in the real browser journey — every Member fails to activate with `preset "team-member" failed to mount: … $.prefix missing required value` while typecheck, unit tests, and build stay green.
+
+Treat `npm run test:browser` as the certification gate for shipped preset rows.
+
+Section 3.6 closes a blind spot in the checks above: they build their evidence from newly created Sessions, which never traverse a released-format migration.
+
+A migration refusal is fail-closed and leaves the source artifact byte-identical, so the effect is unreadable Sessions rather than damaged data; an incompatible published bundle is equally invisible to installation checks, surfacing only when a Member is created.
+
+Both classes are release-blocking while npm `latest` points at the candidate.
+
+Existing-history upgrade viability was measured, not assumed.
+
+The 0.1.5 candidate's closed source-kind audit refuses every Member artifact the released line wrote, so the Team bundle added a startup remediation that publishes a current-format sibling for exactly those artifacts (mechanism in [workspace-session-storage.md](architecture/workspace-session-storage.md) § "Workspace, Session, and storage reuse").
+
+Across this machine's full store the pass repaired 44 refused artifacts, left 6 untouched for structural Session defects, wrote no byte into any pre-existing artifact, and published nothing on a second walk.
+
+The conclusion for the baseline is therefore exact: **readability of history written by the previous certified line comes from the Team bundle's remediation, not from the candidate**.
+
+One verification fact is still recorded without patching: `npm run typecheck` before `npm run build` fails on the `@wowyuarm/dsh-agent-team/time-format` and `member-time-context` imports, which resolve through the built `lib/` self-link rather than the sync-paths `own` map; build first (a latent repo gap, not a compatibility defect).
+
+An isolated Harness checkout likewise needs `pnpm build:native-system` before the Team suite (see [environments-and-install.md](development/environments-and-install.md)); skipping it fails host Team activation instead of reporting a missing module.
+
+DSH `0.1.5-rc.2` is certified on the same peers with no manifest change. It is a release-hygiene cut rather than a new line: the real source changes stay inside client packages with no added, renamed, or deleted package paths.
+
+Every `dsh-client-ui-primitives` symbol this bundle imports still exists at rc.2, and the Session format, the message-source vocabulary, and the shipped preset rows are untouched, so §3.6's existing-history check is not re-triggered.
+
+In an isolated checkout at the tag the bundle builds, typechecks, passes 513 tests (1 skipped), packs 206 files, and completes the real browser journey (Team entry, Remote mount, ordinary DSH restoration).
 
 Release urgency from that record is resolved: npm `latest` has installed on this candidate line since Team `0.1.10` (2026-09-11), and `latest` is now Team `0.1.14`, published 2026-09-22, whose peers state the certified line `>=0.1.5-rc.1 <0.1.6` (the `0.1.9` line could neither admit nor run on this candidate).

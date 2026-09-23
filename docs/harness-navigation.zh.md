@@ -4,96 +4,57 @@
 
 日期：2026-09-18
 
-维护要求：这是一份正式工程导航文档。它只记录已对照当前源码、测试或 Harness 文档核实的跨仓库路线；改变 package、脚本、slot 或安装方式时必须同步检查和更新它。它不是 Harness 的替代文档，也不改变本项目的产品决策。当前行为以源码和测试为准。
+本文是正式工程导航文档，记录已对照当前源码、测试或 Harness 文档核实过的跨仓库路线。package、脚本、slot 或安装方式变化时更新它。它不是 Harness 文档的替代品，也不改变产品决策；当前行为以源码和测试为准。
 
 ## 1. 两个仓库的职责分界
 
 | 问题 | 先看本仓库 | 再看 `../deepseek-harness` | 权威性 |
 | --- | --- | --- | --- |
-| Agent Team 的领域对象、权限、ledger、Task/Claim/Thread Attention/Inbox 语义 | `docs/domain-model.zh.md`、`docs/team-collaboration.zh.md`、`packages/agent-team/src/` 与 tests；历史来由按 `.scratch/README.md` 查 archive | 只在需要确认被消费的 DSH service contract 时查 Harness | 本仓库实现；历史资料不定义当前行为 |
-| Host package 的具体行为 | `packages/agent-team/src/{index,ledger,spec,types}.ts` 及 `tests/` | `docs/architecture.zh.md`、相关 `subsystems/*`，确认 Agent/Session/Workspace/Storage/Typert 的宿主能力 | 本仓库实现；Harness 只拥有底层能力事实 |
-| Model-facing tools 与 preset | `docs/team-collaboration.zh.md`、`packages/tool-agent-team/src/index.ts`、`packages/agent-team/preset/team-member/agent.cordis.yml` | `docs/cookbook/adding-a-tool.md`、`docs/subsystems/tools.md`、`docs/subsystems/permission-presets.md` | 本仓库工具语义；Harness 规定扩展接口 |
-| Client plugin / Team mode / UI | `docs/architecture.zh.md`、`docs/development.zh.md`、`packages/client-agent-team/src/client/`；历史取舍见 `.scratch/archive/2026-08/ui-redesign/` | `docs/subsystems/client-modules.md`、`.agents/notes/implemented/architecture/2026-07-23-client-plugin-loading-model.md`、`packages/client/AGENTS.md`、对应 shipped UI package 源码 | 本仓库实现与 UI 验收规则；Harness 规定加载、slot、React 分层 |
-| Typed Remote | `docs/architecture.zh.md`、`packages/agent-team/src/index.ts` 的 `@Remote`、`scripts/generate-typert.mjs` | `docs/subsystems/typert.md`、`packages/typert/{generator,loader,protocol,registry}`、`packages/api/remotes` | Harness 规定生成/装配，Host 与 Team 规定远程方法 |
-| 发布、profile、bundle 安装 | `README.md` / `README.zh.md`、`cordis.patch.yml`、根 `package.json` | `README.md`、`docs/cookbook/adding-a-package.md`、profile/bundle 文档和 `packages/bundle/*` | Harness 规定安装器与 bundle 机制；本仓库规定单一外部 bundle 的布局 |
-| 实际 Web 验收 | `docs/development.zh.md`、`scripts/run-browser-test.mjs`、`scripts/team-ui.e2e.ts`、`artifacts/browser/` | `apps/web` scaffold、`docs/testing.md`、`packages/client/*/tests` | 脚本产生本次审查材料；归档证据只保留里程碑代表图 |
+| Team 领域对象、权限、ledger、Task/Claim/Attention/Inbox | `docs/domain-model.zh.md`、`docs/team-collaboration/`、`packages/agent-team/src/`、tests | 只查被消费的 DSH service contract | 本仓库实现 |
+| Host 行为 | `packages/agent-team/src/{index,ledger,spec,types}.ts`、tests | Agent/Session/Workspace/Storage/Typert 的架构与相关 subsystem 文档 | 本仓库行为；Harness 拥有底层能力 |
+| Model-facing tools 与 preset | `docs/team-collaboration/`、tool 源码、`team-member` preset | `docs/cookbook/adding-a-tool.md`、tools、permission-preset 文档 | Team 工具语义；Harness 扩展接口 |
+| Client plugin、Team mode、UI | `docs/architecture/README.zh.md`、`docs/development/README.zh.md`、Client 源码 | Client modules、client loading notes、`packages/client/AGENTS.md`、shipped UI 源码 | 本仓库 UI 规则；Harness 加载/slot/React 边界 |
+| Typed Remote | `docs/architecture/README.zh.md`、`@Remote` declarations、`scripts/generate-typert.mjs` | Typert 文档/源码与 API remotes | Harness 生成/装配；Team 方法 |
+| 发布与 bundle 安装 | 根 README、`cordis.patch.yml`、根 manifest | Harness README、package cookbook、profile/bundle 文档 | Harness 安装器；本仓库 bundle 布局 |
+| 真实 Web 验收 | development 文档、browser 脚本、被忽略的 artifacts | Harness Web scaffold、testing 文档、Client tests | 本次运行的脚本输出；archive 只保留里程碑证据 |
 
-**遇到不确定的 Harness 行为时，先查上游文档，再读实现和测试。** 不要把 `.scratch/` 中的探索结论当作 Harness API；也不要为了适应 Harness 猜测而改写 Team 的领域语义。若现有公共接口不支持目标交互，记录为 Harness 限制并调整 Team 接入设计，或在本 bundle 内实现替代 plugin。
+Harness 行为不确定时，先读上游文档，再读实现和测试。不要把 `.scratch/` 中的探索当作 API contract，也不要为了迎合猜测改写 Team 语义。若公共 API 无法表达目标交互，记录该限制并选择 bundle 自有的 plugin 或设计。
 
 ## 2. 按改动类型查阅路径
 
-### 2.1 修改 Host service、ledger 或生命周期
+### Host、ledger 或生命周期
 
-1. 本仓库：`packages/agent-team/src/` 和测试是当前实现；`docs/domain-model.zh.md` 和 `docs/team-collaboration.zh.md` 是正式领域入口。需要历史设计背景时按 `.scratch/README.md` 定位 archive。
-2. 先读 `packages/agent-team/src/index.ts`、`ledger.ts`、`spec.ts`、`types.ts`，再读同目录 tests，确认 operation 是否通过唯一 authority/ledger 写入；不要把 `.scratch/` 当作当前实现规范。
-3. Harness：
-   - `docs/architecture.md`：插件平面、Service Definition/Provider/Consumer 与 agent-loop 边界；
-   - `docs/subsystems/storage.md`：`ctx.storageDomain` 的 typed domain API；
-   - `docs/subsystems/workspace.md`：`ctx.workspaceRegistry`、Workspace ID、cwd 与 session 归属；
-   - `docs/subsystems/typert.md`：若 service 要暴露 Remote；
-   - `docs/defensive-patterns.md`：生命周期、并发、持久化或 teardown 改动。
-4. Harness 源码定位：按服务名到对应 `packages/<group>/<package>/src`；本项目当前实际消费的 paths 由生成的 `tsconfig.json` 记录。
+读本仓库源码/测试与 `docs/domain-model.zh.md`／`docs/team-collaboration/`；检查 `index.ts`、`ledger.ts`、`spec.ts`、`types.ts`，确认只有一个 authority 和一条 durable commit path。随后查阅 Harness 的 architecture、storage、workspace、Typert 与 defensive-patterns 文档及对应源码包。新增 model-visible input 需要 session-log 依据；生命周期应由 package tests 与真实 composition 覆盖。
 
-完成标准：新事实只有一个 Host authority 和一个 durable commit path；新增 model-visible input 已有 session-log 依据；对应 package tests 和 REAL composition test 说明它的生命周期。
+### Model-facing tool 或 preset
 
-### 2.2 修改 model-facing tool 或 preset
+读 Team collaboration 文档、tool 源码与隔离 preset。查阅 Harness 的 tool、permission-preset、system-prompt 文档与源码。Schema、canonical output、execute、presentation 是不同层；不要把 Host 变成 global tool。普通 Session 不得获得 Team tools 或 guidance。
 
-- 本仓库：`docs/team-collaboration.zh.md`、`packages/tool-agent-team/src/index.ts`（八个工具及运行时依赖）、`packages/agent-team/preset/team-member/agent.cordis.yml`（只在 team-enabled scope 中挂载）；历史工具研究仅在需要溯源时查 archive。
-- Harness 文档：`docs/cookbook/adding-a-tool.md`、`docs/subsystems/tools.md`、`docs/subsystems/permission-presets.md`、`docs/subsystems/system-prompt.md`。
-- Harness 源码：`packages/core/tools/src/{index,schema,presentation}.ts`、`packages/preset/agent-presets/src`。
+### Client、browser bundle 或加载图
 
-Tool schema、canonical output、execute 与 presentation 是不同层。不要让 Host service 直接变成 global tool；不要把 `output`、`execute`、`timeoutMs` 等 implementation fields 泄漏到 model request。Tool 只在显式 team preset scope 中存在，普通 Session 不应出现 Team tools 或 guidance。
+读 architecture 的 Client 章节、development 的 UI 验收规则与目标组件；查阅 Harness client-module 文档、client loading notes、`packages/client/AGENTS.md`、web styling、Cordis lifecycle tutorial，以及对应的 slot/runtime/sidebar/conversation/workspace/theme/module 源码。先 mount 生成的 Remote，再注入依赖它的 UI；declaration 可能稍后才出现时使用 `ctx.slots.inject()`。
 
-### 2.3 修改 Client package、browser bundle 或加载图
+parent entry 的 `children` declaration 同时是 render site 与 render authority。Team 的 `sidebar.workspaces` shadow 不得复制 shipped 的 `sidebar.workspaces.directoryFlow`；SlotCore 会拒绝重复的 live child declaration。复用 public exports 与 theme token，不要复用 shipped 的 private component 或 private CSS；component 通过 slot contract 取得数据，而不是直接接触 `ctx`。
 
-1. 本仓库：先读 `docs/architecture.zh.md` 的 Client 章节、`docs/development.zh.md` 的 UI 验收规则和目标组件；需要解释既有视觉结构时，再读 `.scratch/archive/2026-08/m2-ui/design/dsh-client-plugin-development.md` 与 `.scratch/archive/2026-08/ui-redesign/`。
-2. Harness：
-   - `docs/subsystems/client-modules.md`：`dsh.client`、boot graph、browser module；
-   - `.agents/notes/implemented/architecture/2026-07-23-client-plugin-loading-model.md`：Loader 与 client module runtime 的两层模型；
-   - `packages/client/AGENTS.md`：Client props、slot、React/data-layer 分层；
-   - `docs/web-styling.md`：`--dsw-*` token、CSS Modules、`clsx`；
-   - `docs/cordis-tutorial/01-first-plugin.md`、`02-lifecycle-and-effects.md`、`03-services.md`：插件注册与生命周期。
-3. Harness 源码按功能查：slot types/declarations、slot runtime、shell/sidebar、conversation、workspace、primitives/theme 与 client loading，分别位于 `packages/client/ui-slots/src/`、`packages/client/runtime/src/client/slots.ts`、`packages/client/ui-layout/src/client/`、`ui-sidebar/src/client/`、`ui-conversation/src/client/`、`ui-workspace/src/client/`、`ui-primitives/src/`、`ui-theme/src/styles/` 和 `packages/client/modules/src/client/manifest.ts`。
+### Typed Remote、RPC 或生成物
 
-本项目 Client runtime 顺序是先 `ctx.remote.$mount(agentTeamRemote)`，再通过 `ctx.inject(['remote.agentTeam'], ...)` 注册依赖该 Remote 的 UI。`dsh.client.inject` 是 loading graph metadata，不是 slot 或 apply 顺序保证；slot registration 必须适应 declaration 尚未出现的情况。
+读 Team service declaration、types 与生成脚本；读 Harness 的 Typert generator/loader/protocol/registry 与 API-remote 源码。`InvocationDescriptor` 是反射元数据，不是 wire data。运行 `npm run generate:typert`、typecheck、build，并确认输出稳定。绝不手改 `lib/typert.*`。
 
-**Slot 关键规则：** parent entry 的 `children` declaration 同时代表 render site 与 render authority。同一 child slot 不能由两个仍存活的 parent entry 同时声明。Team shadow `sidebar.workspaces` 时不能复制 shipped `sidebar.workspaces.directoryFlow` child；当前 Harness `SlotCore` 会拒绝它。需要 workspace picker 时先查 Harness 的 `ctx.workspaces.pickDirectory()`（`packages/client/runtime/src/client/workspaces/service.ts`，经 `host.pickDirectory`）和现有 picker packages，再决定接入或把限制记录在设计中。
+### Workspace、Session 或目录选择
 
-**Client 复用规则：** 复用 public package exports、`ui-primitives` 和 theme tokens；不要 import shipped package 的 private components/private CSS；不要复制 WorkspaceBrowser、ConversationRoot 或整个 Shell；components 不直接接触 `ctx`，业务 data 从 slot owner props、store 或 inject face 进入。
+Team 读取 `ctx.workspaces.list`，不复制 Workspace 创建或浏览状态。读 Harness 的 workspace、session、storage 文档与源码，保持 branded Workspace ID 与 Host 拥有的 cwd 语义。当前 UI 不调用 `pickDirectory()` 或 `create()`；用户创建 Workspace 时回到普通 Session UI。
 
-### 2.4 修改 typed Remote、Host/Client RPC 或生成物
+### Storage、persistence、replay 或 Thread Inbox
 
-- 本仓库：`packages/agent-team/src/index.ts` 的 service/`@Remote` declarations、`packages/agent-team/src/types.ts`、`scripts/generate-typert.mjs`；生成物在 `packages/agent-team/lib/typert.*`，不要手写。
-- Harness：`docs/subsystems/typert.md`；源码 `packages/typert/{generator,loader,protocol,registry}`、`packages/api/remotes`。
+读 Team 的 ledger/projection/lifecycle 源码与 JSON/SQLite 测试，再读 Harness 的 storage、persistence、session-persistence、defensive-patterns 文档与源码。ledger 是唯一 durable authority；补充 failure-injection/恢复证据，而不是添加静默 fallback。
 
-`InvocationDescriptor` 是本地反射描述，不是 wire message；wire payload 必须来自显式 typed request/response。修改 Host Remote 后先运行 `npm run generate:typert`，再 typecheck、build，并检查生成结果稳定。Client mount contribution 使用 generated `/remote`，不要自行复制 RPC protocol。
+### CSS、primitives 或 responsive layout
 
-### 2.5 修改 Workspace、Session 或目录选择
-
-- 本项目：Team 只读取 `ctx.workspaces.list` projection；当前 UI 设计不复制 Workspace 创建/浏览，不调用 `ctx.workspaces.pickDirectory()` 或 `ctx.workspaces.create()`，无 Workspace 时回到普通 Session UI。
-- Harness docs：`docs/subsystems/workspace.md`、`docs/subsystems/session.md`、`docs/subsystems/storage.md`。
-- Harness source：`packages/workspace/workspaces/src`（registry/service）、`packages/client/runtime/src/client/workspaces/service.ts`、`packages/client/ui-workspace/src/client/`、`packages/host/directory-picker*/src`。
-
-Workspace ID 是 branded id；路径通过 Host service 规范化；session cwd 归属必须由 Host projection 判断。不要在 Client 自己实现路径语义或第二套 Workspace store。
-
-### 2.6 修改 storage / persistence / replay / Thread Inbox
-
-- 本项目：`docs/team-collaboration.zh.md`、`packages/agent-team/src/ledger.ts`、相关 projection/lifecycle 源码和 JSON/SQLite backend tests；Thread Attention 与 Inbox 的历史设计背景在 `.scratch/archive/2026-08/thread-inbox/`。
-- Harness docs：`docs/subsystems/storage.md`、`docs/subsystems/persistence.md`、`docs/subsystems/session-persistence` 相关章节、`docs/defensive-patterns.md`。
-- Harness source：`packages/storage/storage-domain/src`、`storage-json/src`、`storage-sqlite/src`、`packages/session/session-persistence*/src`。
-
-Team ledger 是唯一持久权威；projection、Inbox、Remote 和 UI 不能另写事实。遇到崩溃窗口先增加 failure-injection/恢复测试，不添加静默 fallback。
-
-### 2.7 修改 CSS、UI primitives 或 responsive layout
-
-- 本项目：先读目标组件和 `*.module.css`，再读 `docs/architecture.zh.md` 与 `docs/development.zh.md`；需要历史视觉审计或 public UI reuse 清单时，查 `.scratch/archive/2026-08/ui-redesign/{design,research}/`。当前行为以源码和测试为准。
-- Harness：`docs/web-styling.md`；`packages/client/ui-primitives/src`；`packages/client/ui-theme/src/styles`；`packages/client/AGENTS.md` 的 styling 和 component 规则。
-
-先解决 surface grid、信息层级和 control reuse，再调颜色/圆角。保证 CSS Modules、`--dsw-*` tokens、键盘焦点、dialog/menu accessible name 和 390×844 reflow。
+先读目标组件与 CSS Module，再仅为背景读 architecture/development 与 UI 历史。查阅 Harness web styling、primitives/theme 源码与 Client 规则。先解决布局与 public primitive 复用，再处理样式；保持 CSS Modules、`--dsw-*` tokens、焦点、dialog/menu 名称与 390×844 reflow。
 
 ## 3. 外部 bundle 的安装与验证
 
-### 已核实的用户安装方式
+已核实的安装方式：
 
 ```sh
 dsh plugin --profile team-demo add @wowyuarm/dsh-agent-team
@@ -107,33 +68,16 @@ dsh plugin --profile team-demo add /absolute/path/to/dsh-agent-team
 dsh --profile team-demo
 ```
 
-`cordis.patch.yml` 以 `dsh.bundle.patch` 暴露 bundle；它在 `wowyuarm-agent-team-scope` 的 `cordis:group` 中挂载 Host、Client 和 invariant rows，并以 `isolate.agentPresets: true` 只给 Team preset 加入 `team-member`。普通 DSH preset roster 不被改写。
+`cordis.patch.yml` 通过 `dsh.bundle.patch` 暴露 patch，在 `wowyuarm-agent-team-scope` 中挂载 Host、Client 与 invariant rows，并只通过 `isolate.agentPresets` 加入 `team-member`。普通 DSH roster 不变。
 
-### 验证顺序
+验证顺序是 `npm run typecheck`、`npm test`、`npm run build`、`npm pack --dry-run`，browser/bundle 改动再加 browser 测试。手动预览用 `npm run preview`；同时检查普通 Session 中不出现 Team tools、guidance 与 UI。不要把临时 overlay、browser test 或生成文件提交到 Harness。
 
-1. 在本仓库先运行 `npm run typecheck`、`npm test`、`npm run build`、`npm pack --dry-run`。
-2. 如果改了 browser code 或 bundle，运行 `npm run test:browser`；它构造临时 profile、复制发布布局、使用 Harness 官方 Web scaffold 和 `/usr/bin/google-chrome`（可用 `CHROME_PATH` 覆盖），然后删除临时 Harness tests 和 profile files。
-3. 要手动查看页面，运行 `npm run preview`；它启动同一真实 composition，输出本地 URL，直到 `Ctrl+C` 停止。
-4. 验收时同时检查普通 Session：没有 team preset 的普通 Session 不应出现 Team tools、Team guidance 或 Team UI。
-5. 需要确认 Harness public API 时，在相邻 checkout 读源码/测试；不要把临时 overlay、browser test 或 generated files 提交到 Harness。
+## 4. 开发 checkout 依赖
 
-### 开发 checkout 的特殊依赖
+`npm run generate:typert` 使用相邻 checkout 的 `WorkspaceAnalyzer` 与 `FaceModelEmitter`。`scripts/sync-paths.mjs` 生成根 `tsconfig*.json` facades，使 tests 走 Harness source、typecheck 走 declarations、build 走已构建 declarations。不要编辑这些 facades，也不要添加 `include`/`files`。
 
-`npm run generate:typert` 通过相邻 `../deepseek-harness` checkout 的 `WorkspaceAnalyzer` / `FaceModelEmitter` 生成 Host/Remote artifacts。根项目的 `tsconfig*.json` 由 `scripts/sync-paths.mjs` 根据 Harness `tsconfig.base.json` 生成，分别让 tests 读取 Harness source、typecheck 读取 Harness declarations、build 读取已构建 declarations。不要手改这些 facades，也不要在其中添加 `include`/`files`。
+安装已发布的 bundle 不需要 sibling checkout；只有本地 Typert 生成、typecheck、build 与真实 browser 验证需要它。
 
-这意味着：用户安装已发布 bundle 不需要 sibling Harness checkout；只有本地开发的 Typert、typecheck、build 与真实 browser verification 需要它。
+## 5. 维护边界
 
-## 4. 历史研究指引
-
-M1/M2 决策的原始记录在 2026-08-15 的 Pi session（`~/.pi/agent/sessions/--home-yu-projects-dsh-agent-team--/2026-08-15T15-25-36-664Z_*.jsonl`，约 29 MB）。其结论凡被当前源码、测试或上游文档复核的，均已吸收入 `docs/architecture.zh.md` 与 `docs/development.zh.md`；未被吸收的不作为规则。需要历史细节时按该路径或 `.scratch/README.md` 检索归档。
-
-## 5. 当前状态
-
-实现状态、已完成事项和延期范围以当前源码、测试和 package README 确认；本文不复制会快速过时的状态清单。`.scratch/` 仅提供 active work 或归档溯源，不承担当前项目入口。
-
-## 6. 维护边界
-
-- 本文引用的 Harness paths 和 rules 来自当前 checkout；Harness 变更后必须重新核对源码和 docs。
-- 历史 session 中的思考、临时命令和失败尝试不自动成为当前规则；只把能被现有代码、测试或上游文档复核的结论写入这里。
-- 本文是查阅路线，不复制 package manifest、命令清单或 domain spec；这些事实仍由源文件和 `docs/development.zh.md` / `docs/architecture.zh.md` 负责。
-- `.scratch/` 可保留详细研究，但正式文档引用它时必须标明其设计/历史性质。
+本文引用的 Harness 路径与规则在 Harness 变化后必须重新核对。历史 session 与 `.scratch/` 只作背景。本文是查阅路线，不是重复的 manifest、命令清单或领域规范；那些事实属于各自的权威文件与 `development/README.zh.md`／`architecture/README.zh.md`。链接 archive 材料时必须标明其设计或历史性质。

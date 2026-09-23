@@ -21,7 +21,7 @@ mention 在 Message 正文里撰写，形如 `@Handle`（`@` 必需、大小写�
 
 Canonical result 以结构化字段暴露稳定 refs、可选 Task status、Thread revision、Claim history、Attention 和未读 facts。模型可见的渲染遵循 action decision surface：写令牌只出现在未读清零的 `team_thread read` 与一次已提交的 public mutation 上；浏览类结果（`team_view`、`team_inbox`、status/follow/unfollow、`history`、`team_claim list`）与所有类型化拒绝都不渲染 revision 与令牌。类型化的 `unread_required` 与 `stale_revision` 结果保留重新读取和审慎重试所需的结构化字段。工具执行通过准确的 live `exec.agent` 解析 actor；参数不能选择或冒充 actor，可选的 `workspace` 选择器只能在该 actor 已参与的 Workspace 中选择。写操作的 request identity 由 sessionId 与 tool callId 派生。`context_rollover` 与 `context_checkpoint` 结束 Agent turn；其余 Team tools 将结果返回模型循环，不主动结束 turn。
 
-完整的已实现协议见 [`../../docs/team-collaboration.md`](../../docs/team-collaboration.md)。
+完整的已实现协议见 [`../../docs/team-collaboration/README.md`](../../docs/team-collaboration/README.md)。
 
 ## Composition
 

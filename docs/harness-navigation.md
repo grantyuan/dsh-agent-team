@@ -10,10 +10,10 @@ This maintained engineering navigation records cross-repository routes verified 
 
 | Question | Inspect this repository first | Then inspect `../deepseek-harness` | Authority |
 | --- | --- | --- | --- |
-| Team domain objects, permissions, ledger, Task/Claim/Attention/Inbox | `docs/domain-model.md`, `docs/team-collaboration.md`, `packages/agent-team/src/`, tests | Only the consumed DSH service contract | This repository implementation |
+| Team domain objects, permissions, ledger, Task/Claim/Attention/Inbox | `docs/domain-model.md`, `docs/team-collaboration/`, `packages/agent-team/src/`, tests | Only the consumed DSH service contract | This repository implementation |
 | Host behavior | `packages/agent-team/src/{index,ledger,spec,types}.ts`, tests | Architecture and relevant subsystem docs for Agent/Session/Workspace/Storage/Typert | This repository behavior; Harness owns underlying capabilities |
-| Model-facing tools and preset | `docs/team-collaboration.md`, tool source, `team-member` preset | `docs/cookbook/adding-a-tool.md`, tools, permission-preset docs | Team tool semantics; Harness extension interface |
-| Client plugin, Team mode, UI | `docs/architecture.md`, `docs/development.md`, Client source | Client modules, client loading notes, `packages/client/AGENTS.md`, shipped UI source | This repository UI rules; Harness loading/slot/React boundaries |
+| Model-facing tools and preset | `docs/team-collaboration/`, tool source, `team-member` preset | `docs/cookbook/adding-a-tool.md`, tools, permission-preset docs | Team tool semantics; Harness extension interface |
+| Client plugin, Team mode, UI | `docs/architecture/README.md`, `docs/development/README.md`, Client source | Client modules, client loading notes, `packages/client/AGENTS.md`, shipped UI source | This repository UI rules; Harness loading/slot/React boundaries |
 | Typed Remote | architecture, `@Remote` declarations, `scripts/generate-typert.mjs` | Typert docs/source and API remotes | Harness generation/assembly; Team methods |
 | Publishing and bundle install | root READMEs, `cordis.patch.yml`, root manifest | Harness README, package cookbook, profile/bundle docs | Harness installer; this repository bundle layout |
 | Real Web acceptance | development docs, browser scripts, ignored artifacts | Harness Web scaffold, testing docs, Client tests | The run's script output; archive only milestone evidence |
@@ -24,7 +24,7 @@ When Harness behavior is uncertain, read upstream docs, then implementation and 
 
 ### Host, ledger, or lifecycle
 
-Read Team source/tests and `docs/domain-model.md`/`docs/team-collaboration.md`; inspect `index.ts`, `ledger.ts`, `spec.ts`, and `types.ts` to ensure one authority and durable commit path. Then consult Harness architecture, storage, workspace, Typert, and defensive-pattern docs and the corresponding source packages. New model-visible inputs need session-log evidence; package tests and real composition should cover lifecycle.
+Read Team source/tests and `docs/domain-model.md`/`docs/team-collaboration/`; inspect `index.ts`, `ledger.ts`, `spec.ts`, and `types.ts` to ensure one authority and durable commit path. Then consult Harness architecture, storage, workspace, Typert, and defensive-pattern docs and the corresponding source packages. New model-visible inputs need session-log evidence; package tests and real composition should cover lifecycle.
 
 ### Model-facing tool or preset
 
@@ -80,4 +80,4 @@ Published bundle installation does not need a sibling checkout; only local Typer
 
 ## 5. Maintenance boundary
 
-Harness paths and rules quoted here must be rechecked when Harness changes. Historical sessions and `.scratch/` remain context only. This document is a lookup route, not a duplicate manifest, command list, or domain specification; those facts belong in their authoritative files and `development.md`/`architecture.md`. When linking archive material, label it as design or history.
+Harness paths and rules quoted here must be rechecked when Harness changes. Historical sessions and `.scratch/` remain context only. This document is a lookup route, not a duplicate manifest, command list, or domain specification; those facts belong in their authoritative files and `development/README.md`/`architecture/README.md`. When linking archive material, label it as design or history.

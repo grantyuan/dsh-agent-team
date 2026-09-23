@@ -12,7 +12,9 @@ A stable identity authorized to read, speak, claim work, and receive Inbox hints
 
 ## Workspace Participation
 
-A join/leave relation between a Member and a Workspace, committed as ledger operations — the same relation shape as Channel membership, one rung above it (Workspace participation → Channel membership → Thread Attention). A Member's `workspaceId` records where it was created and never changes; authorization everywhere reads the current participation set, not the creation field. Joining grants collaboration immediately; it does not move or create the Member's Session. Each Member retains one Session lineage in its creation Workspace. Joining does not create another Session or offer cwd switching; collaboration in other participated Workspaces uses the same Session. The Human Member participates in every Workspace.
+A join/leave relation between a Member and a Workspace, committed as ledger operations — the same relation shape as Channel membership, one rung above it (Workspace participation → Channel membership → Thread Attention). A Member's `workspaceId` records where it was created and never changes; authorization everywhere reads the current participation set, not the creation field. Joining grants collaboration immediately; it does not move or create the Member's Session. Each Member retains one Session lineage in its creation Workspace.
+
+Joining does not create another Session or offer cwd switching; collaboration in other participated Workspaces uses the same Session. The Human Member participates in every Workspace.
 
 ## Human Member
 
@@ -24,7 +26,7 @@ A Member created and managed by Team. Created inside one Workspace (its creation
 
 ## Member Capabilities
 
-Durable capability intent on the Member entity (optional `capabilities` field: `tools.allow` and `skills.allow`), carried verbatim through every lifecycle operation and restored by Host restart replay. Pure intent: allow-list names are not validated against any known-name set at commit time — a Harness upgrade that renames or removes tools can never make an old ledger unreplayable; divergence from the names known at activation is derived as a runtime warning (`capabilityWarnings`, a projection-derived state, never persisted — persisted warnings would lie after Host restart or upgrades). `tools.allow` is a deliberate interface reservation (no UI write path) that future Runtime Revision manifest orchestration depends on; do not remove during cleanup.
+Durable capability intent on the Member entity (optional `capabilities` field: `tools.allow` and `skills.allow`), carried verbatim through every lifecycle operation and restored by Host restart replay. Pure intent: allow-list names are not validated against any known-name set at commit time — a Harness upgrade that renames or removes tools can never make an old ledger unreplayable; divergence from the names known at activation is derived as a runtime warning (`capabilityWarnings`, a projection-derived state, never persisted — persisted warnings would lie after Host restart or upgrades).
 
 ## Workspace
 
@@ -42,9 +44,13 @@ Immutable content explicitly sent in a Channel or existing Thread. Every top-lev
 
 An optional work-tracking overlay attached to an existing Thread, not a prerequisite for a Thread. It can be created by explicit top-level task intent or added by Human promotion. Promotion also appends a public explanation Message. Task status is derived from Claims; Human acceptance and close are explicit facts. Human-facing `Task #N` is the durable Task creation ordinal within its home Channel: taskful starts and promotions participate, while a taskless anchor's original position does not. It is not identity; stable cross-channel references use branded `taskRef`.
 
+Acceptance normally waits for every Claim to be done (`in_review`). The Human may also accept early from `in_progress`: the accept operation projects the Claims still active at that moment to done and records them in the activity as `completedClaimRefs`, notifying each owner without fabricating owner claim-done events. A `todo` Task that was never claimed is accepted directly, and its activity carries no claim list.
+
 ## Thread
 
-An independent, single-level public collaboration aggregate inside a Channel. It always has `threadRef`, an anchor Message, and a revision, but may have no Task. Public Messages increment revision; Taskful Claim and resolution changes do too. Existing-Thread writes require current revision. A taskless Thread still supports replies, follows, structured mentions, Inbox, reads, and history, but has no Claims, Task status, or resolution controls. Collaboration uses `threadRef` first; a released task-only Client may use `taskRef` as a Host compatibility alias only for taskful Threads, while Task/Claim operations use `taskRef` identity. Revision is an internal concurrency token, not citable message content.
+An independent, single-level public collaboration aggregate inside a Channel. It always has `threadRef`, an anchor Message, and a revision, but may have no Task. Public Messages increment revision; Taskful Claim and resolution changes do too. Existing-Thread writes require current revision. A taskless Thread still supports replies, follows, structured mentions, Inbox, reads, and history, but has no Claims, Task status, or resolution controls.
+
+Collaboration uses `threadRef` first; a released task-only Client may use `taskRef` as a Host compatibility alias only for taskful Threads, while Task/Claim operations use `taskRef` identity. Revision is an internal concurrency token, not citable message content.
 
 ## Claim
 
@@ -88,7 +94,9 @@ A restart-stable, typed identifier that callers cannot safely construct by conca
 
 ## Direct Message
 
-A private Member-to-Member message, not part of any Thread. The ledger appends one audit-only `team/dm-sent` operation (request-idempotent; sender and recipient must be enabled Agent Members of the same Workspace) while the projection deliberately stays unchanged — no Channel, Thread, revision, Attention, or Inbox markers. Delivery is a transient runtime effect: an idle recipient opens a followup turn with the body as a relay-form user message, a busy one is steered into the current turn, and the text carries one bounded line of adjacent context. A failed wake leaves the durable fact intact and the sender gets a structured delivery error instead of a silent loss; there is no automatic redelivery. A DM is for quick clarifications and status syncs; task work belongs in Threads. A possible future private Place with its own participants and visibility would get separate authority and notification design.
+A private Member-to-Member message, not part of any Thread. The ledger appends one audit-only `team/dm-sent` operation (request-idempotent; sender and recipient must be enabled Agent Members of the same Workspace) while the projection deliberately stays unchanged — no Channel, Thread, revision, Attention, or Inbox markers. Delivery is a transient runtime effect: an idle recipient opens a followup turn with the body as a relay-form user message, a busy one is steered into the current turn, and the text carries one bounded line of adjacent context.
+
+A failed wake leaves the durable fact intact and the sender gets a structured delivery error instead of a silent loss; there is no automatic redelivery. A DM is for quick clarifications and status syncs; task work belongs in Threads. A possible future private Place with its own participants and visibility would get separate authority and notification design.
 
 ## Runtime Presence
 
@@ -96,7 +104,9 @@ An in-process availability projection, not a ledger fact: available (live idle),
 
 ## Member Diagnostic
 
-The structured reason behind a non-normal presence or availability row, never persisted: `session-refused` (a deterministic format refusal of a Session the activation needed; may carry the refused artifact's location and whether a repair attempt proved anything remediable), `session-unreadable` (missing, corrupt, io, or unknown Session read failure), `preset-composition` (preset mount/validation failure, typically an install/runtime split), `rollover` (the transient commit window), `runtime` (live loop or compaction failure), or `activation` (unclassified activation failure). The `class` routes which recovery action actually helps: a non-remediable refusal or a rollover window offers no restart, while everything else may recover through restart.
+The structured reason behind a non-normal presence or availability row, never persisted: `session-refused` (a deterministic format refusal of a Session the activation needed; may carry the refused artifact's location and whether a repair attempt proved anything remediable), `session-unreadable` (missing, corrupt, io, or unknown Session read failure), `preset-composition` (preset mount/validation failure, typically an install/runtime split), `rollover` (the transient commit window), `runtime` (live loop or compaction failure), or `activation` (unclassified activation failure).
+
+The `class` routes which recovery action actually helps: a non-remediable refusal or a rollover window offers no restart, while everything else may recover through restart.
 
 ## Context Generation
 
@@ -120,7 +130,9 @@ Leaving one Workspace: `team/member-workspace-left` ends the Member's participat
 
 ## Archive
 
-The reversible hidden third state between Suspend and Remove, for Members and Channels. `archiveMember` disposes the live session (private memory and the Session log stay on disk) and releases active Claims across every participated Workspace with public `claims_released` Activities; `archiveChannel` applies the same release shape across every owner on the Channel's Threads. Memberships survive archival (hidden state, not departure). Archived entities are gone from every Team API surface — projections, mention candidates, ref resolution, and ref-addressed reads reject with an explicit archived error — while the facts stay complete in the ledger for replay and a future restore. Removal from archived remains available as the data-hygiene path.
+The hidden third state between Suspend and Remove, for Members and Channels. It is reversible in design — the facts stay complete in the ledger for replay and a future restore — but there is deliberately no restore entry point this round, mirroring archived dsh sessions. `archiveMember` disposes the live session (private memory and the Session log stay on disk) and releases active Claims across every participated Workspace with public `claims_released` Activities; `archiveChannel` applies the same release shape across every owner on the Channel's Threads.
+
+Memberships survive archival (hidden state, not departure). Archived entities are gone from every Team API surface — projections, mention candidates, ref resolution, and ref-addressed reads reject with an explicit archived error. Removal from archived remains available as the data-hygiene path.
 
 ## Remove
 
