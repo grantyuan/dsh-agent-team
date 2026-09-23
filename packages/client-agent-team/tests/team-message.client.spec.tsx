@@ -260,11 +260,29 @@ describe('TeamMessage long-body clamp', () => {
     expect(getByRole('button', { name: '展开全文' }).getAttribute('aria-expanded')).toBe('false')
   })
 
+  it('marks a long body as a document through expand and collapse', () => {
+    const { container, getByRole } = render(
+      <TeamMessage senderName="Builder" memberId={'member:builder' as AgentTeamMemberId} human={false} body={`## 结论\n\n${longBody}`} t={t} />,
+    )
+    // The wrapper itself carries the mark, so the document rhythm applies to
+    // the clamped preview and the expanded body alike; the class swap that
+    // expands the clamp never drops it.
+    const documents = (): HTMLElement[] =>
+      [...container.querySelectorAll('div')].filter(div => div.hasAttribute('data-document'))
+    expect(documents()).toHaveLength(1)
+    expect(documents()[0]!.querySelector('[class*="messageMarkdown"]')).not.toBeNull()
+    fireEvent.click(getByRole('button', { name: '展开全文' }))
+    expect(documents()).toHaveLength(1)
+    fireEvent.click(getByRole('button', { name: '收起' }))
+    expect(documents()).toHaveLength(1)
+  })
+
   it('leaves short bodies unclamped without any toggle', () => {
     const { container } = render(
       <TeamMessage senderName="Builder" memberId={'member:builder' as AgentTeamMemberId} human={false} body="短消息" />,
     )
     expect(clampDivs(container)).toHaveLength(0)
+    expect(container.querySelector('[data-document]')).toBeNull()
     expect(container.querySelector('button')).toBeNull()
   })
 

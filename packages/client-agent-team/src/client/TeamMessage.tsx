@@ -187,8 +187,10 @@ export const TeamMessage = memo(function TeamMessage({ senderName, memberId, hum
         {/* The wrapper stays mounted for every clampable body and only swaps
             its class: appearing/disappearing around bodyNode would remount the
             Markdown subtree and wipe the post-render ref/mention chips that the
-            layout effects painted into it. */}
-        {clampable ? <div className={clamped ? css.messageClamp : undefined}>{bodyNode}</div> : bodyNode}
+            layout effects painted into it. It also carries data-document —
+            the same >600-character rule that folds the body marks it for the
+            document reading rhythm (conversation.module.css). */}
+        {clampable ? <div data-document="" className={clamped ? css.messageClamp : undefined}>{bodyNode}</div> : bodyNode}
         {clampable && (
           <button type="button" className={css.messageExpand} data-message-expand="true" aria-expanded={expanded} onClick={() => { setExpanded(value => !value) }}>
             {expanded ? (t?.('collapseMessage') ?? 'Show less') : (t?.('expandMessage') ?? 'Show more')}

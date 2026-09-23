@@ -4,6 +4,7 @@ All notable changes to this project are documented in this file. The format foll
 
 ## [Unreleased]
 
+- Long messages read as documents instead of a wall: a body past the 600-character fold — the same deterministic rule that folds it — renders on a reading rhythm (16px block gaps, 6px list items, 24px lines, section-sized headings), while short chat keeps its dense grid. Message text at last follows the Settings content size too (`--dsh-content-font-size`), so raising it grows Team messages with the rest of DSH.
 - The Inbox row's clock yields when the identity line is too narrow to hold it beside the count: on a phone-width page with the sidebar forced open the row no longer draws past its own edge, and the identity line keeps the room the clock was holding.
 
 ## [0.1.14] - 2026-09-22

@@ -1,6 +1,7 @@
 // UI parity audit: mechanical consistency checks between the Team Client's
 // own CSS/TSX and the DSH 0.1.5 design language documented in
-// docs/frontend-design.md §Design language alignment. This is the repeatable
+// docs/frontend-design/principles-and-language.md §Design language alignment.
+// This is the repeatable
 // form of the manual audit that produced commit bb1ebba — run it after any
 // visible-UI change and after every DSH upgrade:
 //
@@ -24,7 +25,8 @@ const findings = []
 const note = (severity, where, what) => findings.push({ severity, where, what })
 
 // ---------------------------------------------------------------------------
-// Language rules (keep in sync with docs/frontend-design.md §Design language
+// Language rules (keep in sync with
+// docs/frontend-design/principles-and-language.md §Design language
 // alignment — the document is the authority, this table is its executable
 // mirror).
 // ---------------------------------------------------------------------------
@@ -270,6 +272,13 @@ const GEOMETRY = [
   ['composer.module.css', '.fileChip', [['border-radius', '6px']], 'chip radius is 6px'],
   ['conversation.module.css', '.attachmentChip', [['border-radius', '6px']], 'chip radius is 6px'],
   ['conversation.module.css', '.mention', [['border-radius', '6px']], 'inline mention chip radius is 6px'],
+  ['conversation.module.css', '.messageText', [['font-size', 'var(--dsh-content-font-size, 14px)'], ['line-height', 'calc(22px + var(--dsh-content-font-delta, 0px))']], 'literal body rides the content-font axis on the 14/22 chat grid'],
+  ['conversation.module.css', '.messageClamp', [['max-height', 'calc(176px + 8 * var(--dsh-content-font-delta, 0px))']], 'the fold preview stays eight lines of the body grid at any content size'],
+  ['conversation.module.css', '.messageBody .messageMarkdown', [['font-size', 'var(--dsh-content-font-size, 14px)'], ['line-height', 'calc(22px + var(--dsh-content-font-delta, 0px))']], 'markdown body rides the content-font axis on the 14/22 chat grid'],
+  ['conversation.module.css', '.messageBody [data-document] .messageMarkdown', [['line-height', 'calc(24px + var(--dsh-content-font-delta, 0px))']], 'a folded long body reads on the 24px document grid'],
+  ['conversation.module.css', '.messageBody [data-document] .messageMarkdown p', [['margin', '16px 0']], 'document block gap'],
+  ['conversation.module.css', '.messageBody [data-document] .messageMarkdown li + li', [['margin-top', '6px']], 'document list-item gap'],
+  ['conversation.module.css', '.messageBody [data-document] .messageMarkdown :where(h1, h2, h3, h4, h5, h6)', [['margin', '24px 0 8px']], 'document section-heading margins'],
 ]
 
 function findRuleBody(file, selector) {
@@ -444,5 +453,5 @@ console.log('')
 console.log(`info (${bySeverity.info.length}):`)
 print(bySeverity.info)
 console.log('')
-if (bySeverity.error.length === 0) console.log('No mechanical language violations. Design judgment still lives in docs/frontend-design.md.')
+if (bySeverity.error.length === 0) console.log('No mechanical language violations. Design judgment still lives in docs/frontend-design/README.md.')
 process.exit(bySeverity.error.length === 0 ? 0 : 1)

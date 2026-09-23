@@ -190,8 +190,8 @@
 /* Literal human text: the shared MessageText primitive, or segmented mention
    spans — both need the same pre-wrap metrics from this container. */
 .messageText {
-  font-size: 14px;
-  line-height: 22px;
+  font-size: var(--dsh-content-font-size, 14px);
+  line-height: calc(22px + var(--dsh-content-font-delta, 0px));
   margin: 6px 0;
   white-space: pre-wrap;
   word-break: break-word;
@@ -202,7 +202,7 @@
 .messageClamp {
   -webkit-mask-image: linear-gradient(#000 72%, transparent 100%);
   mask-image: linear-gradient(#000 72%, transparent 100%);
-  max-height: 176px;
+  max-height: calc(176px + 8 * var(--dsh-content-font-delta, 0px));
   overflow: hidden;
 }
 /* The clamp's expand/collapse toggle: quiet text link under the preview.
@@ -230,8 +230,10 @@
 }
 /* Compact timeline typography over the shared Markdown primitive; the root
    font shorthand is reset so Agent and Human bodies share one text grid.
-   Heading sizes are chat-tuned: the page h1 stays the loudest element. */
-.messageBody .messageMarkdown { font-size: 14px; line-height: 22px; }
+   Heading sizes are chat-tuned: the page h1 stays the loudest element.
+   Sizes ride the Settings content-font axis the way shipped chat bodies do:
+   the default size and the px delta add back into every number below. */
+.messageBody .messageMarkdown { font-size: var(--dsh-content-font-size, 14px); line-height: calc(22px + var(--dsh-content-font-delta, 0px)); }
 /* Descendant (not child) on .messageBody: the clamp wrapper may sit between
    them, and a broken reset would let the primitive's own root font shorthand
    render the clamped preview larger than the expanded body. */
@@ -241,12 +243,28 @@
 .messageBody .messageMarkdown li + li { margin-top: 2px; }
 .messageBody .messageMarkdown strong { font-weight: 600; }
 .messageBody .messageMarkdown :where(h1, h2, h3, h4, h5, h6) { margin: 12px 0 4px; }
-.messageBody .messageMarkdown :where(h1) { font-size: 17px; line-height: 26px; }
-.messageBody .messageMarkdown :where(h2) { font-size: 16px; line-height: 24px; }
-.messageBody .messageMarkdown :where(h3, h4, h5, h6) { font-size: 15px; line-height: 22px; }
+.messageBody .messageMarkdown :where(h1) { font-size: calc(17px + var(--dsh-content-font-delta, 0px)); line-height: calc(26px + var(--dsh-content-font-delta, 0px)); }
+.messageBody .messageMarkdown :where(h2) { font-size: calc(16px + var(--dsh-content-font-delta, 0px)); line-height: calc(24px + var(--dsh-content-font-delta, 0px)); }
+.messageBody .messageMarkdown :where(h3, h4, h5, h6) { font-size: calc(15px + var(--dsh-content-font-delta, 0px)); line-height: calc(22px + var(--dsh-content-font-delta, 0px)); }
 .messageBody .messageMarkdown pre { margin: 8px 0; padding: 10px 12px; font-size: 13px; }
 .messageBody .messageMarkdown blockquote { margin: 6px 0; }
 .messageBody .messageMarkdown :where(th, td) { padding-block: 5px; }
+/* Past the fold threshold the body is a document, not a chat line: the
+   wrapper carries `data-document` and this rhythm replaces the chat-tuned
+   one above — the shipped markdown block grid (16px blocks, 6px list items,
+   24px lines) with section headings held one notch tighter than the document
+   sheet. The same deterministic >600-character rule drives the fold, so every
+   surface calls the same body a document without new state. */
+.messageBody [data-document] .messageMarkdown { line-height: calc(24px + var(--dsh-content-font-delta, 0px)); }
+.messageBody [data-document] .messageMarkdown p { margin: 16px 0; }
+.messageBody [data-document] .messageMarkdown :where(ul, ol) { margin: 16px 0; }
+.messageBody [data-document] .messageMarkdown li + li { margin-top: 6px; }
+.messageBody [data-document] .messageMarkdown li > p { margin: 8px 0; }
+.messageBody [data-document] .messageMarkdown :where(h1, h2, h3, h4, h5, h6) { margin: 24px 0 8px; }
+.messageBody [data-document] .messageMarkdown :where(h2) { font-size: calc(18px + var(--dsh-content-font-delta, 0px)); line-height: calc(26px + var(--dsh-content-font-delta, 0px)); }
+.messageBody [data-document] .messageMarkdown :where(h3) { font-size: calc(17px + var(--dsh-content-font-delta, 0px)); line-height: calc(24px + var(--dsh-content-font-delta, 0px)); }
+.messageBody [data-document] .messageMarkdown pre { margin: 16px 0; }
+.messageBody [data-document] .messageMarkdown blockquote { margin: 16px 0; }
 .emptyState,
 .loadingState {
   color: var(--dsw-alias-label-tertiary);
