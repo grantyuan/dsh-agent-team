@@ -1,4 +1,4 @@
-import { mkdtemp, rm } from 'node:fs/promises'
+import { mkdtemp, rm, readFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
@@ -10,7 +10,7 @@ import { WorkspaceId } from '@deepseek-ai/dsh-workspace'
 import { MemoryMediaPool, MemoryStorageBackend } from './helpers/memory-backend.ts'
 import { AgentTeamLedger, AGENT_TEAM_HUMAN_HANDLE, agentTeamHumanActor } from '../src/ledger.ts'
 import { agentTeamDomainSpec } from '../src/spec.ts'
-import { assertValidHumanName, HUMAN_PROFILE_DEFAULT_NAME, normalizeHumanName } from '../src/human-profile.ts'
+import { assertValidHumanName, HUMAN_PROFILE_DEFAULT_NAME, HUMAN_PROFILE_VERSION, normalizeHumanName } from '../src/human-profile.ts'
 import { readHumanAvatar, removeHumanAvatar, writeHumanAvatar } from '../src/human-avatar.ts'
 import type { AgentTeamMemberId, AgentTeamOperation, AgentTeamOperationId, AgentTeamRequestId } from '../src/types.ts'
 
@@ -101,5 +101,18 @@ describe('human avatar persistent store', () => {
     await expect(writeHumanAvatar(root, 'a.txt', 'text/plain', Buffer.from('x'))).rejects.toThrow('must be an image')
     await expect(writeHumanAvatar(root, 'a.png', 'image/png', Buffer.alloc(0))).rejects.toThrow('must not be empty')
     expect(await readHumanAvatar(root, 'missing')).toBeUndefined()
+  })
+})
+
+describe('bundle version footnote', () => {
+  it('states the version of the package this Host runs from', async () => {
+    const manifest = JSON.parse(await readFile(join(process.cwd(), 'package.json'), 'utf8')) as { readonly version: string }
+    // The Host resolves its manifest relative to its own module while this
+    // oracle resolves it independently: a layout change that sends the Host at
+    // another manifest (or at none) lands here as 'unknown' or a mismatch,
+    // instead of a footnote that quietly names another release — which is how
+    // the 0.1.14 bundle ended up reporting 0.1.13.
+    expect(HUMAN_PROFILE_VERSION).not.toBe('unknown')
+    expect(HUMAN_PROFILE_VERSION).toBe(manifest.version)
   })
 })

@@ -176,7 +176,7 @@ const MAX_TIMELINE_LIMIT = 24
  * disagree about where history ends.
  */
 const MAX_TIMELINE_ANCESTORS = 8
-/** Product pressure budget constants (see docs/team-collaboration.md). */
+/** Product pressure budget constants (see docs/team-collaboration/README.md). */
 const CONTEXT_HARD_LIMIT_CAP = 256_000
 const CONTEXT_HANDOFF_AT_CAP = 200_000
 const CONTEXT_HANDOFF_RESERVE = 8_000
@@ -447,7 +447,7 @@ export default class AgentTeam extends TypertRemoteService {
    * successful `context_rollover` tool result into its next private context
    * generation. The ledger owns the binding audit, the engine's projection
    * unit owns intent, and this coordinator owns only reconstructible process
-   * state. See docs/architecture.md and docs/team-collaboration.md.
+   * state. See docs/architecture/README.md and docs/team-collaboration/README.md.
    */
   private readonly contextManagement = createTeamContextManagement({
     agentForMember: memberId => this.handles.get(memberId)?.agent,
