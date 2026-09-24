@@ -74,10 +74,13 @@ Human 13:32（thread:381599ed）：「本次升级到0.1.7后ui也变化了不�
 
 ### C. 机会项（新能力，非漂移）
 
-1. **`sidebar.toggle.badge`**（0.1.7 新槽：`kind: 'single'`、`scope: 'root'`、「折叠态展开按钮里的非交互提示」）：可以把 Team Inbox 未读数挂到**折叠栏**上——现在折叠态看不到任何 Team 未读。候选做法：Team Client 往这个槽注入一个纯展示标记，由既有 Inbox projection 驱动。需要先确认该槽的 owner/scope 语义与折叠态是否真渲染。
+1. **`sidebar.toggle.badge`**（0.1.7 新槽：`kind: 'single'`、`scope: 'root'`、「折叠态展开按钮里的非交互提示」）：~~可以把 Team Inbox 未读数挂到**折叠栏**上~~ → **2026-09-24 结论：不做，两条独立理由都成立。**
+   - **槽被 shipped 占着**：`ui-settings-general/src/client/index.ts` 已往这个槽注册 `DesktopUpdateBadge`（桌面更新/连接状态）。`ui-slots` 的 `single` 语义是「同 priority 再注册直接 throw；换 priority 则**遮蔽**对方（最低者渲染）」，所以 Team 要么抛错、要么把 shipped 的更新提示静默挤掉——那是无关功能的回归，而且只在 Team 模式里换掉徽标身份，读起来像平台自己坏了。
+   - **需求已被覆盖**：折叠栏自己的 Inbox 轨道按钮本来就渲染 `InboxMark unread={inboxTotal}`（`TeamWorkspaceBrowser.tsx` 的 `!wide` 分支），也就是 Team 整片未读的**存在性**；计数仍在折叠栏的 tooltip / `aria-label` 里，而平台折叠栏的语言本来就是「点」而不是数字（`docs/frontend-design/sidebar-browser.md`：宽卡与窄轨「mark unread the same way」）。
+   - 残留缺口（记录、不修）：折叠栏给的是「有未读」而不是**数量**——加数字会偏离平台的窄轨语言，留给平台哪天自己改。
 2. 0.1.7 会话侧重构（`ConversationHeader/Content/MainPanel/DefaultConversationViews`、可拖拽宽度 `ConversationWidthControls`（localStorage `dsh.conversation.contentWidth`，下限 640）、`TodoPanel`、`ContextMeter` 改动、新增 group registry/store、`contract/queue.ts` 删除、`context-provenance.ts`→`context-producer.ts`）：Team 模式下我们把主面板换成自己的 Thread/Channel 页，暂**不跟进**；等哪天真要在 Team 里用 shipped 会话组件再评估。
 
-**C 状态（2026-09-24）**：C1 `sidebar.toggle.badge` 仍未开工（本轮先把 Human 点名的可读性问题与 B 类清完）；C2 维持不跟进。
+**C 状态（2026-09-24）**：C1 经查**不做**（理由见上：槽被 shipped 的更新徽标占用，且折叠栏本来就有未读点）；C2 维持不跟进。
 
 **D 类观察（量过、本轮刻意不做）**：我们客户端 CSS 里还有 6 处 `border: 1px solid var(--dsw-alias-border-*)`，而 shipped 0.1.7 画描边一律走 `0.5px` 或 elevation 发丝线（`border: 0.5px solid var(--dsw-alias-border-l2)` 见 `AccountSection.module.css`、`AttachmentRail.module.css` 等），我们包内 0.5px 用法为 0 处。composer 卡已随本轮改成发丝线；其余 5 处（含 `.workspaceTrigger`、`thread .newUpdates`）属于「同一类但会一次动到多个面」的改动，且 0.5px 在非 retina 上的渲染还要实测，留给下一轮单独做。
 
