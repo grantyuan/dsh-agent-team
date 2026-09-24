@@ -34,6 +34,10 @@ The dialog body keeps one block rhythm — the mode switch is its first block, a
 
 The embedded Member Session input surface is the shipped composer itself, unmodified: the Team registers no member-session composer surface at all — no shadow, no trigger sources, no dock strip. The keyboard contract, command and reference menus, and attachments are exactly the ordinary session's.
 
+Team mode stands the sidebar's global chrome down the same way: the shipped New Session button and the global panel rail — today the Plugins entry `ui-plugin-manager` contributes to `sidebar.panellist` — address the profile rather than the Team, so both hide while `html[data-agent-team-mode='team']` stands and return the moment Team is left.
+
+SlotCore cannot withdraw another plugin's list row and the entry's label is localized, so the rule keys off the mode attribute and the shipped `panelList` class substring instead of the copy; ordinary conversations keep both, and the browser test pins the transition from both sides — visible before entering Team, present but hidden inside it.
+
 ## Inbox (收件箱)
 The Inbox entry is one card on the wide rail above the Workspace selector — its total sums the unread of every visible Workspace, so it is the one destination that outlives the scope the selector names, and it leads the sidebar instead of standing inside that scope — and the rail's first icon on the narrow rail, where no selector exists to lead.
 

@@ -2,6 +2,17 @@
   display: none;
 }
 
+/* The shipped panel rail — today the Plugins entry ui-plugin-manager
+   contributes to `sidebar.panellist` — is a global profile surface, and Team
+   mode is a different destination: SlotCore cannot withdraw another plugin's
+   list row, so the rail stands down here the same way the New Session button
+   stands down above. Ordinary conversations keep the entry, and both sides
+   key off the html attribute the Team footer action owns, never off the
+   entry's localized label. */
+:global(html[data-agent-team-mode='team']) nav[class*='panelList'] {
+  display: none;
+}
+
 .workspaceBrowser {
   display: flex;
   flex-direction: column;

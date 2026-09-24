@@ -1460,6 +1460,13 @@ it('drives the complete opt-in Agent Team journey in real Web', async () => {
   await page.getByRole('button', { name: '对话' }).click()
   await expect.poll(() => page.locator('[data-team-channel]').count()).toBe(0)
 
+  // The shipped global panel rail (the Plugins entry) addresses the profile,
+  // not the Team: ordinary conversations show it, Team mode stands it down —
+  // present in the DOM on both sides, visible only on one.
+  const globalPanelsNav = page.locator('nav[class*="panelList"]')
+  await expect.poll(() => globalPanelsNav.count()).toBe(1)
+  await expect.poll(() => globalPanelsNav.isVisible()).toBe(true)
+
   const enterTeamKeyboard = page.getByRole('button', { name: '团队' })
   await enterTeamKeyboard.focus()
   await expect.poll(() => enterTeamKeyboard.evaluate(element => element === document.activeElement)).toBe(true)
@@ -1467,6 +1474,8 @@ it('drives the complete opt-in Agent Team journey in real Web', async () => {
   await enterTeamKeyboard.press('Enter')
   await expect.poll(() => page.getByRole('button', { name: '成员', exact: true }).count()).toBe(1)
   await page.getByRole('heading', { name: '# delivery' }).waitFor()
+  await expect.poll(() => globalPanelsNav.count()).toBe(1)
+  await expect.poll(() => globalPanelsNav.isVisible()).toBe(false)
 
   const membersKeyboard = page.getByRole('button', { name: '成员', exact: true })
   await membersKeyboard.focus()
