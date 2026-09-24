@@ -1,12 +1,17 @@
 # 0.1.7 UI 设计语言再基线（task:d3ec167b #15）
 
-## 状态
+- **状态**：已完成并归档（2026-09-24）。Human 14:57「没问题我验收了」，14:58 指示「scratch 去归档并 amend 你这个 commit」——归档材料作为同一笔提交的一部分落下（本地 amend，未重开归档提交）。
+- **交付提交**（同一工作项 6 笔，均未 push，push 由 Human 定）：`chore: re-baseline the parity audit and design language on dsh 0.1.7`（A 类）、`fix: repair the mention menu readability and finish the 0.1.7 surface alignment`（B 类 + CHANGELOG）、`chore: record why the collapsed-rail unread badge stays unbuilt`（C1 否）、`fix: unify Team row and popover radii on the shipped tiers`（B6 半径分档）、`test: keep every browser case's screenshots in one run`、`chore: settle the neutral separator width on the 1px Chromium renders`（D 类结案，本目录随之 amend 进去）。
+- **正式文档出口**：`docs/frontend-design/principles-and-language.md`（+ `.zh.md`，设计语言表的唯一权威）、`scripts/audit-ui-parity.mjs`（表的可执行镜像）、`CHANGELOG.md`（D 类无渲染变化故不进 CHANGELOG，B 类在 `d40b051e` 已记）——归档时均已落地，本目录不再改动。
+- **最后核实**：2026-09-24 14:40，harness checkout `/home/yu/projects/deepseek-harness`，`git describe` = `dsh-v0.1.7-rc.1`（对照基线 = `dsh-v0.1.5-rc.2`）。提交前门禁全绿：`audit-ui-parity` exit 0、client vitest 205/205、`typecheck` 0、`lint` 0 error（2 条既有 warning）、`check:docs` OK、`test:browser` 4/4（1440×960 + 390×844，一次全量留 88 张截图）。
 
-- **状态**：A 类已交付（`9ba332a9`）；B 类由 Human 13:49 授权 Iris 自行决定，已全部落地待验收（2026-09-24）。
-- **最后核对**：2026-09-24 13:33~13:50，harness checkout `/home/yu/projects/deepseek-harness`，`git describe` = `dsh-v0.1.7-rc.1`（对照基线 = `dsh-v0.1.5-rc.2`，即我们文档里那条 0.1.5 语言）。
-- **当前前沿**：Human 14:11 反弹「之前圆角基本统一，现在又引入新的」（14:12 澄清说的是上游 0.1.7，不是 Iris 的改动），14:14 交回判断权：「你自己看看 dsh 统一的 ui，结合我们这里，自己决策与优化呗」。Iris 复核 harness git 史后判定半径分档并按档收口（B6：名册行 12px、mention 弹层 16px/8px 行），订正了 12px 的来源版本（0.1.6 线而非 0.1.7）。此前 13:49 的一轮：B1/B2/B3/B4 落地（B5 记豁免），并新增两条同源漂移：mention 弹层毛玻璃配方、composer 卡 elevation 描边；`scripts/audit-ui-parity.mjs` 新增 §12 毛玻璃表面规则。C1 已否。
-- **完成条件**：`scripts/audit-ui-parity.mjs` 与 `docs/frontend-design/principles-and-language{,.zh}.md` 重新锚定到 0.1.7（不再引用已删除的 shipped 文件）；被选中的可见改动落地并通过 `audit-ui-parity` exit 0 + `npm run test:browser`（1440×960 / 390×844）。
-- **正式文档出口**：`docs/frontend-design/principles-and-language.md`（+ `.zh.md`，设计语言表的唯一权威）、`scripts/audit-ui-parity.mjs`（表的可执行镜像）；若机会项落地再动 `docs/frontend-design/sidebar-browser.md` 与 `CHANGELOG.md`。
+## 工作史与结论
+
+- **A 类**（机械再基线）：审计的三条 shipped needle 重新锚定到 0.1.7 真实存在的东西，删掉对已被上游删除的 `PermissionSelect.module.css` 的引用；设计语言表重锚。修前 `audit-ui-parity` 在 master 上 exit 1。
+- **B 类**（Human 13:49 授权自行决定）：mention 弹层毛玻璃配方（Human 点名的「看不清」）、composer 卡 elevation 描边、14px 图标 Medium、模式控件 chip 语言 + 文字常显、B6 半径按表面角色分档（行 12 / 浮层 16 面 + 8 行 / 密集双行结果行 8 / chip 6 / composer 卡 22）；B5 composer 卡内距记为豁免。
+- **C 类**：C1 折叠栏 `sidebar.toggle.badge` 未读角标**决定不做**（槽被 shipped 的桌面更新提示占用 + 折叠栏本来就有未读点），C2 会话侧重构不跟进。
+- **D 类**：包内 `1px` 中性描边**不是漂移**——Chromium 把 `border-width` 向上取整到 1px，shipped 的 `0.5px` 与我们的 `1px` 在设备像素比 1 / 1.25 / 2 / 3 下逐列像素相同；保留 1px，并把结论写进设计语言「刻意不跟齐」第三条 + 审计 §8 的全包分数像素扫描。
+- **Human 14:11 反弹「圆角又引入新的」的处置**：订正 12px 的来源版本（0.1.6 线 `c6b81a75`，不是 0.1.7），并按表面角色分档收口；上一轮「回退 7 处到 8px」的提议已作废。
 
 ## 触发
 
@@ -87,7 +92,7 @@ Human 13:32（thread:381599ed）：「本次升级到0.1.7后ui也变化了不�
 
 **C 状态（2026-09-24）**：C1 经查**不做**（理由见上：槽被 shipped 的更新徽标占用，且折叠栏本来就有未读点）；C2 维持不跟进。
 
-**D 类观察（量过、本轮刻意不做）**：我们客户端 CSS 里还有 6 处 `border: 1px solid var(--dsw-alias-border-*)`，而 shipped 0.1.7 画描边一律走 `0.5px` 或 elevation 发丝线（`border: 0.5px solid var(--dsw-alias-border-l2)` 见 `AccountSection.module.css`、`AttachmentRail.module.css` 等），我们包内 0.5px 用法为 0 处。composer 卡已随本轮改成发丝线；其余 5 处（含 `.workspaceTrigger`、`thread .newUpdates`）属于「同一类但会一次动到多个面」的改动，且 0.5px 在非 retina 上的渲染还要实测，留给下一轮单独做。
+**D 类已实测结案（2026-09-24，Human 14:28「你继续测测，看看效果。自己决定」授权后当场量完）**：我们客户端 CSS 里那 6 处 `border: 1px solid var(--dsw-alias-border-*)` 与 shipped 的 `0.5px` 声明**渲染上完全等价**，所以 D 类不是漂移。Chromium 把 `border-width` 向上取整到整数 CSS 像素：把 shipped 源码的声明原样取出在 Chrome 138 里量，`0.5px` 与 `0.25px` 的 computed 都是 `1px`，且 `1px l2` 与 shipped 原文 `0.5px l2` 在设备像素比 1 / 1.25 / 2 下逐像素完全相同（`247 247 229 [229] 255 255`），l4 同理。**裁决：保留 1px**；包内唯一一处写 `0.5px` 的 `human-settings.module.css .row` 反而改回 `1px`——写的应是到达玻璃的那个值。真正的半像素机制是 elevation 的 `box-shadow` 发丝线（composer 卡已随本轮在用）。收尾三处：设计语言文档「刻意不跟齐」增加第三条「中性描边宽度」、审计 §8 给 `.workspaceTrigger` 加 border 钉、并新增一条**全包扫描**（任何 `border`/`border-*-width` 声明里的分数像素值都报错，负例回放已验证会 exit 1）。探针脚本、截图与逐像素量法在 Iris 私有 notes 的 `ui-parity-0.1.7-hairline/`。
 
 ## 验证命令
 

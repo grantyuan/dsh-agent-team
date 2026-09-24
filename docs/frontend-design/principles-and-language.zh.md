@@ -29,9 +29,10 @@ Team Client 渲染在 shipped DSH 外壳内部，必须讲基础 UI 的设计语
 | 悬浮表面 | 解析为半透明颜色的 surface token（`rgba(…, α < 1)`）必须在同一条规则内配背景模糊，并带上 elevation 描边与阴影——共享的浮卡配方：`background: var(--dsw-specific-menu)`、`backdrop-filter: var(--dsw-menu-backdrop-filter)`、`--dsw-elevation-stroke-color`、`box-shadow: var(--dsw-elevation-prominent)`。0.1.7 把 `--dsw-specific-menu` 改成了半透明**却没有改名**，于是「当成不透明底来画」的弹层会真实地读不清，而所有存在性检查仍是绿的；审计的毛玻璃表面规则负责抓这一条。形状也随配方一起走：shipped 的菜单面是 16px、其内部行 8px（`.list`、`.item`），所以手搓的弹层与本应用其他位置渲染的 `Menu` 原语说的是同一种菜单语言。 | `ui-primitives/Menu.module.css .list` |
 | 卡片表面 | 承载内容的卡面用 elevation 发丝描边，而不是布局边框：`border: 0` + `--dsw-elevation-stroke-color` 取该层的中性色（菜单 l1、composer 卡 l2，两者差一档）+ 该层阴影。用 dark-mode thin 别名画实打实的 1px，在深色下只有应有一半的 alpha，还要占布局。 | `InputBar.module.css .card`（`border: 0`、描边 l2、`--dsw-elevation-soft`）；`Menu.module.css .list`（描边 l1、`--dsw-elevation-prominent`） |
 
-有两处**刻意不跟齐**。它们是裁决而不是漂移，写在这里是为了避免后来者把它「修好」：
+有三处**刻意不跟齐**。它们是裁决而不是漂移，写在这里是为了避免后来者把它「修好」：
 
 - **小胶囊底色**：shipped 的 `.reference` 是行内编辑器引用，平时透明、hover 才上色；Team 的 chip 要在 14px 正文里读成同一个 token，因此继续以共享 hover 底色作为自己的地面。
 - **composer 卡内距**：shipped 卡上 8px、下 4px；Team 的卡多了它没有的行（收件人提示行与附件 chip），因此保留上 10px、下 8px。卡的描边、圆角、底色与阴影与 shipped 完全一致。
+- **中性描边宽度**：shipped 把每一条中性分隔线都写成 `0.5px`（`--dsw-alias-border-l*`，共 164 处），但 Chromium 会把 `border-width` 向上取整到整数 CSS 像素——computed 的 `0.5px` 边框在设备像素比 1×、1.25×、2×、3× 下都报成并画成 `1px`，把 shipped 源码原样取出逐像素实测也是这个结果。Team 直接写实际渲染的那个值 `1px`：像素与 shipped 完全一致，源码说出的就是眼睛看到的。真正的半像素机制是上一条「卡片表面」所用的 `box-shadow` 发丝线。
 
 按面记录的组件级裁决在 [components.md](components.md)；审计脚本报告机械漂移，判断由这些文档拥有。

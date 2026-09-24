@@ -294,6 +294,15 @@ if (shippedPrimitives.size === 0) {
 //    surface 16px over its own 8px rows, dense two-line result rows and compact
 //    controls 8px, chips 6px. A refactor or a DSH upgrade must not silently
 //    move them.
+//    Line width is part of the same language: shipped declares its 164 neutral
+//    separators as `0.5px`, but Chromium rounds `border-width` up to a whole CSS
+//    pixel, so a computed 0.5px border reports and paints as 1px at device
+//    pixel ratios 1, 1.25 and 2 alike (probed against the shipped declarations
+//    in Chrome 138). The Team Client therefore writes the value that reaches
+//    the glass — `1px` — and the scan below keeps a fractional border width
+//    from coming back as a misleading "thinner" line. A genuine half pixel is
+//    the elevation box-shadow hairline the card-surface rule uses, which is why
+//    only border declarations are scanned.
 // ---------------------------------------------------------------------------
 
 const GEOMETRY = [
@@ -302,7 +311,7 @@ const GEOMETRY = [
   ['composer.module.css', '.sendButton', [['height', '34px'], ['width', '34px'], ['border-radius', '999px'], ['transform', 'translateY(-2px)']], 'primary round action is 34×34 with the -2px seat compensation'],
   ['sidebar.module.css', '.channelRow', [['border-radius', '12px']], 'list row radius is 12px; the shipped rail put .panelRow on its .newSession bar\'s 12px in the 0.1.6 line (harness c6b81a75, 2026-09-15), which our 0.1.5-anchored docs only met at the 0.1.7 upgrade'],
   ['sidebar.module.css', '.agentRow', [['border-radius', '12px']], 'list row radius is 12px, the same tier as .channelRow above'],
-  ['sidebar.module.css', '.workspaceTrigger', [['border-radius', '12px'], ['min-height', '34px']], 'the Workspace selector keeps the sidebar row geometry: 12px radius, 34px line'],
+  ['sidebar.module.css', '.workspaceTrigger', [['border-radius', '12px'], ['min-height', '34px'], ['border', '1px solid var(--dsw-alias-border-l2)']], 'the Workspace selector keeps the sidebar row geometry: 12px radius, 34px line, and its neutral separator written as 1px because that is what shipped\'s 0.5px declaration actually renders as'],
   ['sidebar.module.css', '.inboxCard', [['border-radius', '12px'], ['height', '34px']], 'the Inbox entry is a sidebar row: 12px radius, 34px height'],
   ['member-row.module.css', '.row', [['border-radius', '12px']], 'the shared roster row is a list row wherever it renders: 12px, the rail/settings row tier'],
   ['composer.module.css', '.mentionMenu', [['border-radius', '16px']], 'the mention popover is the shipped menu surface: 16px, so it matches the Menu primitive this app already renders elsewhere'],
@@ -345,6 +354,22 @@ for (const [file, selector, expected, what] of GEOMETRY) {
       note('error', `${file} ${selector}`, `no ${property} declared (${what})`)
     } else if (declared !== value) {
       note('error', `${file} ${selector}`, `${property} is '${declared}', expected '${value}' (${what})`)
+    }
+  }
+}
+
+// The same rule, applied to every sheet rather than the canonical controls:
+// a fractional border width promises a thinner line than the platform can
+// paint. Fractional shadow offsets and radii are legitimate and not scanned.
+for (const file of readdirSync(clientDir).filter(name => name.endsWith('.module.css'))) {
+  const css = stripNestedAtRules(readFileSync(join(clientDir, file), 'utf8'), file)
+  for (const rule of collectRules(css)) {
+    const selector = rule.selector.replace(/^[\s\S]*\*\//, '').replace(/\s+/g, ' ').trim()
+    for (const declaration of rule.body.matchAll(/(?:^|;)\s*border(?:-(?:top|right|bottom|left))?(?:-width)?\s*:\s*([^;]+)/g)) {
+      const fraction = declaration[1].match(/\d*\.\d+px/)
+      if (fraction) {
+        note('error', `${file} ${selector}`, `border width '${fraction[0]}' does not render: Chromium rounds border-width up to 1px, so declare 1px — or use the elevation box-shadow hairline for a real half pixel`)
+      }
     }
   }
 }

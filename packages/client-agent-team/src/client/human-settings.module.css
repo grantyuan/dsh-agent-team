@@ -1,7 +1,7 @@
 /* The Human profile page: one settings column of two identity rows plus the
  * version footnote. Geometry follows the shipped settings page (760px column,
- * 18px heading) and the shipped preference row (16px/0 padding, 0.5px
- * border-l2 separator, 12px control gap); the controls themselves are the
+ * 18px heading) and the shipped preference row (16px/0 padding, border-l2
+ * separator, 12px control gap); the controls themselves are the
  * shipped Button/Input atoms, so only their seats are styled here. */
 
 .section {
@@ -36,7 +36,7 @@
 
 .row {
   align-items: center;
-  border-bottom: 0.5px solid var(--dsw-alias-border-l2);
+  border-bottom: 1px solid var(--dsw-alias-border-l2);
   display: flex;
   gap: 12px;
   padding: 16px 0;
