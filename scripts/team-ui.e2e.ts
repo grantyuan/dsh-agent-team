@@ -207,6 +207,9 @@ async function entryUnreadCapsule(page: Page, lineSelector: string): Promise<Ret
  * rows instead shadows the profile document, so the Host row's settings write
  * fails (rc.1 `ConfigEditor`: "overridden by a home patch or command-line
  * overlay"). Every lane therefore mounts the staged copy as a profile package.
+ * Only the first case of a run clears the artifacts directory
+ * (`clearArtifacts`); every later case appends to it, so one full run leaves
+ * every case's screenshots to review instead of only the last case's.
  */
 async function installLocalBundle(clearArtifacts = true): Promise<void> {
   await rm(HOME, { recursive: true, force: true })
@@ -2336,7 +2339,7 @@ it('keeps four same-origin Team pages responsive and independently subscribed', 
  * arrival is proven by the Thread page marker carrying the cited full ref.
  */
 it('opens a taskless thread from its ref chip in real Web', async () => {
-  await installLocalBundle()
+  await installLocalBundle(false)
   // Same install flow as the other journeys: installLocalBundle stages the
   // bundle, so no extra install anchor is needed (an undefined anchor
   // identifier here failed the whole journey with a ReferenceError).
@@ -2403,7 +2406,7 @@ const ONE_PIXEL_PNG = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42
  * only then enters Team mode, to prove the same rename reaches the timeline.
  */
 it('configures the Human profile from Settings in real Web', async () => {
-  await installLocalBundle()
+  await installLocalBundle(false)
   scaffold = await launchWebScaffold({ harnessHome: HOME, profile: { packages: [{ dir: STAGED_BUNDLE, enabled: true }] } })
   browser = await chromium.launch({ headless: true, executablePath: CHROME })
   const page = await browser.newPage({ viewport: { width: 1440, height: 960 }, locale: 'zh-CN' })
