@@ -222,19 +222,23 @@ Harness 随附一套 experimental Agent Teams，以独立 profile bundle 形式�
 
 ## 6. 当前基线
 
-当前 Team bundle 的已认证基线是 DSH `0.1.5-rc.1`，`0.1.5-rc.2` 已在同一 peer 区间上认证（见本节末段）。
+当前 Team bundle 的已认证基线是 DSH `0.1.7-rc.1`；以下几段保留产生前几条基线的 `0.1.5` 历史。
 
-认证在该 tag 的 Harness library/Web build 上完成，覆盖 Typert 生成、完整类型检查、499 个测试（1 个跳过）、构建、打包检查、lint 和真实 browser composition；浏览器旅程通过了外部发布布局安装、Remote mount、Team mode 进入和退出，以及普通 DSH surface 恢复。
-
-DSH peers 现在正好声明这一条已认证线：`>=0.1.5-rc.1 <0.1.6`，由 `>=0.1.5-rc.1 <0.2.0` 收紧而来——更新的线不再落在未经验证的兼容声明下被装上。
+DSH peers 正好声明这条已认证线：`>=0.1.7-rc.1 <0.1.8`，因此本仓库尚未验证的线会落在声明区间之外，而不是在未经核实的兼容声明下被装上。
 
 经路由的 sqlite 后端是 vendored fork，根本不是 dependency（GitHub issue #28）：上游包只以 devDependency 钉在 fork 来源版本 0.1.5-rc.2，用作字节兼容 fixture 参照；每次兼容认证先把 fork 与该版本文件对一遍 diff，再做其他事。
+
+本基线取代的 `0.1.5-rc.1` 认证覆盖 Typert 生成、完整类型检查、499 个测试（1 个跳过）、构建、打包检查、lint，以及真实 browser composition（外部发布布局安装、Remote mount、Team mode 进入与退出、普通 DSH 恢复），peers 为 `>=0.1.5-rc.1 <0.1.6`。
+
+`0.1.5-rc.2` 随后在同一 peer 区间上认证，manifest 无改动。
 
 本 bundle 对该线的依赖是结构性的，不是偶然的。候选版本只要改动以下任一项，就是 peer 范围变更，而不是 patch：
 
 - 根 `main` slot 以 keyed 条目注册（key `conversation`、priority `-100`），并经 `renderSlot('main', {}, { entryKey: 'conversation' })` 渲染。
 - Session 经 handle API 访问（`open(id, 'read')` + `read()` + `close()`，`stat()` 返回 header 快照）。
 - 成员 preset 的 `dsh-persona` 行把配置放在 `prefix` 下。
+- `team-member` preset 以 `@deepseek-ai/dsh-agent-preset` 声明行与其 `@deepseek-ai/dsh-agent-preset-registry` 并列，落在 Team 自己的 `isolate` group 内。
+- 本 bundle 写出的每条持久 message source 携带生产者自身的 kind；退役的 `{ kind: 'plugin', plugin: … }` wrapper 在写入时即被拒绝。
 
 preset 组合没有编译期或单测守卫：成员类 spec 用的是合成 preset，因此某个行的配置与新 plugin schema 不匹配时，只有在真实 browser journey 里才会暴露——此时类型检查、单测、构建全绿，而所有成员都以 `preset "team-member" failed to mount: … $.prefix missing required value` 激活失败。
 
@@ -246,22 +250,22 @@ preset 组合没有编译期或单测守卫：成员类 spec 用的是合成 pre
 
 当 npm `latest` 指向候选版本时，这两类都是 release-blocking。
 
-存量历史的升级可行性是**实测**的，不是假定的。
+存量历史的升级可行性是**实测**的，不是假定的：0.1.5 候选版的封闭 source-kind 审计会拒绝已发布线写出的每一份 Member artifact，此后 bundle 携带的启动期修复在本机全量 store 上修复了 44 份被拒 artifact，6 份因 Session 结构缺陷未动，没有向任何既有 artifact 写入一个字节，第二次遍历零发布。
 
-0.1.5 候选版的封闭 source-kind 审计会拒绝已发布线写出的每一份 Member artifact，因此 Team bundle 增加了启动期修复：只为这些 artifact 发布一份当前格式兄弟文件（机制见 [workspace-session-storage.zh.md](architecture/workspace-session-storage.zh.md) §「Workspace、Session 和 storage reuse」）。
+### DSH 0.1.7-rc.1
 
-在本机全量 store 上，该过程修复了 44 份被拒 artifact，6 份因 Session 结构缺陷未动，没有向任何既有 artifact 写入一个字节，第二次遍历零发布。
+DSH `0.1.7-rc.1` 已认证，并推动基线前移。全部 `@deepseek-ai/dsh-*` peers 从 `>=0.1.5-rc.1 <0.1.6` 整体移动到 `>=0.1.7-rc.1 <0.1.8`：比较符只在自身 base tuple 上开放预发布，旧区间够不到任何 `0.1.6` 或 `0.1.7` 切点。被移除的 `@deepseek-ai/dsh-agent-presets` peer 随其指名的包一并删除。
 
-因此基线的结论是精确的：**上一认证线写出的历史之所以可读，来自 Team bundle 的修复，而不是来自候选版本本身**。
+本轮由两处上游契约变化驱动，且都需要源码适配：
 
-一条验证事实仍只记录、不修补：`npm run typecheck` 在 `npm run build` 之前会因 `@wowyuarm/dsh-agent-team/time-format` 与 `member-time-context` 的 import 失败——它们经由构建产物 `lib/` 的 self-link 解析，不在 sync-paths `own` map 里；先 build（潜在仓库缺口，不是兼容性缺陷）。
+- **preset 体系被替换。** 经 `@deepseek-ai/dsh-agent-presets`（`roots`/`trust`）的文件系统发现已移除；preset 改为声明行——host 级单例 `@deepseek-ai/dsh-agent-preset-registry`，加上每个 preset 一行 `@deepseek-ai/dsh-agent-preset` 声明（`config: { id, plugins }`）。
+- **Team 的声明行随之迁移。** `cordis.patch.yml` 在同一个 `isolate: { agentPresets: true }` group 内声明注册表（`default: team-member`）与 `team-member` 定义行，把退役 roster 的条目列表原样内联为 `config.plugins`——包括两处 `!!js` 平台表达式，其语义由 preset 对子表达式的推迟求值保留。
+- **Host 调用点一个未动。** `agentPresets` 服务调用面未变；`preset-roster.ts` 与 `preset/` 目录是删除而不是改写，浏览器通道的 overlay 携带同样的行。
+- **Session format V4 要求生产者署名的 message source。** jsonl 写入路径以 `format v4 message requires a producer-owned source kind` 拒绝 `{ kind: 'plugin', plugin: … }`，因此本 bundle 的九个写点改为写入三个生产者 id 作为 kind。
+- **released V3 历史无需在磁盘上改写。** 读时转换把每个 wrapper 改名为 `plugin:<producer>`、保留 `form`/`sections`/`summary`；读侧对全部三个 id 的两种形状按精确身份识别，绝不用 `plugin:` 前缀判定——同一份日志里还有保留自身 kind 的第三方行。
 
-隔离的 Harness checkout 在跑 Team 套件前同样需要 `pnpm build:native-system`（见 [environments-and-install.zh.md](development/environments-and-install.zh.md)），漏掉它表现为宿主 Team 激活失败，而不是缺模块报错。
+启动期修复（`session-remediation.ts`）在同一变更中移除，已经 Human 批准：它发布的正是 V4 写入拒绝的 wrapper，留着会主动制造读不回来的文件。
 
-DSH `0.1.5-rc.2` 已在同一 peer 区间上认证，manifest 无改动。它是发布卫生型版本、而非新的一条线：真实源码改动全部落在 client 包内，没有新增、重命名或删除的包路径。
+它针对的 0.1.5 前自定义 kind 在读时转换之前就被 released v2→v3 迁移链拒绝；确定性的 `session-refused` 激活失败现在在每次重启重试中报告同一失败，而不再被修复。
 
-本 bundle 引用的 `dsh-client-ui-primitives` 符号在 rc.2 全部仍存在，Session 格式、message-source 词表与随包 preset 行均未变动，因此 §3.6 的存量历史检查不因本候选版再次触发。
-
-在该 tag 的隔离 checkout 上，本 bundle 构建通过、类型检查通过、513 个测试通过（1 个跳过）、打包 206 个文件，并跑通真实浏览器旅程（Team 进入、Remote mount、普通 DSH 恢复）。
-
-该记录带来的发布紧迫性现已解除：Team `0.1.10`（2026-09-11 发布）起 npm `latest` 在本候选线上可安装；当前 `latest` 为 Team `0.1.14`（2026-09-22 发布），其 peers 正是已认证线 `>=0.1.5-rc.1 <0.1.6`（`0.1.9` 线在本候选版上既装不上也跑不起来）。
+还有一处变化止步于测试 fixture：rc.1 把 `IconUserOutlineArtwork` 的路径重画到半像素网格上，没有改名、没有改 wrapper，因此 `settingsAction` 图标的 `data-content` 指纹从 `612cfab9` 变为 `68b4b343`，一行已提交快照随之刷新。源码无改动。

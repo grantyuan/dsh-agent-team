@@ -46,6 +46,7 @@ describe('Agent Team generated Typert boundary', () => {
       'resolveTaskRefs',
       'resolveThreadRefs',
       'sendMessage',
+      'setHumanProfile',
       'threadHistory',
       'threadObservations',
       'updateChannel',

@@ -350,6 +350,26 @@ export interface AgentTeamHumanProfileResult {
   readonly latestVersion?: string | undefined
 }
 
+/**
+ * Human profile write: the fields the Client supplies, each one optional and
+ * independent of the others.
+ */
+export interface AgentTeamSetHumanProfileRequest {
+  /** New display name; omitted keeps the current one. */
+  readonly name?: string | undefined
+  /**
+   * New avatar reference; `null` clears the stored one and omitted keeps it.
+   * Clearing needs its own shape because a merge patch cannot remove a field.
+   */
+  readonly avatarRef?: string | null | undefined
+}
+
+/** Resolved Human profile after a write; the same two fields the read returns. */
+export interface AgentTeamSetHumanProfileResult {
+  readonly name: string
+  readonly avatarRef?: string | undefined
+}
+
 /** Upload one human avatar image into the persistent avatar store. */
 export interface AgentTeamPutHumanAvatarRequest {
   readonly name: string

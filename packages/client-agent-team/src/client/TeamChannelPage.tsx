@@ -3,7 +3,7 @@ import type { AgentTeamClientMemberStatus, AgentTeamChannelRef, AgentTeamInbox, 
   AgentTeamTaskRef, AgentTeamThreadRef,
 } from '@wowyuarm/dsh-agent-team/types'
 import type { WorkspaceId } from '@deepseek-ai/dsh-api-workspace-controller/client'
-import { Button, IconChevronLeftOutline14, IconChevronRightOutline14, Modal } from '@deepseek-ai/dsh-client-ui-primitives'
+import { Button, IconChevronLeftOutlineRegular, IconChevronRightOutlineRegular, Modal } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { TeamConversationProps } from './slots.ts'
 import { mintRequestId, uploadComposerFiles } from './requests.ts'
 import type { TeamDraftKey, TeamDraftStore } from './drafts.ts'
@@ -374,7 +374,7 @@ export function TeamChannelPage({ workspaceId, channelRef, humanName, humanAvata
 
   return <main className={css.surface} data-team-channel={channelRef}>
     <div className={css.surfaceHeader}>
-      <div className={css.backRow}><Button size="sm" icon={<IconChevronLeftOutline14 />} onClick={backToChannels}>{t('backToChannels')}</Button></div>
+      <div className={css.backRow}><Button size="sm" icon={<IconChevronLeftOutlineRegular />} onClick={backToChannels}>{t('backToChannels')}</Button></div>
       <header className={css.headerRow}>
         <div className={css.headerCopy}>
           <h1>{channel === undefined ? '# …' : `# ${channel.name}`}</h1>
@@ -568,7 +568,7 @@ function ThreadEntryRow({ item, owners, unread, human, t, onOpen }: {
       onClick={onOpen}
     >
       <span>{text}</span>
-      <span className={css.entryArrow} aria-hidden="true"><IconChevronRightOutline14 size={12} /></span>
+      <span className={css.entryArrow} aria-hidden="true"><IconChevronRightOutlineRegular size={12} /></span>
     </button>
   </span>
 }

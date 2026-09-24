@@ -9,17 +9,14 @@ import { harnessDir } from './harness-dir.mjs'
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const harness = harnessDir
 const temporary = await mkdtemp(join(tmpdir(), 'dsh-agent-team-ui-preview-'))
-const overlay = join(temporary, 'overlay.yml')
 const home = join(temporary, 'home')
 const test = join(harness, 'apps/web/tests/__external-agent-team-ui-preview.e2e.ts')
 const quote = value => value.replaceAll('\\', '\\\\').replaceAll("'", "\\'")
-const overlayText = `- insert:\n    - id: wowyuarm-agent-team-scope\n      name: cordis:group\n      group: true\n      isolate:\n        agentPresets: true\n      config:\n        - id: wowyuarm-agent-team-presets\n          name: '@wowyuarm/dsh-agent-team/preset-roster'\n        - id: wowyuarm-agent-team-host\n          name: '@wowyuarm/dsh-agent-team/host'\n    - id: wowyuarm-agent-team-client\n      name: '@wowyuarm/dsh-agent-team'\n    - id: wowyuarm-agent-team-invariant\n      name: '@wowyuarm/dsh-agent-team/invariant'\n`
 
 try {
   await access(join(harness, 'apps/web/dist/index.html'), constants.R_OK)
-  await writeFile(overlay, overlayText)
   const rendered = (await readFile(join(root, 'scripts/team-ui.ui-preview.ts'), 'utf8'))
-    .replace('__TEAM_ROOT__', quote(root)).replace('__OVERLAY__', quote(overlay)).replace('__HOME__', quote(home))
+    .replace('__TEAM_ROOT__', quote(root)).replace('__HOME__', quote(home))
   await writeFile(test, rendered)
   // Windows: bare-name corepack spawns hit .cmd ENOENT/EINVAL — go through
   // the shell like the preview runner does.

@@ -87,4 +87,10 @@ DEEPSEEK_API_KEY=... npm run preview       # real model interaction
 
 `preview` and `preview:ui` use temporary profiles and storage and clean up on `Ctrl+C`. `preview` always uses the real DeepSeek adapter and fails when credentials are missing; it does not silently switch to replay. `preview:ui` uses a keyless route-only adapter whose fixture does not call a model; an accidental model request fails explicitly.
 
+All three lanes stage this bundle and its declared dependency closure into a temporary profile, then name that staged copy as a profile package — the shape `dsh plugin add` leaves behind: a `file:` dependency, a link under the profile's own `node_modules`, and an entry in `dsh.profile.bundles`. The scaffold resolves plugin imports from a computed generation built out of `profile.layers`, so only a staged copy named there contributes the Team rows, and they come from the bundle's own `cordis.patch.yml`.
+
+A command-line overlay is not an equivalent mount. The Host row's Human-profile form is written to the profile document, and the config editor rejects that write while a later layer (a home patch or a command-line overlay) declares the same row — `overridden by a home patch or command-line overlay` — so the form stays unwritable. A staged bundle the scaffold never names resolves neither its own rows nor its dependency closure: every Team row reports `failed to import` with no module-resolution error to read, and the keyless fixture then fails on an `undefined` `ctx.agentTeam`.
+
+`test:browser` does not cover the two preview lanes, so boot them by hand after any change to scaffold composition or profile resolution.
+
 The browser journey uses a deterministic keyless Host/Client driver. It covers Agent Inbox reading/replying, Human Channel and Thread navigation, persistence after reload, and restoration of the ordinary DSH surface after leaving Team mode.

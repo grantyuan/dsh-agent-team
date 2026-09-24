@@ -1,13 +1,11 @@
+import { createRequire } from 'node:module'
 import { readFile, readdir } from 'node:fs/promises'
 import { join, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { describe, expect, it } from 'vitest'
-import { Context } from '@deepseek-ai/cordis'
-import Loader from '@deepseek-ai/cordis-plugin-loader'
-import AgentPresets from '@deepseek-ai/dsh-agent-presets'
-import SessionProjectionRegistry from '@deepseek-ai/dsh-session-projection'
 import { applyEntryPatches } from '@deepseek-ai/cordis-plugin-include'
 import { loadOverlayPatches } from '@deepseek-ai/dsh-app-boot'
+import { HUMAN_PROFILE_SETTINGS_NAMESPACE, HUMAN_PROFILE_SETTINGS_SCHEMA } from '../src/human-profile.ts'
 
 const root = resolve(import.meta.dirname, '../../../')
 
@@ -35,6 +33,15 @@ async function shippedHarnessName(): Promise<string> {
 // again on the operator's instruction, to stop leaving every wording-only
 // improvement squeezed into the last few characters.
 const PERSONA_CHARACTER_BUDGET = 15000
+
+// The team-member preset rides the shipped patch as one declarative definition
+// row; these assertions scope to exactly that row, from its `- id:` marker to
+// the group's host row that follows it.
+function teamMemberPresetText(patch: string): string {
+  const start = patch.indexOf('        - id: wowyuarm-agent-team-preset-team-member')
+  const end = patch.indexOf('        - id: wowyuarm-agent-team-host')
+  return start >= 0 && end > start ? patch.slice(start, end) : ''
+}
 
 // The YAML block-scalar bodies under `prefix:`/`suffix:`, de-indented the way YAML
 // reads them. The block ends at the first line that is not more indented than its
@@ -68,13 +75,19 @@ function personaInstructionText(preset: string): string {
 
 describe('Agent Team shipping contract', () => {
   it('ships an opt-in Host patch and one explicit team-member preset', async () => {
-    const [patch, preset, manifestText] = await Promise.all([
+    const [patch, manifestText] = await Promise.all([
       readFile(resolve(root, 'cordis.patch.yml'), 'utf8'),
-      readFile(resolve(root, 'packages/agent-team/preset/team-member/agent.cordis.yml'), 'utf8'),
       readFile(resolve(root, 'package.json'), 'utf8'),
     ])
+    const preset = teamMemberPresetText(patch)
+    // Extraction guard: a renamed definition-row id would silently empty the
+    // slice and make every preset assertion below vacuous.
+    expect(preset).toContain("name: '@deepseek-ai/dsh-agent-preset'")
     expect(patch).toContain('id: wowyuarm-agent-team-scope')
-    expect(patch).toContain("name: '@wowyuarm/dsh-agent-team/preset-roster'")
+    expect(patch).toContain("name: '@deepseek-ai/dsh-agent-preset-registry'")
+    expect(patch).toContain('default: team-member')
+    expect(patch).toContain('id: wowyuarm-agent-team-preset-team-member')
+    expect(patch).toContain('id: team-member')
     expect(patch).toContain('agentPresets: true')
     expect(patch).toContain("name: '@wowyuarm/dsh-agent-team/host'")
     expect(patch).toContain("name: '@wowyuarm/dsh-agent-team'")
@@ -109,6 +122,30 @@ describe('Agent Team shipping contract', () => {
       routes: { agent_team: 'sqlite' },
     })
     expect(patch).not.toContain('dsh-tool-agent-team')
+    // The Human profile rides the Host row's own Config, and the settings
+    // namespace IS that row's id: a form, a write, and the profile-document
+    // patch all address it by the constant, so the two must not drift.
+    // The row also has to stay the isolating group's nested row — a second
+    // top-level row with this id duplicates it and fails the boot sweep.
+    const scopeStart = patch.indexOf('    - id: wowyuarm-agent-team-scope')
+    const scopeEnd = patch.indexOf('    - id: wowyuarm-agent-team-client')
+    expect(scopeStart).toBeGreaterThanOrEqual(0)
+    expect(scopeEnd).toBeGreaterThan(scopeStart)
+    expect(patch.slice(scopeStart, scopeEnd)).toMatch(new RegExp(`^ {8}- id: ${HUMAN_PROFILE_SETTINGS_NAMESPACE}$`, 'm'))
+    // The composition mounts it as that group's nested row, with no `config`
+    // of its own: the schema defaults are the profile until the Human edits it.
+    const scopeGroup = composed.find(entry => entry.id === 'wowyuarm-agent-team-scope')
+    const nestedRows = (Array.isArray(scopeGroup?.config) ? scopeGroup.config : []) as { id?: string; name?: string; config?: unknown }[]
+    const hostRow = nestedRows.find(entry => entry.id === HUMAN_PROFILE_SETTINGS_NAMESPACE)
+    expect(hostRow?.name).toBe('@wowyuarm/dsh-agent-team/host')
+    expect(hostRow?.config).toBeUndefined()
+    // Both fields must be volatile: rc.1 derives one settings form per ACTIVE
+    // plugin instance from that instance's Config schema, and a non-volatile
+    // field yields no form at all while a write to it throws. This is the
+    // precondition of the derivation, asserted on the schema the Host ships.
+    const profileFields = HUMAN_PROFILE_SETTINGS_SCHEMA.dict ?? {}
+    expect(profileFields.name?.meta.volatile).toBe(true)
+    expect(profileFields.avatarRef?.meta.volatile).toBe(true)
 
     expect(preset).toContain("name: '@wowyuarm/dsh-agent-team/tools'")
     expect(preset).toContain("name: '@deepseek-ai/dsh-agent-tool-presentation'")
@@ -139,15 +176,18 @@ describe('Agent Team shipping contract', () => {
       exports: Record<string, { default?: string }>
       dsh: { client: { platform: string; inject: string[] } }
     }
-    expect(bundleManifest.peerDependencies['@deepseek-ai/dsh-tool-web']).toBe('>=0.1.5-rc.1 <0.1.6')
-    expect(bundleManifest.peerDependencies['@deepseek-ai/dsh-command-compact']).toBe('>=0.1.5-rc.1 <0.1.6')
+    expect(bundleManifest.peerDependencies['@deepseek-ai/dsh-tool-web']).toBe('>=0.1.7-rc.1 <0.1.8')
+    expect(bundleManifest.peerDependencies['@deepseek-ai/dsh-command-compact']).toBe('>=0.1.7-rc.1 <0.1.8')
+    expect(bundleManifest.peerDependencies['@deepseek-ai/dsh-agent-preset']).toBe('>=0.1.7-rc.1 <0.1.8')
+    expect(bundleManifest.peerDependencies['@deepseek-ai/dsh-agent-preset-registry']).toBe('>=0.1.7-rc.1 <0.1.8')
+    expect(bundleManifest.peerDependencies['@deepseek-ai/dsh-agent-presets']).toBeUndefined()
     // The certified baseline moves as one cut: every DSH peer carries the same
     // range, or an install resolves two DSH generations at once. No host-scope
     // package may sit in `dependencies` (see the host-scope gate below).
     const dshPeerRanges = new Set(Object.entries(bundleManifest.peerDependencies)
       .filter(([name]) => name.startsWith('@deepseek-ai/dsh-'))
       .map(([, range]) => range))
-    expect([...dshPeerRanges]).toEqual(['>=0.1.5-rc.1 <0.1.6'])
+    expect([...dshPeerRanges]).toEqual(['>=0.1.7-rc.1 <0.1.8'])
     expect(preset).toContain('compaction: true')
     expect(preset).toContain('toolResultPruner: true')
     expect(preset).toContain('team_inbox, team_thread, team_message, team_claim, and team_view')
@@ -213,7 +253,9 @@ describe('Agent Team shipping contract', () => {
       dsh: { bundle: { patch: string } }
     }
     expect(manifest.dsh.bundle.patch).toBe('./cordis.patch.yml')
-    expect(manifest.files).toContain('packages/agent-team/preset/**/*')
+    // The preset directory no longer ships: the declarative definition row in
+    // the patch is its only carrier.
+    expect(manifest.files).not.toContain('packages/agent-team/preset/**/*')
     expect(manifest.files).toContain('packages/agent-team/core-skills/**/*')
     expect(manifest.files).toContain('packages/agent-team/lib/**/*')
     expect(manifest.files).toContain('packages/client-agent-team/lib/**/*')
@@ -222,7 +264,7 @@ describe('Agent Team shipping contract', () => {
     // peer: profiles set autoInstallPeers: false, so a peer nothing else
     // provides resolves for nobody — the external-layout e2e crashed exactly
     // there before this was fixed (0.1.14 gate, 2026-09-22).
-    expect(manifest.dependencies).toEqual({ '@wowyuarm/dsh-context-continuity': '^0.1.3', zod: '^4.4.3' })
+    expect(manifest.dependencies).toEqual({ '@wowyuarm/dsh-context-continuity': '^0.1.4', zod: '^4.4.3' })
     expect(bundleManifest.dsh.client).toEqual({
       platform: 'web',
       // The Client half classifies a stream end with the Gateway's carrier-error
@@ -237,20 +279,18 @@ describe('Agent Team shipping contract', () => {
     expect(bundleManifest.peerDependencies['@deepseek-ai/dsh-client-runtime']).toBeUndefined()
     expect(bundleManifest.exports['./client']?.default).toBe('./packages/client-agent-team/lib/client.js')
 
-    const ctx = new Context()
-    // rc.1: the roster constructor rejects a context without a base URL, and
-    // health resolution walks node_modules above it — point at the repo root,
-    // where the harness packages are linked, as a real profile install would.
-    ctx.baseUrl = pathToFileURL(root).href + '/'
-    await ctx.plugin(Loader)
-    // rc.1: AgentPresets injects 'sessionProjections'; the roster stays PENDING without it.
-    await ctx.plugin(SessionProjectionRegistry)
-    await ctx.plugin(AgentPresets, { default: 'team-member',
-      roots: [{ path: resolve(root, 'packages/agent-team/preset'), trust: 'system' }], includeShippedRoot: false, includeUserRoot: false })
-    const roster = await ctx.agentPresets.list()
-    expect(roster).toEqual([expect.objectContaining({ id: 'team-member', trust: 'system' })])
-    expect(roster[0]?.broken).toBeUndefined()
-    await ctx.fiber.dispose()
+    // Row health: every package row the declarative definition names must
+    // resolve from this repository's linked node_modules — the same walk a
+    // real profile install performs above its composition base. The
+    // composition-level mount of this exact definition is exercised by the
+    // browser lane against the assembled bundle.
+    const resolution = createRequire(pathToFileURL(join(root, 'package.json')).href)
+    const rows = [...preset.matchAll(/name:\s*'([^']+)'/g)].map(match => match[1]!)
+    expect(rows.length).toBeGreaterThanOrEqual(15)
+    for (const row of rows) {
+      if (row === 'cordis:group') continue
+      expect(() => resolution.resolve(row), `preset row '${row}' does not resolve`).not.toThrow()
+    }
   })
 })
 
@@ -300,11 +340,11 @@ describe('Boot-critical host closure surface', () => {
   }
 
   it('keeps every reachable runtime root and loader row inside the host closure', async () => {
-    const [manifestText, patch, preset] = await Promise.all([
+    const [manifestText, patch] = await Promise.all([
       readFile(resolve(root, 'package.json'), 'utf8'),
       readFile(resolve(root, 'cordis.patch.yml'), 'utf8'),
-      readFile(resolve(root, 'packages/agent-team/preset/team-member/agent.cordis.yml'), 'utf8'),
     ])
+    const preset = teamMemberPresetText(patch)
     const manifest = JSON.parse(manifestText) as {
       dependencies: Record<string, string>
       peerDependencies: Record<string, string>
@@ -338,7 +378,7 @@ describe('Boot-critical host closure surface', () => {
     // Loader rows resolve package names from the same closure, so patch and
     // preset `name:` rows are reachable roots too. Own-scope rows ship inside
     // this tarball; Desktop only strips `@deepseek-ai/*`.
-    for (const [text, via] of [[patch, 'cordis.patch.yml'], [preset, 'team-member preset']] as const) {
+    for (const [text, via] of [[patch, 'cordis.patch.yml'], [preset, 'team-member preset definition']] as const) {
       for (const match of text.matchAll(/name:\s*['"]([^'"]+)['"]/g)) {
         const row = match[1]
         if (row === undefined || row.startsWith('@wowyuarm/')) continue
@@ -391,7 +431,7 @@ describe('Boot-critical host closure surface', () => {
 // but they stop the text from growing silently and from losing a rule whole.
 describe('Agent Team Member persona', () => {
   it('stays inside the reviewed prompt budget', async () => {
-    const preset = await readFile(resolve(root, 'packages/agent-team/preset/team-member/agent.cordis.yml'), 'utf8')
+    const preset = await readFile(resolve(root, 'cordis.patch.yml'), 'utf8').then(teamMemberPresetText)
     const persona = personaInstructionText(preset)
     // Extraction guard: a renamed config key would empty the text and make the
     // budget assertion meaningless, so prove the persona was actually found.
@@ -410,7 +450,7 @@ describe('Agent Team Member persona', () => {
   // in the shipping contract above (reply channels, the token story, the two
   // message tiers, the private space).
   it('keeps the rules only the persona carries', async () => {
-    const preset = await readFile(resolve(root, 'packages/agent-team/preset/team-member/agent.cordis.yml'), 'utf8')
+    const preset = await readFile(resolve(root, 'cordis.patch.yml'), 'utf8').then(teamMemberPresetText)
     const persona = personaInstructionText(preset)
     for (const rule of [
       // The Team tool family, named in prose so a Member knows the surface exists.

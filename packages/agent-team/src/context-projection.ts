@@ -45,7 +45,7 @@ import {
   type DomainBoundaryContribution,
   type DomainBoundaryInput,
 } from '@wowyuarm/dsh-context-continuity'
-import { AGENT_TEAM_PLUGIN_ID, handoffOf, isAgentTeamContextSource } from './context-source.ts'
+import { handoffOf, isAgentTeamContextSource, isAgentTeamSource } from './context-source.ts'
 import { TEAM_CONTEXT_CODEC } from './context-continuity-host.ts'
 import type { AgentTeamContextCheckpointRef, AgentTeamTaskRef, AgentTeamThreadRef } from './types/entities.ts'
 
@@ -147,7 +147,7 @@ export function boundaryRefFor(sessionId: string, seq: number): AgentTeamContext
  */
 export function isTeamNotice(message: UserMessage): boolean {
   const source = message.source
-  return source.kind === 'plugin' && source.plugin === AGENT_TEAM_PLUGIN_ID && !isAgentTeamContextSource(message)
+  return isAgentTeamSource(source) && !isAgentTeamContextSource(message)
 }
 
 /** Whether one tool name can produce a Team-effect boundary from a successful call. */
@@ -273,7 +273,7 @@ export class TeamContextProjectionHost implements ContextProjectionHost {
       return { kind: 'handoff', label: HANDOFF_BOUNDARY_LABEL, topics: [] }
     }
     const source = message.source
-    if (source.kind !== 'plugin' || source.plugin !== AGENT_TEAM_PLUGIN_ID) return undefined
+    if (!isAgentTeamSource(source)) return undefined
     if (source.form === 'relay') return undefined
     if (source.form === 'notice' && source.summary === PRE_COMPACTION_NOTICE_SUMMARY) {
       return { kind: 'compaction', label: COMPACTION_BOUNDARY_LABEL, topics: [] }

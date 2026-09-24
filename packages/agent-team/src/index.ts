@@ -8,11 +8,11 @@
 
 import { randomUUID } from 'node:crypto'
 import { isDeepStrictEqual } from 'node:util'
-import { Context, Service } from '@deepseek-ai/cordis'
+import { Context, Service, type Volatile } from '@deepseek-ai/cordis'
 import { installModelSelection, type Agent, type AgentHandle, type ModelSelectionRef } from '@deepseek-ai/dsh-agent'
 import { createUserMessage, type UserMessage } from '@deepseek-ai/dsh-llm'
 import type {} from '@deepseek-ai/dsh-agent-default-model'
-import type {} from '@deepseek-ai/dsh-agent-presets'
+import type {} from '@deepseek-ai/dsh-agent-preset-registry'
 import { dshHomePath } from '@deepseek-ai/dsh-home-paths'
 import { scopeOf } from '@deepseek-ai/dsh-scope'
 import { Session, SessionId, SessionLogOffset, type SessionEvent } from '@deepseek-ai/dsh-session'
@@ -20,7 +20,7 @@ import type {} from '@deepseek-ai/dsh-session-persistence'
 import { setSandboxMode } from '@deepseek-ai/dsh-sandbox-policy'
 import { Remote, TypertRemoteService } from '@deepseek-ai/dsh-typert-protocol'
 import type {} from '@deepseek-ai/dsh-tools'
-import type {} from '@deepseek-ai/dsh-settings'
+import type { SettingsPathOp } from '@deepseek-ai/dsh-settings'
 import type { Domain } from '@deepseek-ai/dsh-storage-domain'
 import type { WorkspaceId } from '@deepseek-ai/dsh-workspace'
 import { ATTACHMENT_MAX_BYTES, attachmentPayloadPath, attachmentsRoot, copyPathAttachment, newAttachmentId, readAttachment, sanitizeMediaType, sweepAttachmentCache, validatePathAttachment, writeAttachment } from './attachments.ts'
@@ -30,13 +30,12 @@ import { createHumanUpdateChecker } from './human-update-check.ts'
 import { PressurePolicyCoordinator } from './pressure-policy.ts'
 import { CONTEXT_CONTINUITY_PROJECTION_KEY, readContextTimeline, type ContextProjectionConfig, type ContextTimelineItem, type ContextTimelineSource, type TransitionPlan } from '@wowyuarm/dsh-context-continuity'
 import { createTeamContextManagement, TEAM_CONTEXT_CODEC } from './context-continuity-host.ts'
-import { AGENT_TEAM_PLUGIN_ID } from './context-source.ts'
+import { AGENT_TEAM_PLUGIN_ID, isAgentTeamSource } from './context-source.ts'
 import { boundaryByRef, carriedInputOf, checkpointByRef, checkpointRefFor, createTeamContextProjectionConfig, createTeamContextProjectionDefinition, foldTeamContextProjection, retainedTopicsThrough, TeamContextProjectionHost } from './context-projection.ts'
 import { AGENT_TEAM_HUMAN_MEMBER_ID, AgentTeamLedger, agentTeamHumanActor, type AgentTeamDurableMemberResult } from './ledger.ts'
 import { AGENT_TEAM_TOOL_NAMES, deepCopyCapabilities, memberMemoryDirectoryName, MemberRuntime } from './member-runtime.ts'
 import type { MemberSkillSelectionRef } from './member-skills.ts'
 import { classifyRecoverableError, RecoveryCoordinator, RECOVERY_MAX_CONSECUTIVE_ERRORS } from './recovery.ts'
-import { SessionRemediation, handoffAlreadyInLog } from './session-remediation.ts'
 import { StoredSessionReadError, StoredSessionReader, sessionFailureOf } from './stored-session-reader.ts'
 import { agentTeamDomainSpec } from './spec.ts'
 import { formatTeamTimestamp } from './time-format.ts'
@@ -114,6 +113,8 @@ import type {
   AgentTeamReplyResult,
   AgentTeamSendMessageRequest,
   AgentTeamSendMessageResult,
+  AgentTeamSetHumanProfileRequest,
+  AgentTeamSetHumanProfileResult,
   AgentTeamSetMemberStateRequest,
   AgentTeamStatus,
   AgentTeamTask,
@@ -350,8 +351,21 @@ interface CheckpointSeed {
   readonly prefix: readonly SessionEvent[]
 }
 
+/**
+ * Config of the Team Host row: the Human profile (see human-profile.ts). The
+ * settings service derives every form from the owning plugin's Config, so the
+ * profile is this plugin's own config rather than a section of its own; both
+ * fields arrive volatile, which is what lets an edit reach the running Host
+ * without remounting it.
+ */
+export interface Config {
+  name: Volatile<string>
+  avatarRef: Volatile<string | undefined>
+}
+
 /** Host owner of the single Agent Team in one dshHome. */
 export default class AgentTeam extends TypertRemoteService {
+  static Config = HUMAN_PROFILE_SETTINGS_SCHEMA
   static inject = [
     'storageDomain',
     'workspaceRegistry',
@@ -410,12 +424,6 @@ export default class AgentTeam extends TypertRemoteService {
   private readonly notifiedInbox = new Map<AgentTeamMemberId, string>()
   private attachmentGcTimer?: ReturnType<typeof setInterval> | undefined
   /**
-   * Current human profile source, wired to the `agent-team-human` settings
-   * namespace when a settings service is present. Falls back to the historic
-   * default so team_view and @ matching keep working without settings.
-   */
-  private humanProfileSource: () => HumanProfileSettings = () => ({ name: HUMAN_PROFILE_DEFAULT_NAME })
-  /**
    * New-release check behind the settings footnote. Memory-only and
    * background-refreshed, so the profile read path never waits on the
    * network and every failure settles as "no update known".
@@ -473,14 +481,8 @@ export default class AgentTeam extends TypertRemoteService {
    */
   private presenceEpoch = 0
   private readonly changeWaiters = new Set<ChangeWaiter>()
-  /**
-   * The startup-opened remediation instance, held for the restart heal: the
-   * completion-cache domain may only be opened once per plugin lifecycle, so
-   * the restart path reuses this instance instead of opening its own.
-   */
-  private remediation: SessionRemediation | undefined
 
-  constructor(ctx: Context) {
+  constructor(ctx: Context, public config: Config) {
     super(ctx, 'agentTeam')
     this.pressurePolicy = new PressurePolicyCoordinator({
       agentForMember: memberId => this.handles.get(memberId)?.agent,
@@ -498,40 +500,32 @@ export default class AgentTeam extends TypertRemoteService {
       },
       log: message => { this.ctx.logger.warn(`agent-team: ${message}`) },
     })
-    // Human profile settings: the composition entry is the historic default;
-    // the settings provider overlays the user document section when present.
-    // Reads stay live through the source closure, so team_view and @ matching
-    // follow a rename without a Host restart.
+    // Human profile: this Host row's own Config (name + avatarRef, both
+    // volatile), so the settings service derives its form from the schema and
+    // an edit lands in the running plugin without a remount. Team's own page
+    // owns that surface, so the row declares itself presentation-owned rather
+    // than schema-page owned. Reads go straight to the live Config reference;
+    // this subscription is the change signal the retired section hook used to
+    // be — the ledger's runtime @ handle follows every edit.
     this.ctx.inject(['settings'], settingsCtx => {
-      settingsCtx.settings.installSection(this.ctx, HUMAN_PROFILE_SETTINGS_NAMESPACE, HUMAN_PROFILE_SETTINGS_SCHEMA, { name: HUMAN_PROFILE_DEFAULT_NAME }, {
-        setSource: (current: () => HumanProfileSettings) => {
-          this.humanProfileSource = current
-          this.syncHumanHandle()
-        },
-        validate: (value: HumanProfileSettings) => {
-          this.validateHumanProfile(value)
-        },
-        onChange: () => {
-          this.syncHumanHandle()
-        },
-      })
+      settingsCtx.effect(() => settingsCtx.settings.configure({ auto: false }, this.ctx.fiber))
     })
+    this.ctx.on('loader/volatile-update', () => { this.syncHumanHandle() })
   }
 
   /** Current human display name; the single source for team_view and @ matching. */
   humanHandle(): string {
-    const name = normalizeHumanName(this.humanProfileSource().name)
+    const name = normalizeHumanName(this.config.name.get())
     return name === '' ? HUMAN_PROFILE_DEFAULT_NAME : name
   }
 
-  /** Current human profile reference held in settings (name + avatarRef). */
+  /** Current human profile reference held in this Host row's Config (name + avatarRef). */
   humanProfile(): { readonly name: string; readonly avatarRef?: string | undefined } {
-    const current = this.humanProfileSource()
-    const name = this.humanHandle()
-    return Object.freeze({ name, ...(current.avatarRef === undefined ? {} : { avatarRef: current.avatarRef }) })
+    const avatarRef = this.config.avatarRef.get()
+    return Object.freeze({ name: this.humanHandle(), ...(avatarRef === undefined ? {} : { avatarRef }) })
   }
 
-  /** Push the current settings name into the ledger's runtime @ handle. */
+  /** Push the current Config name into the ledger's runtime @ handle. */
   private syncHumanHandle(): void {
     try {
       this.ledger?.setHumanDisplayHandle(this.humanHandle())
@@ -541,9 +535,10 @@ export default class AgentTeam extends TypertRemoteService {
   }
 
   /**
-   * Settings-level validation for the human profile: same non-empty floor as
-   * Member handles plus global uniqueness against live Members. Runs inside
-   * the settings write path, so a colliding rename rejects before persisting.
+   * The two judgements the Config schema cannot make about a Human name: the
+   * same non-empty floor as Member handles, plus global uniqueness against live
+   * Members. `setHumanProfile` runs it before the write, so a colliding rename
+   * rejects instead of persisting.
    */
   private validateHumanProfile(value: HumanProfileSettings): void {
     const name = assertValidHumanName(value.name)
@@ -626,7 +621,6 @@ export default class AgentTeam extends TypertRemoteService {
     const domain = await this.ctx.storageDomain.open(agentTeamDomainSpec)
     this.ctx.effect(() => async () => {
       this.accepting = false
-      this.remediation = undefined
       this.recovery.dispose()
       this.contextManagement.dispose()
       this.pressurePolicy.dispose()
@@ -644,23 +638,13 @@ export default class AgentTeam extends TypertRemoteService {
     this.domain = domain
     const ledger = new AgentTeamLedger(domain.table('operations'))
     this.ledger = ledger
-    // The settings wiring in the constructor may have fired before the ledger
-    // existed; sync once here so @ matching starts from the stored name.
+    // A live Config edit in the constructor's window may have arrived before
+    // the ledger existed; sync once here so @ matching starts from the stored
+    // name.
     this.syncHumanHandle()
     const initialization = await ledger.initialize()
     if (initialization.committed) this.emitCommitted(initialization.value)
     this.startAttachmentGc(ledger)
-    // Legacy-artifact remediation runs before any Member activation: no write
-    // lease exists yet, so publishing sibling generations for refused Session
-    // logs cannot race a live writer. Remediation failure never blocks
-    // startup — the next start retries exactly what the cache does not cover.
-    try {
-      const remediation = new SessionRemediation(this.ctx, this.ctx.sessionPersistence, await SessionRemediation.open(this.ctx))
-      this.remediation = remediation
-      await remediation.remediateEnabledMembers(ledger.listMembers())
-    } catch (error) {
-      this.ctx.logger.warn(`agent-team: legacy Session remediation did not run to completion (it will retry on the next start): ${error instanceof Error ? error.message : String(error)}`)
-    }
     // One metadata listing serves every Member restore; per-member list calls
     // would repeat the same I/O linearly during startup.
     const persistedSessions = new Set((await this.persistedSessionHeaders()).map(snapshot => snapshot.header.id))
@@ -916,22 +900,10 @@ export default class AgentTeam extends TypertRemoteService {
     if (handle === undefined) {
       if (member.state !== 'enabled') throw new Error(`Agent Member '${member.handle}' is ${member.state}; only enabled Members can be restarted`)
       this.ctx.logger.info(`agent-team: restarting member '${member.handle}' after a failed activation`)
-      // A deterministic session refusal may be repairable in place: run the
-      // same bounded startup remediation for this one Member before retrying
-      // activation, so the restart heals instead of replaying the failure.
-      const activation = this.memberFailures.get(request.memberId)?.activation
-      if (activation !== undefined && activation.class === 'session-refused' && this.remediation !== undefined) {
-        const outcome = await this.remediation.remediateMember(member)
-        if (outcome.repaired > 0) {
-          this.ctx.logger.info(`agent-team: repaired ${outcome.repaired} refused Session artifact(s) for member '${member.handle}'; retrying activation`)
-        } else if (outcome.completed) {
-          // The walk finished and nothing was provably this plugin's to fix:
-          // a retry would fail identically. Mark the refusal non-remediable
-          // so the surface stops offering restart and says why.
-          this.markRefusalNonRemediable(request.memberId)
-          return Object.freeze({ status: this.memberStatus(member) })
-        }
-      }
+      // There is no write-side repair pass anymore: dsh 0.1.7 converts the
+      // released V3 history at read time, and this bundle no longer authors
+      // the old wrapper shape, so a refusal stays a deterministic failure the
+      // retry reports again rather than something the restart heals.
       await this.reactivateMember(request.memberId)
       return Object.freeze({ status: this.memberStatus(member) })
     }
@@ -1142,7 +1114,7 @@ export default class AgentTeam extends TypertRemoteService {
     const body = notifications.length === 0 ? text : `${text}\n\n${this.notificationText(notifications, member.memberId)}`
     const hint = createUserMessage({
       content: [{ type: 'text', text: body }],
-      source: { kind: 'plugin', plugin: AGENT_TEAM_PLUGIN_ID, form: 'notice', summary: RECOVERY_NOTICE_SUMMARY },
+      source: { kind: AGENT_TEAM_PLUGIN_ID, form: 'notice', summary: RECOVERY_NOTICE_SUMMARY },
     })
     for (const pending of [...handle.agent.inbox.nextStep, ...handle.agent.inbox.nextTurn]) {
       if (this.isInboxNotice(pending)) handle.agent.inbox.remove(pending.id)
@@ -1360,9 +1332,9 @@ export default class AgentTeam extends TypertRemoteService {
 
   /**
    * Human profile read for the settings page and footnote: name + avatar
-   * reference from settings plus version facts. Human-scoped (the Web
-   * Client calls it); agent tools never receive avatar bytes, only the name
-   * through team_view. The new-release check stays best-effort and cached —
+   * reference from this Host row's live Config plus version facts. Human-scoped
+   * (the Web Client calls it); agent tools never receive avatar bytes, only the
+   * name through team_view. The new-release check stays best-effort and cached —
    * `updateAvailable` is false until a background refresh actually observes a
    * newer published release.
    */
@@ -1407,6 +1379,44 @@ export default class AgentTeam extends TypertRemoteService {
     this.requireAccepting()
     await removeHumanAvatar(humanAvatarsRoot(), request.avatarRef)
     return Object.freeze({ removed: true })
+  }
+
+  /**
+   * Overwrite the Human profile fields the caller supplies. The Host owns this
+   * write because the profile is the Host row's own Config: the schema supplies
+   * the shape, this method supplies the two judgements the schema cannot make
+   * (a non-empty name, a name no live Member already answers to), and the
+   * settings service persists the result into the active profile's patch
+   * document and applies it to the running plugin live.
+   *
+   * No expected revision accompanies the write: the profile is two scalar
+   * fields written from the Human's own pages, where the last write wins. This
+   * is not a hard boundary around a user-editable document — the settings
+   * service's own document opener (and a text editor) can change the stored
+   * name without passing here, exactly as the retired section validator could
+   * not stop it.
+   */
+  @Remote('setHumanProfile')
+  async setHumanProfile(request: AgentTeamSetHumanProfileRequest): Promise<AgentTeamSetHumanProfileResult> {
+    this.requireAccepting()
+    const settings = this.ctx.get('settings')
+    if (settings === undefined) throw new Error('the settings service is unavailable')
+    const name = request.name === undefined ? undefined : assertValidHumanName(request.name)
+    if (name !== undefined) this.validateHumanProfile({ name })
+    const ops: SettingsPathOp[] = []
+    if (name !== undefined) ops.push({ op: 'set', path: ['name'], value: name })
+    if (request.avatarRef === null) ops.push({ op: 'unset', path: ['avatarRef'] })
+    else if (request.avatarRef !== undefined) ops.push({ op: 'set', path: ['avatarRef'], value: request.avatarRef })
+    if (ops.length !== 0) {
+      // The settings namespace IS this Host row's id in the composition, and it
+      // must be addressed by that name rather than by `ctx.fiber.entry` here: a
+      // Remote call runs under its caller's context, whose fiber entry is the
+      // RPC gateway's row (`typert-gateway`), which the settings service then
+      // looks up as an unrelated plugin. shipping.spec.ts pins the constant to
+      // the row `cordis.patch.yml` declares.
+      await settings.mutate(HUMAN_PROFILE_SETTINGS_NAMESPACE, ops)
+    }
+    return Object.freeze({ ...this.humanProfile() })
   }
 
   /** Human existing-Thread reply; unread and revision conflicts are business outcomes. */
@@ -1589,7 +1599,7 @@ export default class AgentTeam extends TypertRemoteService {
     try {
       const message = createUserMessage({
         content: [{ type: 'text', text: this.dmRelayText(agent, recipient, request.body.trim(), result.value.receipt.occurredAt, result.value.receipt.operationId, request.workspaceId) }],
-        source: { kind: 'plugin', plugin: AGENT_TEAM_PLUGIN_ID, form: 'relay' },
+        source: { kind: AGENT_TEAM_PLUGIN_ID, form: 'relay' },
       })
       // An idle recipient gets one ordinary turn; a busy one is steered into
       // its current turn — the same wake split subagent continuations use.
@@ -2531,12 +2541,11 @@ export default class AgentTeam extends TypertRemoteService {
         // delivered activates the new Session with no handoff in its own
         // log — never treat that as an ordinary blank Member Session. The
         // operation's recorded previous Session (the lineage parent) still
-        // holds the intent; rebuild the handoff from it. "No handoff in its
-        // own log" is judged over both shapes: a generation rescued from the
-        // retired custom kinds carries its handoff as a source the projection
-        // does not classify, and rebuilding on top of it would inject the same
-        // handoff twice.
-        if (!handoffAlreadyInLog(state.boundaries, created.agent.session.ownEvents())) {
+        // holds the intent; rebuild the handoff from it. Presence is judged
+        // by the projection boundary alone: every handoff this Host ever
+        // published classifies under the context source's recognizer,
+        // including the history the read-time conversion renamed.
+        if (!state.boundaries.some(boundary => boundary.kind === 'handoff')) {
           await this.reconstructMissingHandoff(member, created.agent)
         }
         // Carried input redelivery binds to the committed transition target —
@@ -2701,14 +2710,6 @@ export default class AgentTeam extends TypertRemoteService {
     return { class: 'activation' as const, detail: error instanceof Error ? error.message : String(error) }
   }
 
-  /** Mark a session-refused activation diagnostic as proven non-remediable. */
-  private markRefusalNonRemediable(memberId: AgentTeamMemberId): void {
-    const failures = this.memberFailures.get(memberId)
-    const activation = failures?.activation
-    if (activation === undefined || activation.class !== 'session-refused') return
-    failures!.activation = Object.freeze({ ...activation, remediable: false })
-  }
-
   private clearMemberFailure(memberId: AgentTeamMemberId, slot: 'activation' | 'runtime' | 'compaction'): boolean {
     const failures = this.memberFailures.get(memberId)
     if (failures === undefined || failures[slot] === undefined) return false
@@ -2747,7 +2748,7 @@ export default class AgentTeam extends TypertRemoteService {
         const path = this.ctx.workspaceRegistry.get(operation.data.workspaceId)?.path
         const text = `Team participation changed: you have ${operation.kind === 'team/member-workspace-joined' ? 'joined' : 'left'} Workspace ${operation.data.workspaceId}${path === undefined ? ' (path unavailable)' : ` (${JSON.stringify(path)})`}.\nCurrent Workspace ids: ${ledger.workspacesOf(operation.data.memberId).join(', ')}. This replaces earlier participation information. Your Session and cwd have not moved.`
         const notice = createUserMessage({ content: [{ type: 'text', text }],
-          source: { kind: 'plugin', plugin: AGENT_TEAM_PLUGIN_ID, form: 'notice', summary: 'Team Workspace participation changed' } })
+          source: { kind: AGENT_TEAM_PLUGIN_ID, form: 'notice', summary: 'Team Workspace participation changed' } })
         try {
           if (agent.status === 'idle' || agent.inbox.nextTurn.some(message => message.source.kind === 'user')) agent.followup(notice)
           else agent.steer(notice)
@@ -2837,7 +2838,7 @@ export default class AgentTeam extends TypertRemoteService {
     if (existingInboxHint !== undefined) agent.inbox.remove(existingInboxHint.id)
     const hint = createUserMessage({
       content: [{ type: 'text', text: this.notificationText(notifications, member.memberId) }],
-      source: { kind: 'plugin', plugin: AGENT_TEAM_PLUGIN_ID, form: 'notice', summary: INBOX_NOTICE_SUMMARY },
+      source: { kind: AGENT_TEAM_PLUGIN_ID, form: 'notice', summary: INBOX_NOTICE_SUMMARY },
     })
     this.notifiedInbox.set(member.memberId, signature)
     try {
@@ -2856,13 +2857,13 @@ export default class AgentTeam extends TypertRemoteService {
 
   private isInboxNotice(message: UserMessage): boolean {
     const source = message.source
-    return source.kind === 'plugin' && source.plugin === AGENT_TEAM_PLUGIN_ID
+    return isAgentTeamSource(source)
       && source.form === 'notice' && source.summary === INBOX_NOTICE_SUMMARY
   }
 
   private isRecoveryNotice(message: UserMessage): boolean {
     const source = message.source
-    return source.kind === 'plugin' && source.plugin === AGENT_TEAM_PLUGIN_ID
+    return isAgentTeamSource(source)
       && source.form === 'notice' && source.summary === RECOVERY_NOTICE_SUMMARY
   }
 

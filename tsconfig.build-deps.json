@@ -35,9 +35,6 @@
       "@wowyuarm/dsh-agent-team/remote": [
         "./packages/agent-team/lib/typert.remote-client.d.ts"
       ],
-      "@wowyuarm/dsh-agent-team/preset-roster": [
-        "./packages/agent-team/lib/types/preset-roster.d.ts"
-      ],
       "@wowyuarm/dsh-agent-team/sqlite-backend": [
         "./packages/agent-team/lib/types/vendor/storage-sqlite/index.d.ts"
       ],

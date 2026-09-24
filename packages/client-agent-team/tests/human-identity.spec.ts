@@ -1,8 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
 import type { RemoteResult } from '@deepseek-ai/dsh-typert-protocol'
 import type { AgentTeamHumanProfileResult } from '@wowyuarm/dsh-agent-team/types'
-import { HUMAN_PROFILE_SETTINGS_NAMESPACE } from '@wowyuarm/dsh-agent-team/host'
-import { HUMAN_PROFILE_NAMESPACE, TeamHumanIdentity } from '../src/client/human-identity.ts'
+import { TeamHumanIdentity } from '../src/client/human-identity.ts'
 
 /** A read failure in the shape the carrier produces (code/details belong to it, not to the test). */
 const readFailure = (message: string): RemoteResult<AgentTeamHumanProfileResult> =>
@@ -25,10 +24,6 @@ function storeWith(overrides: {
 }
 
 describe('Human identity projection', () => {
-  it('pins the settings namespace the Host declares', () => {
-    expect(HUMAN_PROFILE_NAMESPACE).toBe(HUMAN_PROFILE_SETTINGS_NAMESPACE)
-  })
-
   it('reads once for every seat that subscribes, and keeps one snapshot reference', async () => {
     const { identity, loadProfile } = storeWith()
     const first = vi.fn()

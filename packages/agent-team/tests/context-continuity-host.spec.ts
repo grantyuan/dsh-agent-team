@@ -28,7 +28,7 @@ function bodyOf(message: { readonly content: readonly unknown[] }): string {
 /** The snapshot sections of one message, or undefined when another producer owns it. */
 function sectionsOf(message: { readonly source: unknown }): readonly { readonly name: string; readonly text: string }[] | undefined {
   const source = message.source as { readonly kind?: string; readonly form?: string; readonly sections?: readonly { readonly name: string; readonly text: string }[] }
-  return source.kind === 'plugin' && source.form === 'snapshot' ? source.sections : undefined
+  return source.kind === AGENT_TEAM_PLUGIN_ID && source.form === 'snapshot' ? source.sections : undefined
 }
 
 describe('the Team context codec', () => {
@@ -64,7 +64,12 @@ describe('the Team context codec', () => {
       { name: 'Continued from checkpoint', text: 'context-checkpoint-abc' },
       { name: 'Related files', text: '["a/b.ts","c.ts"]' },
     ])
-    expect((message.source as { readonly plugin?: string }).plugin).toBe(AGENT_TEAM_PLUGIN_ID)
+    // The write shape is the producer kind itself: V4 refuses the retired
+    // `{ kind: 'plugin', plugin: … }` wrapper, so a codec that regressed to it
+    // would fail admission before anything read the sections above.
+    const source = message.source as { readonly kind?: string }
+    expect(source.kind).toBe(AGENT_TEAM_PLUGIN_ID)
+    expect(source).not.toHaveProperty('plugin')
   })
 
   it('writes the frozen checkpoint continuation', () => {
@@ -135,11 +140,13 @@ describe('the Team context-continuity host', () => {
     })
     const teamNotice = createUserMessage({
       content: [{ type: 'text', text: 'inbox notice' }],
-      source: { kind: 'plugin', plugin: AGENT_TEAM_PLUGIN_ID, form: 'notice', summary: 'notice' },
+      source: { kind: AGENT_TEAM_PLUGIN_ID, form: 'notice', summary: 'notice' },
     })
+    // A foreign producer's notice: same form and payload, another kind. V4 has
+    // no producer registry, so attribution can only ever be exact identity.
     const foreign = createUserMessage({
       content: [{ type: 'text', text: 'operator input' }],
-      source: { kind: 'plugin', plugin: '@wowyuarm/someone-else', form: 'notice', summary: 'notice' },
+      source: { kind: 'tool-jobs', form: 'notice', summary: 'notice' },
     })
     const handoff = TEAM_CONTEXT_CODEC.createHandoffMessage({
       handoff: 'prose',

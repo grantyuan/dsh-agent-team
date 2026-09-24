@@ -163,19 +163,21 @@ Record candidate tag, symptom, affected interface, reproduction command, and nex
 
 ## 6. Current baseline
 
-The current certified baseline is DSH `0.1.5-rc.1`, with `0.1.5-rc.2` certified on the same peers (last paragraph of this section).
+The current certified baseline is DSH `0.1.7-rc.1`; the paragraphs below preserve the `0.1.5` history that produced the preceding baselines.
 
-Certification covered Typert generation, full typecheck, 499 tests (1 skipped), build, pack checks, lint, and real browser composition with published-layout installation, Remote mount, Team entry/exit, and ordinary DSH restoration.
-
-The DSH peers state exactly that certified line, `>=0.1.5-rc.1 <0.1.6`, narrowed from `>=0.1.5-rc.1 <0.2.0` so no later stable `0.1.x` release installs under an unverified compatibility claim.
+The DSH peers state exactly that certified line, `>=0.1.7-rc.1 <0.1.8`, so a line this repository has not verified falls outside the declared range instead of installing under an unverified compatibility claim.
 
 The routed sqlite backend is a vendored fork, not a dependency at all (GitHub issue #28): the upstream package stays a devDependency pinned at the fork source, 0.1.5-rc.2, as the byte-compatibility fixture reference, and every compat round diffs the fork against that version's file before anything else.
+
+The `0.1.5-rc.1` baseline this replaced was certified over Typert generation, full typecheck, 499 tests (1 skipped), build, pack checks, lint, and real browser composition with published-layout installation, Remote mount, Team entry/exit, and ordinary DSH restoration, on peers `>=0.1.5-rc.1 <0.1.6`; `0.1.5-rc.2` was certified on those same peers with no manifest change.
 
 The bundle's dependence on that line is structural rather than incidental. A candidate that changes any of the following is a peer-range change, not a patch:
 
 - The root `main` slot is registered as a keyed entry (key `conversation`, priority `-100`) and rendered through `renderSlot('main', {}, { entryKey: 'conversation' })`.
 - Sessions are reached through the handle API (`open(id, 'read')` + `read()` + `close()`, with `stat()` returning header snapshots).
 - The member preset's `dsh-persona` row carries its config under `prefix`.
+- The `team-member` preset is declared as a `@deepseek-ai/dsh-agent-preset` row beside its `@deepseek-ai/dsh-agent-preset-registry`, inside the Team's own `isolate` group.
+- Every durable message source the bundle writes carries its producer's own kind; the retired `{ kind: 'plugin', plugin: … }` wrapper is refused at write time.
 
 Preset composition has no compile-time or unit-test guard: the member specs compose a synthetic preset, so a row whose config no longer matches its plugin schema surfaces only in the real browser journey — every Member fails to activate with `preset "team-member" failed to mount: … $.prefix missing required value` while typecheck, unit tests, and build stay green.
 
@@ -187,22 +189,20 @@ A migration refusal is fail-closed and leaves the source artifact byte-identical
 
 Both classes are release-blocking while npm `latest` points at the candidate.
 
-Existing-history upgrade viability was measured, not assumed.
+Existing-history upgrade viability was measured, not assumed: the `0.1.5` candidate's closed source-kind audit refused every Member artifact the released line wrote, and the startup repair pass the bundle then carried repaired 44 refused artifacts across this machine's full store, left 6 untouched for structural Session defects, wrote no byte into any pre-existing artifact, and published nothing on a second walk.
 
-The 0.1.5 candidate's closed source-kind audit refuses every Member artifact the released line wrote, so the Team bundle added a startup remediation that publishes a current-format sibling for exactly those artifacts (mechanism in [workspace-session-storage.md](architecture/workspace-session-storage.md) § "Workspace, Session, and storage reuse").
+### DSH 0.1.7-rc.1
 
-Across this machine's full store the pass repaired 44 refused artifacts, left 6 untouched for structural Session defects, wrote no byte into any pre-existing artifact, and published nothing on a second walk.
+DSH `0.1.7-rc.1` is certified and moves the baseline. Every `@deepseek-ai/dsh-*` peer moved together from `>=0.1.5-rc.1 <0.1.6` to `>=0.1.7-rc.1 <0.1.8`, because a comparator enables prereleases only on its own base tuple and the old range reached no `0.1.6` or `0.1.7` cut. The removed `@deepseek-ai/dsh-agent-presets` peer left with the package it named.
 
-The conclusion for the baseline is therefore exact: **readability of history written by the previous certified line comes from the Team bundle's remediation, not from the candidate**.
+Two upstream contract changes drove the round, and both required source adaptation:
 
-One verification fact is still recorded without patching: `npm run typecheck` before `npm run build` fails on the `@wowyuarm/dsh-agent-team/time-format` and `member-time-context` imports, which resolve through the built `lib/` self-link rather than the sync-paths `own` map; build first (a latent repo gap, not a compatibility defect).
+- **The preset system was replaced.** Filesystem preset discovery through `@deepseek-ai/dsh-agent-presets` (`roots`/`trust`) is gone; presets are now rows — a host-level `@deepseek-ai/dsh-agent-preset-registry` plus one `@deepseek-ai/dsh-agent-preset` declaration row per preset (`config: { id, plugins }`).
+- **The Team's rows moved with it.** `cordis.patch.yml` now declares the registry (`default: team-member`) and the `team-member` definition row inside one `isolate: { agentPresets: true }` group, with the retired roster's entry list inlined verbatim as `config.plugins` — including both `!!js` platform expressions, because a preset keeps child expressions deferred until their own plugins activate.
+- **No Host call site moved.** The `agentPresets` service surface is unchanged; `preset-roster.ts` and the `preset/` directory were deleted rather than rewritten, and the browser-lane overlay carries the same rows.
+- **Session format V4 requires producer-owned message sources.** The jsonl write path refuses `{ kind: 'plugin', plugin: … }` with `format v4 message requires a producer-owned source kind`, so the bundle's nine write sites now write their three producer ids as kinds.
+- **Released V3 history needs no rewrite on disk.** The read-time conversion renames each wrapper to `plugin:<producer>` and preserves `form`/`sections`/`summary`; the read side recognizes both shapes for all three ids by exact identity, never by a `plugin:` prefix test, because the same log carries third-party rows.
 
-An isolated Harness checkout likewise needs `pnpm build:native-system` before the Team suite (see [environments-and-install.md](development/environments-and-install.md)); skipping it fails host Team activation instead of reporting a missing module.
+The startup repair pass (`session-remediation.ts`) was removed in the same change, with Human approval: what it published was precisely the wrapper V4 refuses at write time, so keeping it would manufacture unreadable files, and the pre-0.1.5 kinds it targeted are refused by the released v2→v3 chain before the read-time conversion runs. A deterministic `session-refused` activation now reports the same failure on every restart instead of healing it.
 
-DSH `0.1.5-rc.2` is certified on the same peers with no manifest change. It is a release-hygiene cut rather than a new line: the real source changes stay inside client packages with no added, renamed, or deleted package paths.
-
-Every `dsh-client-ui-primitives` symbol this bundle imports still exists at rc.2, and the Session format, the message-source vocabulary, and the shipped preset rows are untouched, so §3.6's existing-history check is not re-triggered.
-
-In an isolated checkout at the tag the bundle builds, typechecks, passes 513 tests (1 skipped), packs 206 files, and completes the real browser journey (Team entry, Remote mount, ordinary DSH restoration).
-
-Release urgency from that record is resolved: npm `latest` has installed on this candidate line since Team `0.1.10` (2026-09-11), and `latest` is now Team `0.1.14`, published 2026-09-22, whose peers state the certified line `>=0.1.5-rc.1 <0.1.6` (the `0.1.9` line could neither admit nor run on this candidate).
+One further change stopped at the test fixtures: rc.1 redrew `IconUserOutlineArtwork` onto a half-pixel grid without renaming the symbol or changing its wrapper, so the `settingsAction` icon's `data-content` fingerprint moved `612cfab9` → `68b4b343` and one committed snapshot line was refreshed. No bundle source changed.

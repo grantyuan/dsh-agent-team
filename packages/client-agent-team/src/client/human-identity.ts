@@ -6,24 +6,19 @@ import type { AgentTeamHumanProfileResult } from '@wowyuarm/dsh-agent-team/types
  * The Client's one projection of the Human identity.
  *
  * The durable facts live in the Host: the display name and the avatar
- * reference in the `agent-team-human` settings section, the avatar bytes in the
+ * reference in the Team Host row's own Config, the avatar bytes in the
  * persistent avatar store. This store is the only place the Team Client reads
  * them, so every seat that names or draws the Human — message rows, member
  * refs, mention chips, the settings page — shows one rename and one face, and a
- * single refresh after a write moves all of them together.
+ * single refresh after a write moves all of them together. Writes go back
+ * through the Host's `setHumanProfile` Remote, which owns the profile entry the
+ * Client would otherwise have to name.
  *
  * Seats render before the first read settles; `name` stays undefined until then
  * and every caller falls back to its own localized name for the Human. Reads
  * are demand-driven: the first subscriber starts the read, so a Client that
  * never opens Team mode or the profile page never calls the Remote.
  */
-
-/**
- * Host settings namespace that holds the Human profile. The Host declares the
- * same string (`HUMAN_PROFILE_SETTINGS_NAMESPACE`) on its own side of the
- * bundle boundary, and a test pins the two together.
- */
-export const HUMAN_PROFILE_NAMESPACE = 'agent-team-human'
 
 /** One read of the Human identity, replaced wholesale on every change. */
 export interface TeamHumanIdentitySnapshot {

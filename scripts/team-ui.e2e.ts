@@ -6,9 +6,9 @@ import { launchWebScaffold, acknowledgeReloadConnectionLoss, watchConsole, type 
 import { connectFreshWorkspaceZh } from './support.ts'
 
 const TEAM_ROOT = '__TEAM_ROOT__'
-const OVERLAY = '__OVERLAY__'
 const HOME = '__HOME__'
 const CHROME = '__CHROME__'
+const STAGED_BUNDLE = join(HOME, 'profiles', 'node_modules', '@wowyuarm', 'dsh-agent-team')
 const BROWSER_ARTIFACTS = join(TEAM_ROOT, 'artifacts/browser')
 const UI01_SHOTS = join(BROWSER_ARTIFACTS, 'ui-01')
 const UI02_SHOTS = join(BROWSER_ARTIFACTS, 'ui-02')
@@ -200,6 +200,14 @@ async function entryUnreadCapsule(page: Page, lineSelector: string): Promise<Ret
   return await capsule.count() === 0 ? null : await capsule.evaluate(readCountCapsule)
 }
 
+/**
+ * Stage this bundle and its dependency closure the way `dsh plugin add`
+ * installs it. Production mounts the package as a profile bundle and takes the
+ * row set from the bundle's own patch; a command-line overlay declaring those
+ * rows instead shadows the profile document, so the Host row's settings write
+ * fails (rc.1 `ConfigEditor`: "overridden by a home patch or command-line
+ * overlay"). Every lane therefore mounts the staged copy as a profile package.
+ */
 async function installLocalBundle(clearArtifacts = true): Promise<void> {
   await rm(HOME, { recursive: true, force: true })
   if (clearArtifacts) await rm(BROWSER_ARTIFACTS, { recursive: true, force: true })
@@ -249,7 +257,7 @@ async function installLocalBundle(clearArtifacts = true): Promise<void> {
 
 it('drives the complete opt-in Agent Team journey in real Web', async () => {
   await installLocalBundle()
-  scaffold = await launchWebScaffold({ extraOverlayPath: OVERLAY, harnessHome: HOME })
+  scaffold = await launchWebScaffold({ harnessHome: HOME, profile: { packages: [{ dir: STAGED_BUNDLE, enabled: true }] } })
   browser = await chromium.launch({ headless: true, executablePath: CHROME })
   const page = await browser.newPage({ viewport: { width: 1440, height: 960 }, locale: 'zh-CN' })
   const consoleWatch = watchConsole(page)
@@ -2225,7 +2233,7 @@ it('drives the complete opt-in Agent Team journey in real Web', async () => {
 
 it('keeps four same-origin Team pages responsive and independently subscribed', async () => {
   await installLocalBundle(false)
-  scaffold = await launchWebScaffold({ extraOverlayPath: OVERLAY, harnessHome: HOME })
+  scaffold = await launchWebScaffold({ harnessHome: HOME, profile: { packages: [{ dir: STAGED_BUNDLE, enabled: true }] } })
   const workspace = await scaffold.ctx.workspaceRegistry.create(scaffold.workspaceCwd, 'multi-web')
   await scaffold.ctx.agentTeam.createChannel({ requestId: 'multi-channel' as never, workspaceId: workspace.id, name: 'multi-web', description: 'Multi-page regression' })
   browser = await chromium.launch({ headless: true, executablePath: CHROME })
@@ -2289,7 +2297,7 @@ it('opens a taskless thread from its ref chip in real Web', async () => {
   // Same install flow as the other journeys: installLocalBundle stages the
   // bundle, so no extra install anchor is needed (an undefined anchor
   // identifier here failed the whole journey with a ReferenceError).
-  scaffold = await launchWebScaffold({ extraOverlayPath: OVERLAY, harnessHome: HOME })
+  scaffold = await launchWebScaffold({ harnessHome: HOME, profile: { packages: [{ dir: STAGED_BUNDLE, enabled: true }] } })
   browser = await chromium.launch({ headless: true, executablePath: CHROME })
   const page = await browser.newPage({ viewport: { width: 1440, height: 960 }, locale: 'zh-CN' })
   const consoleWatch = watchConsole(page)
@@ -2353,7 +2361,7 @@ const ONE_PIXEL_PNG = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42
  */
 it('configures the Human profile from Settings in real Web', async () => {
   await installLocalBundle()
-  scaffold = await launchWebScaffold({ extraOverlayPath: OVERLAY, harnessHome: HOME })
+  scaffold = await launchWebScaffold({ harnessHome: HOME, profile: { packages: [{ dir: STAGED_BUNDLE, enabled: true }] } })
   browser = await chromium.launch({ headless: true, executablePath: CHROME })
   const page = await browser.newPage({ viewport: { width: 1440, height: 960 }, locale: 'zh-CN' })
   const consoleWatch = watchConsole(page)

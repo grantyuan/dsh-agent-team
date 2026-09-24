@@ -29,13 +29,12 @@ async function bench(persisted: string | null = null) {
   // The plugin declares these runtime services; the takeover bench only mounts
   // them, it never drives sessions or the model catalog.
   ctx.provide('sessions', {
-    list: { getSnapshot: () => ({ current: undefined, byId: {} }), subscribe: () => () => {} },
-    open: vi.fn(),
-    clear: vi.fn(),
-    openSubagent: vi.fn(),
+    list: { getSnapshot: () => ({ byId: {} }), subscribe: () => () => {} },
     search: vi.fn(async () => ({ items: [], hasMore: false })),
     searchResultLimit: 20,
   } as never)
+  const uiWorkspace = { openSession: vi.fn(), startSession: vi.fn(), connectWorkspace: vi.fn(async () => 'workspace:one') }
+  ctx.provide('uiWorkspace', uiWorkspace as never)
   ctx.provide('connection', { api: { llm: { models: vi.fn(async () => ({ result: { ok: true, value: { groups: [], failures: [] } } })) } } } as never)
   ctx.provide('workspaces', {
     list: workspaceFeed(),
@@ -65,7 +64,7 @@ async function bench(persisted: string | null = null) {
     'conversation.composer.bar': { kind: 'single', scope: 'session-maybe' },
     'conversation.input.dock': { kind: 'list', scope: 'session' },
   } } as never, root)
-  return { ctx, slots }
+  return { ctx, slots, uiWorkspace }
 }
 
 describe('Team Client slot takeover', () => {
@@ -136,17 +135,16 @@ describe('Team Client slot takeover', () => {
   })
 
   it('keeps Team chrome mounted for a Member Session view and restores the return session on leave', async () => {
-    const { ctx, slots } = await bench()
+    const { ctx, slots, uiWorkspace } = await bench()
     const fiber = ctx.plugin({ inject: [...inject], apply })
     await fiber.await()
     const sessions = ctx.get('sessions') as unknown as {
-      open: ReturnType<typeof vi.fn>
-      clear: ReturnType<typeof vi.fn>
-      list: { getSnapshot: () => { current?: string; byId?: Record<string, unknown> } }
+      list: { getSnapshot: () => { byId?: Record<string, unknown> } }
     }
-    // The root restore owner reads the list snapshot (current + byId) before
-    // rebinding, so the bench's list double carries both.
-    sessions.list.getSnapshot = () => ({ current: 'session:human-origin', byId: { 'session:human-origin': {} } })
+    // The root restore owner reads the list snapshot's `mainView` retention
+    // (the 0.1.7 selection projection) before rebinding, so the bench's list
+    // double carries the selected row.
+    sessions.list.getSnapshot = () => ({ byId: { 'session:human-origin': { id: 'session:human-origin', retainedBy: { mainView: 1 } } } })
 
     ctx.teamNavigation.actions().selectWorkspace('workspace:one' as never)
     ctx.teamNavigation.actions().enterTeam()
@@ -158,7 +156,7 @@ describe('Team Client slot takeover', () => {
     const injected = (shadow!.inject as () => Record<string, unknown>)()
     ;(injected.openMemberSession as (sessionId: string) => void)('session:builder')
 
-    expect(sessions.open).toHaveBeenCalledWith('session:builder')
+    expect(uiWorkspace.openSession).toHaveBeenCalledWith('session:builder')
     expect(ctx.teamNavigation.getSnapshot()).toMatchObject({ mode: 'team', memberSessionId: 'session:builder', returnToSessionId: 'session:human-origin' })
     // The conversation seat yields to the shipped root while both sidebars stay.
     expect(slots.entries('main')).toHaveLength(1)
@@ -168,7 +166,7 @@ describe('Team Client slot takeover', () => {
     expect(slots.entries('conversation.composer.bar')).toHaveLength(0)
     expect(slots.entries('conversation.input.dock')).toHaveLength(0)
     // Direct Member-to-Member navigation keeps the zero-surface invariant.
-    sessions.list.getSnapshot = () => ({ current: 'session:reviewer', byId: { 'session:reviewer': {}, 'session:human-origin': {} } })
+    sessions.list.getSnapshot = () => ({ byId: { 'session:reviewer': { id: 'session:reviewer', retainedBy: { mainView: 1 } }, 'session:human-origin': {} } })
     ctx.teamNavigation.actions().enterMemberSession('session:reviewer' as never)
     expect(slots.entries('conversation.input.dock')).toHaveLength(0)
     expect(slots.entries('sidebar.workspaces')).toHaveLength(2)
@@ -181,11 +179,48 @@ describe('Team Client slot takeover', () => {
     const footerActions = (footer.inject as () => Record<string, unknown>)()
     ;(footerActions.leaveTeam as () => void)()
 
-    expect(sessions.open).toHaveBeenLastCalledWith('session:human-origin')
+    expect(uiWorkspace.openSession).toHaveBeenLastCalledWith('session:human-origin')
     expect(ctx.teamNavigation.getSnapshot()).toEqual({ mode: 'conversation', workspaceId: 'workspace:one' })
     expect(slots.entries('conversation.input.dock')).toHaveLength(0)
     expect(slots.entriesOfSlot('main')).toHaveLength(1)
     expect(slots.entries('sidebar.workspaces')).toHaveLength(1)
+
+    await fiber.dispose()
+  })
+
+  it('never captures a Member Session as the return target when the main view still retains one', async () => {
+    const { ctx, slots, uiWorkspace } = await bench()
+    const fiber = ctx.plugin({ inject: [...inject], apply })
+    await fiber.await()
+    const sessions = ctx.get('sessions') as unknown as {
+      list: { getSnapshot: () => { byId?: Record<string, unknown> } }
+    }
+    ctx.teamNavigation.actions().selectWorkspace('workspace:one' as never)
+    ctx.teamNavigation.actions().enterTeam()
+    const shadow = slots.entriesOfSlot('sidebar.workspaces').find(entry => entry.options.priority === -100)
+    const injected = (shadow!.inject as () => Record<string, unknown>)()
+
+    // Nothing is retained yet, so this first entry has no return target at all.
+    ;(injected.openMemberSession as (sessionId: string) => void)('session:builder')
+    expect(uiWorkspace.openSession).toHaveBeenCalledWith('session:builder')
+    expect(ctx.teamNavigation.getSnapshot()).toMatchObject({ mode: 'team', memberSessionId: 'session:builder' })
+    expect(ctx.teamNavigation.getSnapshot().returnToSessionId).toBeUndefined()
+
+    // The workspace service retains the Member's session, and leaving the view
+    // restores nothing (there was no return target), so the retention stays on
+    // the departed Member — the state the next entry must not read as the
+    // Human's own conversation.
+    sessions.list.getSnapshot = () => ({ byId: { 'session:builder': { id: 'session:builder', retainedBy: { mainView: 1 } } } })
+    ctx.teamNavigation.actions().exitMemberSession()
+    expect(uiWorkspace.openSession).toHaveBeenCalledTimes(1)
+
+    // A second Member entry therefore captures no return target: returning into
+    // another Member's session would strand the Human one view deeper instead
+    // of back at their own conversation.
+    ;(injected.openMemberSession as (sessionId: string) => void)('session:reviewer')
+    expect(ctx.teamNavigation.getSnapshot()).toMatchObject({ mode: 'team', memberSessionId: 'session:reviewer' })
+    expect(ctx.teamNavigation.getSnapshot().returnToSessionId).toBeUndefined()
+    expect(uiWorkspace.openSession).toHaveBeenLastCalledWith('session:reviewer')
 
     await fiber.dispose()
   })

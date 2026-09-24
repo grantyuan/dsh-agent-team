@@ -41,7 +41,7 @@ import type {} from '@deepseek-ai/dsh-client-ui-workspace/client'
 import type {} from '@deepseek-ai/dsh-client-ui-settings/client'
 import type {} from '@deepseek-ai/dsh-api-remotes/client'
 import { HumanSettingsSection } from './HumanSettingsSection.tsx'
-import { HUMAN_PROFILE_NAMESPACE, TeamHumanIdentity } from './human-identity.ts'
+import { TeamHumanIdentity } from './human-identity.ts'
 import { bytesToBase64 } from './attachment-preview.ts'
 import { TeamNavigation } from './navigation.ts'
 import { TeamChangeStream, TeamReadStream, type TeamChangeListener, type TeamChangeScope } from './team-changes.ts'
@@ -59,8 +59,29 @@ export { TeamNavigation } from './navigation.ts'
 const NS = 'team'
 
 export const inject = [
-  'slots', 'workspaces', 'locale', 'remote', 'remote.session', 'sessions', 'connection', 'conversation',
+  'slots', 'workspaces', 'locale', 'remote', 'remote.session', 'sessions', 'connection', 'conversation', 'uiWorkspace',
 ]
+
+/**
+ * 0.1.7 moved the conversation selection into the workspace service: the
+ * rendered session is the one holding its `mainView` reference (the shipped
+ * consumers read the same projection), so the Team client reads the selection
+ * through retention instead of a service-owned `current`.
+ */
+function currentMainSessionId(ctx: ClientContext): AgentTeamClientMemberStatus['member']['sessionId'] | undefined {
+  const sessions = ctx.sessions as unknown as ISessions
+  return Object.values(sessions.list.getSnapshot().byId)
+    .find(session => (session.retainedBy.mainView ?? 0) > 0)?.id
+}
+
+/**
+ * Session ids this client opened as Member views, per client instance. The
+ * 0.1.7 workspace service exposes no clear, so a dead return target leaves
+ * the departed Member selection in place; excluding Member sessions from the
+ * next capture keeps that stale selection from becoming a false return
+ * target.
+ */
+const openedMemberSessions = new WeakMap<ClientContext, Set<string>>()
 
 declare module '@deepseek-ai/dsh-client-ui-slots' {
   interface LocaleNamespaceMap {
@@ -94,14 +115,16 @@ function registerModeShadow<T extends object>(
   // views (see registerModeShadow), so the shipped conversation root renders
   // the selected Member Session inside the Team shell.
   const openMemberSessionImpl = (sessionId: AgentTeamClientMemberStatus['member']['sessionId']): void => {
-    const sessions = ctx.sessions as unknown as ISessions
     const snapshot = navigation.getSnapshot()
-    const current = sessions.list.getSnapshot().current
+    const current = currentMainSessionId(ctx)
     // The return target is captured on first entry only — switching between
     // Member Sessions must keep pointing at the Human's original session.
-    const returnTo = snapshot.memberSessionId === undefined && current !== undefined && current !== sessionId ? current : undefined
+    const memberSessions = openedMemberSessions.get(ctx) ?? new Set<string>()
+    openedMemberSessions.set(ctx, memberSessions)
+    memberSessions.add(sessionId)
+    const returnTo = snapshot.memberSessionId === undefined && current !== undefined && current !== sessionId && !memberSessions.has(current) ? current : undefined
     navigation.actions().enterMemberSession(sessionId, returnTo)
-    sessions.open(sessionId)
+    ctx.uiWorkspace.openSession(sessionId)
   }
   // Remote bindings shared by every Team slot; surface-specific entries extend it below.
   const sharedRemotes = {
@@ -196,17 +219,8 @@ function applyUi(ctx: ClientContext): void {
   // The Human's own identity: one projection every seat reads, refreshed once
   // after a profile write so a rename reaches the timeline and the member refs
   // without a reload. Reads are demand-driven — the first seat that subscribes
-  // starts the read.
-  // The profile page writes through the settings transport. It arrives from the
-  // settings plugin, and Cordis refuses a `remote.<namespace>` read that was
-  // never injected, so the binding is an optional injection rather than either
-  // a hard activation dependency (a settings-less host would lose Team mode
-  // entirely) or an undeclared read (which throws at the first write).
-  let settingsTransport: ClientContext['remote']['settings'] | undefined
-  ctx.inject(['remote.settings'], (scope: ClientContext) => {
-    settingsTransport = scope.remote.settings
-  })
-
+  // starts the read. The profile page writes back through the Team Remote, so
+  // the Client never names the Host's own profile entry.
   const humanIdentity = new TeamHumanIdentity({
     loadProfile: () => ctx.remote.agentTeam.humanProfile({}),
     loadAvatarUrl: async (avatarRef: string) => {
@@ -226,12 +240,13 @@ function applyUi(ctx: ClientContext): void {
   }, 'agent-team: navigation service')
 
   // The one restore owner: leaving an embedded Member Session view must
-  // rebind the underlying current session, or the stale Member current later
-  // masks to undefined when the Host disposes that session (rollover) and
-  // the conversation seat remounts. Takeover is conditional — only when the
-  // current still IS the departed Member session — so a selection someone
-  // else made in the meantime survives. A dead return target clears instead
-  // of opening an unknown id.
+  // rebind the underlying selection, or the departed Member session stays the
+  // workspace service's `mainView` retention into the next Member entry's
+  // return-target capture. Takeover is conditional — only when the selection
+  // still IS the departed Member session — so a selection someone else made
+  // in the meantime survives. A dead return target keeps the departed
+  // selection: 0.1.7 exposes no public clear, and the retention is inert
+  // behind the Team seat until the next open.
   ctx.effect(() => {
     let previous = navigation.getSnapshot()
     const restore = (): void => {
@@ -240,10 +255,8 @@ function applyUi(ctx: ClientContext): void {
       const returnTo = previous.returnToSessionId
       previous = snapshot
       if (departed === undefined || snapshot.memberSessionId !== undefined) return
-      const sessions = ctx.sessions as unknown as ISessions
-      if (sessions.list.getSnapshot().current !== departed) return
-      if (returnTo !== undefined && sessions.list.getSnapshot().byId[returnTo] !== undefined) sessions.open(returnTo)
-      else sessions.clear()
+      if (currentMainSessionId(ctx) !== departed) return
+      if (returnTo !== undefined && (ctx.sessions as unknown as ISessions).list.getSnapshot().byId[returnTo] !== undefined) ctx.uiWorkspace.openSession(returnTo)
     }
     const unsubscribe = navigation.subscribe(restore)
     return () => {
@@ -282,7 +295,7 @@ function applyUi(ctx: ClientContext): void {
       navigation,
       ...navigation.actions(),
       // The footer is the only surface that leaves Team mode; closing the
-      // embedded Member Session view rebinds the underlying current through
+      // embedded Member Session view rebinds the underlying selection through
       // the same root-scope restore owner, so there is exactly one restore
       // path and no double open.
       leaveTeam: () => {
@@ -296,12 +309,12 @@ function applyUi(ctx: ClientContext): void {
   registerModeShadow(ctx, navigation, changes, reads, drafts, humanIdentity, 'main', TeamConversation as never, undefined, 'conversation')
   registerModeShadow(ctx, navigation, changes, reads, drafts, humanIdentity, 'sidebar.settings', TeamMembersAction as never, () => ({ loadMemberGroups }))
 
-  // The Human profile page: one settings section over the `agent-team-human`
-  // namespace, ordered between General (0) and Models (10) so identity sits
-  // near the top. Writes go through the settings controller, which answers
-  // with the Host's own rejection reason (a name collides, an empty one), and
-  // the shared identity re-reads afterwards, so a rename lands in the timeline
-  // and the member refs at the same moment the page shows it.
+  // The Human profile page: one settings section, ordered between General (0)
+  // and Models (10) so identity sits near the top. Writes go through the Team
+  // Remote, which answers with the Host's own rejection reason (a name
+  // collides, an empty one), and the shared identity re-reads afterwards, so a
+  // rename lands in the timeline and the member refs at the same moment the
+  // page shows it.
   ctx.slots.inject('settings.section', () => ctx.slots.register({
     name: 'settings.section',
     id: 'team-human',
@@ -311,9 +324,7 @@ function applyUi(ctx: ClientContext): void {
     inject: () => ({
       identity: humanIdentity,
       saveName: async (name: string) => {
-        const settings = settingsTransport
-        if (settings === undefined) return 'the settings service is unavailable'
-        const saved = await settings.update(HUMAN_PROFILE_NAMESPACE, { name }, undefined)
+        const saved = await ctx.remote.agentTeam.setHumanProfile({ name })
         if (!saved.ok) return saved.error.message
         await humanIdentity.refresh()
         return undefined
@@ -325,9 +336,7 @@ function applyUi(ctx: ClientContext): void {
           bytesBase64: bytesToBase64(new Uint8Array(await file.arrayBuffer())),
         })
         if (!put.ok) return put.error.message
-        const settings = settingsTransport
-        if (settings === undefined) return 'the settings service is unavailable'
-        const saved = await settings.update(HUMAN_PROFILE_NAMESPACE, { avatarRef: put.value.avatarRef }, undefined)
+        const saved = await ctx.remote.agentTeam.setHumanProfile({ avatarRef: put.value.avatarRef })
         if (!saved.ok) return saved.error.message
         await humanIdentity.refresh()
         return undefined
@@ -335,13 +344,10 @@ function applyUi(ctx: ClientContext): void {
       removeAvatar: async () => {
         const { avatarRef } = humanIdentity.getSnapshot()
         if (avatarRef === undefined) return undefined
-        const settings = settingsTransport
-        if (settings === undefined) return 'the settings service is unavailable'
         // Bytes first, then the reference: a failed clear leaves a readable
-        // avatar instead of a reference to bytes nobody can load. Clearing one
-        // field is a path op — a merge patch cannot express removal.
+        // avatar instead of a reference to bytes nobody can load.
         await ctx.remote.agentTeam.removeHumanAvatar({ avatarRef })
-        const cleared = await settings.mutate(HUMAN_PROFILE_NAMESPACE, [{ op: 'unset', path: ['avatarRef'] }], undefined)
+        const cleared = await ctx.remote.agentTeam.setHumanProfile({ avatarRef: null })
         if (!cleared.ok) return cleared.error.message
         await humanIdentity.refresh()
         return undefined

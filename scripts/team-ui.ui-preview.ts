@@ -1,11 +1,11 @@
-import { cp, mkdir, rm } from 'node:fs/promises'
+import { cp, mkdir, readFile, rm } from 'node:fs/promises'
 import { join } from 'node:path'
 import { afterAll, beforeAll, it } from 'vitest'
 import { launchWebScaffold, type WebScaffold } from './scaffold.ts'
 
 const TEAM_ROOT = '__TEAM_ROOT__'
-const OVERLAY = '__OVERLAY__'
 const HOME = '__HOME__'
+const STAGED_BUNDLE = join(HOME, 'profiles', 'node_modules', '@wowyuarm', 'dsh-agent-team')
 let scaffold: WebScaffold
 
 beforeAll(async () => {
@@ -16,7 +16,14 @@ beforeAll(async () => {
     recursive: true,
     filter: source => !source.includes('/node_modules') && !source.includes('/src') && !source.includes('/artifacts') && !source.includes('/.hoplite'),
   })
-  scaffold = await launchWebScaffold({ extraOverlayPath: OVERLAY, harnessHome: HOME })
+  // Production installs the bundle's regular dependencies with it; stage the
+  // same closure inside the staged dir, whose nearest node_modules is what its
+  // own imports resolve through.
+  const { dependencies } = JSON.parse(await readFile(join(TEAM_ROOT, 'package.json'), 'utf8')) as { dependencies: Record<string, string> }
+  for (const name of Object.keys(dependencies)) {
+    await cp(join(TEAM_ROOT, 'node_modules', name), join(STAGED_BUNDLE, 'node_modules', ...name.split('/')), { recursive: true, dereference: true })
+  }
+  scaffold = await launchWebScaffold({ harnessHome: HOME, profile: { packages: [{ dir: STAGED_BUNDLE, enabled: true }] } })
   const workspacePath = join(scaffold.workspaceCwd, 'team-ui-preview')
   await mkdir(workspacePath, { recursive: true })
   const workspace = await scaffold.ctx.workspaceRegistry.create(workspacePath, 'Team UI Preview')

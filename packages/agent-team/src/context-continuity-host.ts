@@ -30,7 +30,7 @@ import {
   type TransitionPlan,
 } from '@wowyuarm/dsh-context-continuity'
 import { SessionId as SessionIdBrand } from '@deepseek-ai/dsh-session'
-import { AGENT_TEAM_PLUGIN_ID } from './context-source.ts'
+import { AGENT_TEAM_PLUGIN_ID, isAgentTeamSource } from './context-source.ts'
 import type { AgentTeamAgentMember, AgentTeamMemberId, AgentTeamRolloverSessionRequest } from './types.ts'
 
 /**
@@ -117,8 +117,7 @@ export class TeamContextContinuityHost implements ContextContinuityHost<AgentTea
    * context the next generation keeps.
    */
   isEphemeralNotice(message: UserMessage): boolean {
-    const source = message.source
-    return source.kind === 'plugin' && source.plugin === AGENT_TEAM_PLUGIN_ID
+    return isAgentTeamSource(message.source)
   }
 
   log(message: string): void {

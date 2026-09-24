@@ -9,14 +9,25 @@ import z from '@deepseek-ai/schemastery'
  * handle shown in team_view, @ matching, and UI follows this profile.
  *
  * Storage split (see spec.md v1):
- * - name + avatarRef live in the Host settings namespace `agent-team-human`
- *   (settings.yaml user layer, live through `ctx.settings`).
- * - avatar bytes live under a persistent directory below; the settings
- *   document holds only the reference, never a data URL. The composer
- *   attachment cache is TTL-bound and must not hold avatar bytes.
+ * - name + avatarRef are the Team Host row's own Config, so they live in the
+ *   active profile's patch document as that row's `config` and the settings
+ *   service derives their form from this schema. rc.1 derives every form from
+ *   a plugin's Config, so the retired `installSection` namespace — a section of
+ *   its own — has no counterpart; the row id below is the settings namespace.
+ * - avatar bytes live under a persistent directory below; the profile holds
+ *   only the reference, never a data URL. The composer attachment cache is
+ *   TTL-bound and must not hold avatar bytes.
  */
 
-export const HUMAN_PROFILE_SETTINGS_NAMESPACE = 'agent-team-human'
+/**
+ * Settings namespace of the Human profile: the Team Host row's id in
+ * `cordis.patch.yml`, which is what the settings service addresses a form and a
+ * write by AND the id the profile-document write patches. It is addressed by
+ * this constant, never by the running Host's `ctx.fiber.entry`: a Remote call
+ * runs under its caller's context, so that lookup names the RPC gateway's row.
+ * `shipping.spec.ts` pins the constant to the row the composition declares.
+ */
+export const HUMAN_PROFILE_SETTINGS_NAMESPACE = 'wowyuarm-agent-team-host'
 
 /** Fallback display name before any user override is stored. */
 export const HUMAN_PROFILE_DEFAULT_NAME = 'human'
@@ -67,12 +78,17 @@ export interface HumanProfileSettings {
   readonly avatarRef?: string
 }
 
-/** Schemastery schema resolving the `agent-team-human` namespace value. */
-export const HUMAN_PROFILE_SETTINGS_SCHEMA: z<HumanProfileSettings> = z.object({
-  name: z.string().default(HUMAN_PROFILE_DEFAULT_NAME),
+/**
+ * Schemastery schema of the Human profile: the Team Host row's Config. Both
+ * fields are volatile, which is what lets an edit reach the running Host
+ * without remounting it — and what makes the settings service derive a form
+ * from this schema at all.
+ */
+export const HUMAN_PROFILE_SETTINGS_SCHEMA = z.object({
+  name: z.string().default(HUMAN_PROFILE_DEFAULT_NAME).volatile(),
   // Schemastery fields are optional unless `.required()`: a missing avatarRef
   // simply resolves absent, which the profile reads as "no custom avatar".
-  avatarRef: z.string(),
+  avatarRef: z.string().volatile(),
 })
 
 /** Normalize one candidate display name the way Member handles normalize. */

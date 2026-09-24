@@ -91,4 +91,10 @@ npm run test:browser
 
 `preview` 与 `preview:ui` 都使用临时 profile、临时 storage 和已构建 package，输出本地 URL，并在 `Ctrl+C` 后清理。`preview` 固定使用 Harness 的真实 DeepSeek adapter，不会因缺少凭据静默切换到 replay；凭据缺失时会在 build 和启动前失败。`preview:ui` 固定使用 keyless route-only adapter，初始 fixture 不触发模型；任何误触发的模型请求都会以明确错误终止，不能伪装成可用的真实交互。
 
+三条通道都会把本 bundle 及其声明的依赖闭包暂存到临时 profile，再把这份暂存副本作为 profile package 声明——即 `dsh plugin add` 留下的形态：一条 `file:` 依赖、profile 自身 `node_modules` 下的链接，以及 `dsh.profile.bundles` 中的一项。scaffold 从 `profile.layers` 构建出的 computed generation 解析插件 import，因此只有在该处声明的暂存副本才会贡献 Team 各行，且这些行来自 bundle 自己的 `cordis.patch.yml`。
+
+命令行 overlay 并不是等价的挂载方式。Host 行的 Human profile 表单写入 profile 文档，而更靠后的层（home patch 或命令行 overlay）声明同一行时，config editor 会拒绝这次写入——`overridden by a home patch or command-line overlay`——表单因而始终不可写。完全未被 scaffold 声明的暂存 bundle 既解析不到自己的行，也解析不到依赖闭包：全部 Team 行报 `failed to import` 且读不到任何模块解析错误，无密钥 fixture 随后会因 `ctx.agentTeam` 为 `undefined` 失败。
+
+`test:browser` 不覆盖这两条 preview 通道，因此在改动 scaffold composition 或 profile resolution 之后，必须手工启动它们各一次。
+
 `test:browser` 固定使用 keyless、确定性的 Host/Client 驱动，不读取真实 provider 凭据。代表性链路从已有 Thread 开始，Human 两次确认邀请未关注 Agent，随后验证 Agent Inbox 读取/回复、Human Channel 与 Thread、页面 reload 后的 Host 持久事实，以及退出 Team mode 后普通 DSH surface 恢复。
