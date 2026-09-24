@@ -17,7 +17,7 @@
 
 本节只列尚未结束的工作项；已结束的见 `archive/YYYY-MM/`。
 
-当前没有进行中的工作项。已归档的两项（2026-09）：[Member Session 架构](archive/2026-09/member-session-architecture/README.md)、[Context continuity](archive/2026-09/context-continuity/README.md)。
+进行中的一项（2026-09）：[0.1.7 UI 设计语言再基线](active/ui-parity-0.1.7/README.md)（task:d3ec167b）。已归档的两项（2026-09）：[Member Session 架构](archive/2026-09/member-session-architecture/README.md)、[Context continuity](archive/2026-09/context-continuity/README.md)。
 
 ## 临时材料和 UI 证据
 

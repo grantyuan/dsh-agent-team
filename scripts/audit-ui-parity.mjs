@@ -1,5 +1,5 @@
 // UI parity audit: mechanical consistency checks between the Team Client's
-// own CSS/TSX and the DSH 0.1.5 design language documented in
+// own CSS/TSX and the DSH 0.1.7 design language documented in
 // docs/frontend-design/principles-and-language.md §Design language alignment.
 // This is the repeatable
 // form of the manual audit that produced commit bb1ebba — run it after any
@@ -156,16 +156,19 @@ for (const file of ['composer.module.css', 'sidebar.module.css']) {
 
 // ---------------------------------------------------------------------------
 // 5. Icon semantics: the composer attach control must use the paperclip, not
-//    the "+" (which in the base composer opens the command menu).
+//    the "+" (which in the base composer opens the command menu). Attach is a
+//    Team convention: 0.1.7 removed the shipped composer's own attach control
+//    (the file input is driven from the command menu), so the paperclip here
+//    is justified by the glyph's meaning, not by a shipped control to copy.
 // ---------------------------------------------------------------------------
 
 const composer = readFileSync(join(clientDir, 'TeamComposer.tsx'), 'utf8')
 const attachBlock = composer.match(/className=\{css\.attachButton\}[\s\S]{0,400}/)?.[0] ?? ''
-if (attachBlock.includes('IconPlusOutline16')) {
-  note('error', 'TeamComposer.tsx', 'attach button still uses IconPlusOutline16; the "+" is the command-menu glyph in DSH')
+if (/IconPlusOutline/.test(attachBlock)) {
+  note('error', 'TeamComposer.tsx', 'attach button uses the "+" glyph; in the base composer "+" opens the command menu — attach keeps the paperclip')
 }
-if (!attachBlock.includes('IconPaperclipOutline16')) {
-  note('error', 'TeamComposer.tsx', 'attach button does not use IconPaperclipOutline16')
+if (!/IconPaperclipOutline/.test(attachBlock)) {
+  note('error', 'TeamComposer.tsx', 'attach button does not use a paperclip icon (IconPaperclipOutline*, size through the `size` prop)')
 }
 if (!attachBlock.includes('Tooltip')) {
   note('warn', 'TeamComposer.tsx', 'attach button is not wrapped in a Tooltip (Team convention elsewhere)')
@@ -178,11 +181,18 @@ if (!attachBlock.includes('Tooltip')) {
 // ---------------------------------------------------------------------------
 
 const shippedInputBar = join(shippedDir, 'ui-conversation/src/client/skeleton/InputBar.tsx')
+const shippedComposerCss = join(shippedDir, 'ui-conversation/src/client/skeleton/InputBar.module.css')
 const shippedSidebarCss = join(shippedDir, 'ui-sidebar/src/client/SidebarRoot.module.css')
 for (const [label, file, needles] of [
-  ['shipped composer icons', shippedInputBar, ['IconPaperclipOutline16', 'IconPlusOutline16']],
+  // 0.1.7 renamed the icon set — the size left the name and the weight entered
+  // it (`IconPlusOutlineMedium`, `size` prop) — and dropped the composer's own
+  // attach control, so the paperclip no longer appears in the shipped composer.
+  ['shipped composer icon language', shippedInputBar, ['IconPlusOutlineMedium', "t('input.commands')", 'aria-haspopup="listbox"']],
   ['shipped sidebar focus ring', shippedSidebarCss, ['panelRow:focus-visible', 'outline: 2px solid var(--dsw-alias-label-primary)']],
-  ['shipped mode-chip label cut', join(shippedDir, 'ui-conversation/src/client/skeleton/PermissionSelect.module.css'), ['@container (max-width: 460px)']],
+  // The labeled permission chip (`PermissionSelect.module.css`) and its 460px
+  // label cut were deleted in 0.1.7: mode chrome is the 8px `select`, and the
+  // composer narrows its control gaps at 560px instead of hiding a label.
+  ['shipped mode control', shippedComposerCss, ['@container (max-width: 560px)', '.select {', 'max-width: 220px;', 'gap: 8px;']],
 ]) {
   let text
   try {
@@ -441,7 +451,7 @@ const bySeverity = { error: [], warn: [], info: [] }
 for (const finding of findings) bySeverity[finding.severity].push(finding)
 const print = (list) => list.forEach(f => console.log(`  [${f.severity}] ${f.where}: ${f.what}`))
 
-console.log('UI parity audit — Team Client vs DSH 0.1.5 design language')
+console.log('UI parity audit — Team Client vs DSH 0.1.7 design language')
 console.log(`harness checkout: ${harnessDir}`)
 console.log('')
 console.log(`errors (${bySeverity.error.length}):`)
