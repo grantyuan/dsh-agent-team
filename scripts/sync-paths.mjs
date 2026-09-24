@@ -49,6 +49,9 @@ for (const [key, value] of Object.entries(base.compilerOptions.paths)) {
 // loads the zh/en tables from source). The bare-name mapping above is
 // exact-match only, so deep imports need a wildcard mirroring the export.
 harnessSrc['@deepseek-ai/dsh-client-locale/src/*'] = [`../${HARNESS_NAME}/packages/client/locale/src/*`]
+// The v3→v4 migration test reads its source rewrite through this package's
+// same verified "./src/*" export, so its wildcard mirrors that export too.
+harnessSrc['@deepseek-ai/dsh-session-format-v3-to-v4/src/*'] = [`../${HARNESS_NAME}/packages/session/session-format-v3-to-v4/src/*`]
 
 const toTypes = path => path
   .replace(/\/src\/(.+)\.ts$/, '/lib/types/$1.d.ts')
