@@ -11,9 +11,11 @@
 - contentKey 必须随渲染事实变化（当前用 `长度:末位factKey` 组合串）。
 
 ## Composer 与 @mention
-- textarea 自增高（上限 336px），Channel / Thread composer 出现时自动聚焦且不滚动时间线；Enter 发送、Shift+Enter 换行；IME composition 期间 Enter 不触发发送。发送期间输入框保持聚焦但只读，避免重复提交；发送按钮点击不抢走焦点，发送完成后可直接继续输入。未关注成员的首次发送返回确认提醒时，保留草稿与收件人，输入框自动恢复焦点，第二次 Enter 可直接确认发送。composer 卡片沿用 DSH 默认静态边框，不因 `focus-within` 改色。
+- textarea 自增高（上限 336px），Channel / Thread composer 出现时自动聚焦且不滚动时间线；Enter 发送、Shift+Enter 换行；IME composition 期间 Enter 不触发发送。发送期间输入框保持聚焦但只读，避免重复提交；发送按钮点击不抢走焦点，发送完成后可直接继续输入。未关注成员的首次发送返回确认提醒时，保留草稿与收件人，输入框自动恢复焦点，第二次 Enter 可直接确认发送。composer 卡片沿用 DSH 默认静态表面描边（`border: 0` + l2 elevation 发丝线 + `--dsw-elevation-soft`），不因 `focus-within` 改色。
 - mention 弹层向上展开，`role="listbox"`，textarea 以 `aria-controls/aria-activedescendant/aria-expanded` 关联；↑↓ 循环、Tab/Enter 接受候选、Escape 关闭；外点关闭复用 `useDismissOnOutsidePointer`；高度钳制复用 `useAnchoredMaxHeight`（cap 320px）。高亮行始终通过 `scrollIntoView`（`block: 'nearest'`）保持在弹层可视区内，成员多时键盘选中的候选不会被折叠隐藏。Thread 面通过 Human-only 的 `threadObservations` 读取（首屏并行一轮 + 每次 thread 域 wake）获取当前关注者集合，候选排序时关注者排在其余 roster 顺序之前——关注者收到直达投递，非关注者需要两次发送的邀请流程；Channel 面保持 roster 顺序。
 - 接受候选后光标落点精确到插入文本之后；删除提及文本会同步收缩 recipients。
+- 表面语言：mention 弹层画的是共享的半透明菜单 token，因此按 shipped 毛玻璃配方补 `--dsw-menu-backdrop-filter` 与 elevation 描边/阴影，而不是当实底用——0.1.7 把这个 token 改成半透明却没改名，实底弹层会真实地读不清，而存在性检查全绿。配方本身见「设计语言对齐」表。
+- 模式 chip（「作为任务」）：任何宽度都保留可见文字标签，窄于 560px 时改为缩工具组间距（`@container (max-width: 560px)`）而不是藏字；`aria-label`、`title`、`aria-pressed` 照旧承载模式语义。
 - Member Session 输入面即 shipped composer 本身，不做任何修改：Team 不注册任何成员会话的 composer 表面——无接管、无 trigger sources、无 dock 提示条。键盘合同、命令与引用菜单、附件与普通会话完全一致。
 - 收件人提示行：通知集合非空时在草稿与工具栏之间渲染 quiet 提示行（`.notifyRow`，`composerNotify` 文案 + `{ids}` 句柄列表），发送前即可看到"将通知谁"。集合是菜单选中的 recipients 与正文手打 `@Handle` 的并集（`mentionedMemberIds` 从草稿派生，与 Host 同一套大小写不敏感、Unicode 词边界的规则），`@all` 按菜单的展开口径列出全部可投递成员；空集合不占位。派生集合只用于显示，不进发送 payload——Channel 之外的名字在正文里只是散文，作为显式 recipients 会被拒绝。
 - 草稿缓存：draft/recipients 不在页面局部，而是按 `channel:<channelRef>` / `thread:<threadRef>` 键存入每 Client 上下文一份的 `TeamDraftStore`（`drafts.ts`，单一 localStorage 键 `dsh.agent-team.drafts.v1`，写穿持久化、按 savedAt 淘汰最旧 ~50 条）。切换视图或刷新后草稿与收件人原样恢复；发送提交成功即清除对应键，失败保留；Composer 挂载收敛会剔除不再匹配文本/已失效的收件人。Channel 的「作为任务」意图不进入草稿缓存：默认关闭，成功提交后再次复位关闭。

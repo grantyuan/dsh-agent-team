@@ -17,20 +17,21 @@ Team Client 渲染在 shipped DSH 外壳内部，必须讲基础 UI 的设计语
 | --- | --- | --- |
 | 纯图标控件 | 28×28 圆形，`border-radius: 999px`，`corner-shape: round`，透明底色，hover 用 `--dsw-alias-interactive-bg-hover-solid`（composer）/ `--dsw-alias-interactive-bg-hover`（侧栏） | `InputBar.module.css .add`、`SidebarRoot.module.css .iconButton` |
 | 主圆形动作（发送/停止） | 34×34 圆形，`--dsw-alias-button-info-fill`，静态 `#fff` 图形，hover info-hover，disabled `opacity .4` + `cursor: default`，`translateY(-2px)` 座位补偿 | `InputBar.module.css .primary` |
-| 列表行 | 8px 圆角；`aria-current="page"` 叶子行底色；hover `--dsw-alias-interactive-bg-hover` | `SidebarRoot.module.css .panelRow` |
-| 队列/结果行（双行） | 整宽按钮，8px 圆角、左右 8px 内缩，每条事实独占一行、各自省略，hover `--dsw-alias-interactive-bg-hover`，焦点环内缩。字号分级两行：主体 14px/22px primary；来源/元信息 12px/18px tertiary，其中显著片段（频道名）提到 secondary 600；行内 `Task #N` 是 6px、11px/15px 的小胶囊。哪一行承载哪条事实，由该面自己的信息顺序决定。 | `ui-workspace/src/client/rows/Rows.module.css .searchResultRow`（8px 圆角、8px 内缩、整宽按钮、hover 底色、14px 标题 + 12px 元信息） |
+| 列表行 | 12px 圆角；`aria-current="page"` 叶子行底色；hover `--dsw-alias-interactive-bg-hover` | `SidebarRoot.module.css .panelRow`（0.1.7 起 12px） |
+| 队列/结果行（双行） | 整宽按钮，8px 圆角、左右 8px 内缩，每条事实独占一行、各自省略，hover `--dsw-alias-interactive-bg-hover`，焦点环内缩。字号分级两行：主体 14px/22px primary；来源/元信息 12px/18px tertiary，其中显著片段（频道名）提到 secondary 600；行内 `Task #N` 是 6px、11px/15px 的小胶囊。哪一行承载哪条事实，由该面自己的信息顺序决定。**这与「列表行」是两个维度**：0.1.7 只把 `.panelRow` 挪到了 12px。 | `ui-workspace/src/client/rows/Rows.module.css .searchResultRow`（8px 圆角、8px 内缩、整宽按钮、hover 底色、14px 标题 + 12px 元信息） |
 | 胶囊与圆形 | 任何**实质无上限**的圆角——`border-radius: 50%`、`999px`，或等于盒子一半高度的 pill 圆角——都必须在同一条规则内配 `corner-shape: round`。平台把所有圆角面按 `superellipse(1.5)` 弯曲，会把正圆压成方圆、把胶囊两端切平；shipped 的全圆角块 100% 配对，审计对未配对者直接报错。 | `ui-theme/src/styles/corner-shape.css`；`Tag.module.css`、`StateDot.module.css`、`SidebarRoot.module.css .iconButton` |
 | 计数徽标 | 读者看到的每一处计数共用一枚胶囊，声明只有一份，在 `countBadge.module.css .badge`：18px 高、`min-width: 18px`，`border-radius: 999px` 配 `box-sizing: border-box`（单字符保持正圆，不被 padding 撑成椭圆），底色 `--dsw-alias-state-business-primary`、文字 `--dsw-alias-label-primary-foreground`，为 0 隐藏、超过 99 显示 `99+`，数字挂在控件的可访问名（`aria-label`）上，不能只存在于视觉徽标里。 | `Tag.module.css`（只读胶囊语言）；`countBadge.module.css .badge` |
 | 小胶囊 | 6px 圆角，`--dsw-alias-interactive-bg-hover` 底色 | `composer-editor.module.css .reference`（6px 行内引用；shipped 保持透明、hover 才叠 business 色） |
-| 控件间距 | composer/侧栏工具组内兄弟控件间距 12px | `InputBar.module.css .tools/.trailing` |
+| 控件间距 | composer/侧栏工具组内兄弟控件间距 12px；composer 在窄于 560px 时缩到 8px | `InputBar.module.css .tools/.trailing`；composer 自己的 `@container (max-width: 560px)` |
 | 键盘焦点 | 可见焦点环：`outline: 2px solid var(--dsw-alias-label-primary)`；列表行 `outline-offset: -2px`，图标级控件 `1px`。`outline: none` 仅当同一条规则内有**环级替代**时才允许——outline、`box-shadow` 扩散、有边框控件的 `border-color`、文本控件的 `text-decoration`；只有底色/颜色属于 hover 反馈，不构成焦点指示（shipped 对小控件干脆保留 UA 默认环）。环色随控件含义：行与图标控件用 `label-primary`，composer/Thread 等输入邻接控件用 `business-primary`（shipped 把 business 锚定在输入、链接与表格滚动上）。豁免：`aria-activedescendant` listbox 行（mention 弹层）——焦点留在文本输入框，选中态由 `[aria-selected]` 呈现 | `SidebarRoot.module.css .panelRow:focus-visible`；`InputBar.module.css .add`（保留 UA 环，不写 `outline: none`） |
-| 图标语义 | 图形沿用基础 UI 的含义：`+` = 命令菜单、回形针 = 附件、铅笔 = 编辑。**禁止**把 shipped 图形挪作他用。0.1.7 改名了整套图标——尺寸从名字里移出、字重进入名字（`Icon*OutlineRegular`、`Icon*OutlineMedium`、`Icon*OutlineArtwork`），尺寸走 `size` prop——并删掉了 shipped composer 自带的附件控件，所以 Team composer 的回形针是本仓自己的约定 | `InputBar.tsx`（`+` 经 `aria-haspopup="listbox"` 打开命令菜单） |
-| 模式控件（composer） | 改变主操作**语义**的控件（「作为任务」）是**模式**而不是动作：它保留可见文字标签，与附件控件同处左侧分组，形态为 28px 高的 pill（24px 圆角、13/20px 字重 500、透明底色、hover `--dsw-alias-interactive-bg-hover`、`aria-pressed` 打开时 `--dsw-alias-button-primary-fill` + `--dsw-alias-label-primary-foreground`）。文字**只允许**在窄容器分支（`@container (max-width: 460px)`）里隐藏、绝不删除——该分支下 `aria-label`、`title`、`aria-pressed` 仍保证读屏与键盘可用 | `InputBar.module.css .row`（size container）；模式控件现在是 `.select`（28px、8px 圆角、13/20 medium），composer 在 `@container (max-width: 560px)` 下缩控件间距 |
+| 图标语义 | 图形沿用基础 UI 的含义：`+` = 命令菜单、回形针 = 附件、铅笔 = 编辑。**禁止**把 shipped 图形挪作他用。0.1.7 改名了整套图标——尺寸从名字里移出、字重进入名字（`Icon*OutlineRegular`、`Icon*OutlineMedium`、`Icon*OutlineArtwork`），尺寸走 `size` prop——并删掉了 shipped composer 自带的附件控件，所以 Team composer 的回形针是本仓自己的约定。字重按控件选定而非按尺寸：composer 的领起控件在 14px 用 `Medium`（shipped 的 `+` 即如此），而更广的图标集合在 12–14px 仍是 `Regular`——Team composer 自己的附件与模式控件随 composer 走。 | `InputBar.tsx`（`+` 经 `aria-haspopup="listbox"` 打开命令菜单，`IconPlusOutlineMedium size={14}`） |
+| 模式控件（composer） | 改变主操作**语义**的控件（「作为任务」）是**模式**而不是动作：它在任何宽度都保留可见文字标签，与附件控件同处左侧分组，形态为 28px 高的 chip（8px 圆角、13/20px 字重 500、透明底色、hover `--dsw-alias-interactive-bg-hover`、`aria-pressed` 打开时 `--dsw-alias-button-primary-fill` + `--dsw-alias-label-primary-foreground`）。shipped 在 0.1.7 删掉了带字权限 chip 与其 460px 收起标签，因此文字在任何宽度都不再隐藏，composer 改为在窄于 560px 时缩控件间距（`aria-label`、`title`、`aria-pressed` 照旧承载模式语义）。 | `InputBar.module.css .row`（size container）；模式控件现在是 `.select`（28px、8px 圆角、13/20 medium） |
+| 悬浮表面 | 解析为半透明颜色的 surface token（`rgba(…, α < 1)`）必须在同一条规则内配背景模糊，并带上 elevation 描边与阴影——共享的浮卡配方：`background: var(--dsw-specific-menu)`、`backdrop-filter: var(--dsw-menu-backdrop-filter)`、`--dsw-elevation-stroke-color`、`box-shadow: var(--dsw-elevation-prominent)`。0.1.7 把 `--dsw-specific-menu` 改成了半透明**却没有改名**，于是「当成不透明底来画」的弹层会真实地读不清，而所有存在性检查仍是绿的；审计的毛玻璃表面规则负责抓这一条。 | `ui-primitives/Menu.module.css .list` |
+| 卡片表面 | 承载内容的卡面用 elevation 发丝描边，而不是布局边框：`border: 0` + `--dsw-elevation-stroke-color` 取该层的中性色（菜单 l1、composer 卡 l2，两者差一档）+ 该层阴影。用 dark-mode thin 别名画实打实的 1px，在深色下只有应有一半的 alpha，还要占布局。 | `InputBar.module.css .card`（`border: 0`、描边 l2、`--dsw-elevation-soft`）；`Menu.module.css .list`（描边 l1、`--dsw-elevation-prominent`） |
 
-> TODO：DSH 0.1.7 挪动了本表镜像的四处参考，Team 尚未对齐，每处都待决定：
-> - 列表行：shipped `.panelRow` 现在是 12px 圆角，Team 的行仍声明 8px；
-> - 模式控件：带字 chip 与它的 460px 收起标签已被删除，因此 composer 在任何宽度都保留文字、窄于 560px 时把控件间距缩到 8px，而我们的 `asTaskPill` 仍是 24px pill；
-> - composer 卡体：shipped 底部内距是 4px，Team 卡的内距是自己的；
-> - 图标字重：14~16px 的控件与菜单用 `Icon*OutlineMedium`，Team 的 14px composer 图标仍是 `Icon*OutlineRegular`。
+有两处**刻意不跟齐**。它们是裁决而不是漂移，写在这里是为了避免后来者把它「修好」：
 
-一致性裁决按面记录在本文档（见下文各组件合同）：裁决为「接受偏差」时必须在对应小节写明原因——审计脚本报告机械偏差，文档拥有判断。
+- **小胶囊底色**：shipped 的 `.reference` 是行内编辑器引用，平时透明、hover 才上色；Team 的 chip 要在 14px 正文里读成同一个 token，因此继续以共享 hover 底色作为自己的地面。
+- **composer 卡内距**：shipped 卡上 8px、下 4px；Team 的卡多了它没有的行（收件人提示行与附件 chip），因此保留上 10px、下 8px。卡的描边、圆角、底色与阴影与 shipped 完全一致。
+
+按面记录的组件级裁决在 [components.md](components.md)；审计脚本报告机械漂移，判断由这些文档拥有。

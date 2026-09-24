@@ -4,6 +4,8 @@ All notable changes to this project are documented in this file. The format foll
 
 ## [Unreleased]
 
+- The `@mention` menu in the composer is readable again: DSH 0.1.7 made the shared menu surface translucent, so the suggestion list now frosts what is behind it — blur, hairline stroke, and the floating shadow — instead of letting the conversation bleed through the names and the highlighted row.
+- The Team Client re-speaks DSH 0.1.7's surface language across the board: sidebar rows and the Workspace selector take the new 12px radius, the composer card is stroked by the same hairline and soft elevation as DSH's own card, the as-task mode reads as an 8px chip whose word never disappears on a narrow composer (the toolbar narrows its gaps instead), and the composer's attach and mode icons take the weight DSH gives its own controls.
 - Upgrades carry your profile across: the display name and avatar saved under the old settings section are adopted into the Team Host row on the first boot after upgrading — nothing to re-enter, and anything you already re-entered wins.
 - The shipped Plugins panel entry stands down in Team mode: the sidebar's global panel rail addresses the profile rather than the Team, so it hides while Team mode stands and returns the moment you leave — ordinary conversations keep the entry, and the browser test pins both sides.
 - Long messages read as documents instead of a wall: a body past the 600-character fold — the same deterministic rule that folds it — renders on a reading rhythm (16px block gaps, 6px list items, 24px lines, section-sized headings), while short chat keeps its dense grid. Message text at last follows the Settings content size too (`--dsh-content-font-size`), so raising it grows Team messages with the rest of DSH.

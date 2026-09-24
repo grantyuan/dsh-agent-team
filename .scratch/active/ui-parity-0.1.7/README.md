@@ -2,9 +2,9 @@
 
 ## 状态
 
-- **状态**：调研完成，等 Human 选定落地范围（2026-09-24）。
+- **状态**：A 类已交付（`9ba332a9`）；B 类由 Human 13:49 授权 Iris 自行决定，已全部落地待验收（2026-09-24）。
 - **最后核对**：2026-09-24 13:33~13:50，harness checkout `/home/yu/projects/deepseek-harness`，`git describe` = `dsh-v0.1.7-rc.1`（对照基线 = `dsh-v0.1.5-rc.2`，即我们文档里那条 0.1.5 语言）。
-- **当前前沿**：Iris 已产出「shipped 0.1.5→0.1.7 变更 × 我们的现状」对照表与三类清单（A 机械再基线 / B 可见改动待拍 / C 机会项）；**本轮未改任何代码**。下一步等 Human 从 B、C 里挑要做的，A 可直接开工。
+- **当前前沿**：Human 13:49「你自己去决定优化」+ 报「composer 输入 @ 的 mention 栏背景看不清」。Iris 判定 B1/B2/B3/B4 落地（B5 记豁免），并新增两条同源漂移：mention 弹层毛玻璃配方、composer 卡 elevation 描边；`scripts/audit-ui-parity.mjs` 新增 §12 毛玻璃表面规则。C1 未开工。
 - **完成条件**：`scripts/audit-ui-parity.mjs` 与 `docs/frontend-design/principles-and-language{,.zh}.md` 重新锚定到 0.1.7（不再引用已删除的 shipped 文件）；被选中的可见改动落地并通过 `audit-ui-parity` exit 0 + `npm run test:browser`（1440×960 / 390×844）。
 - **正式文档出口**：`docs/frontend-design/principles-and-language.md`（+ `.zh.md`，设计语言表的唯一权威）、`scripts/audit-ui-parity.mjs`（表的可执行镜像）；若机会项落地再动 `docs/frontend-design/sidebar-browser.md` 与 `CHANGELOG.md`。
 
@@ -60,10 +60,26 @@ Human 13:32（thread:381599ed）：「本次升级到0.1.7后ui也变化了不�
 4. **14px 图标换 Medium**：composer 的 attach/as-task/send 等 14px 控件图标（shipped 同尺寸控件用 Medium）。
 5. chip 填充：跟随 shipped 改透明 business？还是保留我们的 `interactive-bg-hover` 底（在白底卡片上更像可点的 chip）——这条是判断题，需要 Human 或我给出对比证据。
 
+**B 落地结果（2026-09-24，Human 13:49 授权自行决定）**
+
+- B1 列表行 12px：**落地**——`sidebar.module.css` 7 处（workspaceTrigger / inboxCard / channelRow / channelSelect / agentRow / agentSelect / agentSelect[aria-current]）。**`inbox.module.css .row` 特意不动**：它是「队列/结果行」维度，shipped `.searchResultRow` 在 0.1.7 仍是 8px，只有 `.panelRow` 挪到了 12px。
+- B2 as-task：**落地**为 8px chip（跟 `.select`），并按 B3 保留文字。
+- B3 窄栏：**落地**——460px 隐藏标签 → `@container (max-width: 560px)` 缩工具组间距，模式文字任何宽度都保留。审计 §10 从「必须有 460px 标签 cut」改成「任何宽度都不得隐藏文字 + 必须有 560px 缩 gap 分支」。
+- B4 图标重量：**落地**——composer 的 attach 与 as-task 换 `Icon*OutlineMedium size={14}`。核对后收窄了口径：shipped 14px 图标里 `Regular` 仍是多数（84 处），`Medium` 用在领起控件（composer `+`、侧栏 New chat、关闭钮）；所以我们跟着 **composer 内部**的约定走，而非「14~16px 一律 Medium」。send 键未动（它本来就是 `Regular`，且 shipped 未改）。
+- B5 chip 填充：**记豁免**——保留 `interactive-bg-hover` 底，理由写进 `docs/frontend-design/principles-and-language{,.zh}.md` 的「刻意不跟齐」两条之一。
+- **同源两条新增漂移（Human 报的 bug 顺藤摸出来的）**：① mention 弹层把 0.1.7 的半透明 `--dsw-specific-menu` 当实底用 → 抄 shipped 毛玻璃配方（`--dsw-menu-backdrop-filter` + elevation 描边/阴影），**这就是 Human 看到的「看不清」**；② composer 卡用 1px `border-l2-darkmode-thin` + `shadow-lv2` → 改 shipped 的 `border: 0` + l2 elevation 发丝线 + `--dsw-elevation-soft`（深色下原来的 1px 只有应有 alpha 的一半）。审计新增 §12「毛玻璃表面」规则把 ① 这类「token 还在、值变半透明」变成可机械检测的维度（`SURFACE_TOKENS` 白名单 + alpha 判定，交互态/骨架/分隔线不在内）。composer 卡的**内距**保留我们自己的 10px/8px，同 B5 记豁免。
+- **改窄栏分支时踩到的坑（审计新增 §14 就是它）**：`container-type: inline-size` 原先声明在 `.toolbar` 自己身上，而 `@container (max-width: 560px) { .toolbar { gap: 8px } }` 要改的正是这个容器元素——**元素永远不回答关于自己的容器查询**，所以这条分支是死代码，任何宽度都不会生效，而它读起来完全像一条能用的窄栏分支。已把容器移到 `.card`（shipped 也是把容器放在行、查它内部的组），并在审计里加 §14：某类声明了 `container-type` 又出现在同文件 `@container` 块的目标选择器里 → error。双向验证过（把它移回 `.toolbar` → 精确报出，还原字节一致）。
+- **e2e 同步**（`scripts/team-ui.e2e.ts`）：旧的「390 下 `asTaskLabel` 必须 `display: none`」断言按新合同改成「两个宽度文字都在 + 窄栏 toolbar gap = 8px / 宽栏 12px」；另加两条：mention 弹层的 `backdrop-filter` 含 `blur` 且底色是 `rgba(...)`（把 Human 报的那条钉进浏览器门禁），以及 composer 卡 `borderColor + boxShadow` 在 focus 前后不变（描边从 border 换成 elevation 发丝线后，这条断言改比 boxShadow 才有意义）。
+- **本轮门禁结果**：`audit-ui-parity` exit 0（0 error / 0 warn）、client vitest 205/205、typecheck 0、lint 0 error、check:docs OK、`npm run test:browser` 4/4（1440×960 + 390×844，含上述新断言），截图人工看过两个宽度。
+
 ### C. 机会项（新能力，非漂移）
 
 1. **`sidebar.toggle.badge`**（0.1.7 新槽：`kind: 'single'`、`scope: 'root'`、「折叠态展开按钮里的非交互提示」）：可以把 Team Inbox 未读数挂到**折叠栏**上——现在折叠态看不到任何 Team 未读。候选做法：Team Client 往这个槽注入一个纯展示标记，由既有 Inbox projection 驱动。需要先确认该槽的 owner/scope 语义与折叠态是否真渲染。
 2. 0.1.7 会话侧重构（`ConversationHeader/Content/MainPanel/DefaultConversationViews`、可拖拽宽度 `ConversationWidthControls`（localStorage `dsh.conversation.contentWidth`，下限 640）、`TodoPanel`、`ContextMeter` 改动、新增 group registry/store、`contract/queue.ts` 删除、`context-provenance.ts`→`context-producer.ts`）：Team 模式下我们把主面板换成自己的 Thread/Channel 页，暂**不跟进**；等哪天真要在 Team 里用 shipped 会话组件再评估。
+
+**C 状态（2026-09-24）**：C1 `sidebar.toggle.badge` 仍未开工（本轮先把 Human 点名的可读性问题与 B 类清完）；C2 维持不跟进。
+
+**D 类观察（量过、本轮刻意不做）**：我们客户端 CSS 里还有 6 处 `border: 1px solid var(--dsw-alias-border-*)`，而 shipped 0.1.7 画描边一律走 `0.5px` 或 elevation 发丝线（`border: 0.5px solid var(--dsw-alias-border-l2)` 见 `AccountSection.module.css`、`AttachmentRail.module.css` 等），我们包内 0.5px 用法为 0 处。composer 卡已随本轮改成发丝线；其余 5 处（含 `.workspaceTrigger`、`thread .newUpdates`）属于「同一类但会一次动到多个面」的改动，且 0.5px 在非 retina 上的渲染还要实测，留给下一轮单独做。
 
 ## 验证命令
 

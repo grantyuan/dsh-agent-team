@@ -1,7 +1,7 @@
 import { useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } from 'react'
 import type { ChangeEvent, ClipboardEvent, KeyboardEvent } from 'react'
 import type { AgentTeamClientMemberStatus, AgentTeamMemberId } from '@wowyuarm/dsh-agent-team/types'
-import { IconChecklistOutlineRegular, IconPaperclipOutlineRegular, IconSendOutlineRegular, Tooltip, useAnchoredMaxHeight, useDismissOnOutsidePointer } from '@deepseek-ai/dsh-client-ui-primitives'
+import { IconChecklistOutlineMedium, IconPaperclipOutlineMedium, IconSendOutlineRegular, Tooltip, useAnchoredMaxHeight, useDismissOnOutsidePointer } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { TeamConversationProps } from './slots.ts'
 import type { TeamDraftKey, TeamDraftStore } from './drafts.ts'
 import { TeamPresenceDot } from './TeamPresenceDot.tsx'
@@ -367,7 +367,7 @@ export function TeamComposer({ members, followerMemberIds, drafts, draftKey, pen
             <Tooltip label={t('attachFiles')} side="top" delayMs={500}>
               <button type="button" className={css.attachButton} aria-label={t('attachFiles')}
                 disabled={pending} onClick={() => { fileInputRef.current?.click() }}>
-                <IconPaperclipOutlineRegular size={14} />
+                <IconPaperclipOutlineMedium size={14} />
               </button>
             </Tooltip>
           </>
@@ -382,7 +382,7 @@ export function TeamComposer({ members, followerMemberIds, drafts, draftKey, pen
             disabled={pending}
             onClick={() => { onAsTaskChange(asTask !== true) }}
           >
-            <IconChecklistOutlineRegular size={14} />
+            <IconChecklistOutlineMedium size={14} />
             <span className={css.asTaskLabel}>{t('asTask')}</span>
           </button>
         )}

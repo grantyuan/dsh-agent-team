@@ -9,7 +9,7 @@ Browser storage retains Team mode, Workspace, the last Channel/Thread location, 
 
 Channel and Thread pages are symmetric. Both subscribe to workspace changes through the shared abortable `TeamChangeStream`; every opening or reconnection baseline requests a catch-up read, followed by matching streamed invalidations. Successful Channel refreshes clear load errors without clearing unrelated action errors. Channel top-level and Thread replies are idempotent by request ID. The Channel 「作为任务」 control is a default-off native pressed control, sends explicit taskless intent unless selected, and resets off after success.
 
-It sits beside the attach control as the labeled mode pill of the language table above, keeping its word until the composer card is narrower than 460px.
+It sits beside the attach control as the labeled mode chip of the language table above, keeping its word at every width — the composer narrows its control gaps below 560px instead of dropping the label.
 
 ## Typography and identity
 | Element | Specification |

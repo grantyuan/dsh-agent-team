@@ -12,11 +12,13 @@ The textarea grows to 336px, autofocuses without moving the timeline, sends on E
 
 The mention popup is an upward `role="listbox"` associated through `aria-controls`, `aria-activedescendant`, and `aria-expanded`; arrows cycle, Tab/Enter accept, Escape closes, and outside dismissal/max height use public hooks. The highlighted row is kept inside the scrollable popup (`scrollIntoView` with `block: 'nearest'`), so long rosters never hide the keyboard selection.
 
+The popup paints the shared translucent menu surface, so it takes the shipped frosted recipe instead of an opaque fill: the menu token under `--dsw-menu-backdrop-filter`, with the elevation stroke and prominent shadow. DSH 0.1.7 made that token translucent without renaming it, so an opaque popup over the conversation stopped reading while every existence check stayed green. The composer card follows the same 0.1.7 surface language: no layout border, an l2 elevation hairline, and the soft elevation tier.
+
 On Thread surfaces the popup loads the current follower set through the Human-only `threadObservations` read (first paint round plus every thread-scope wake) and ranks followers above the remaining roster-order candidates, because a follower mention delivers directly while a non-follower needs the two-send invitation; Channel surfaces keep plain roster order. Accepted text places the caret precisely; deleting mention text shrinks recipients.
 
 A quiet recipient notice shows who will be notified: the picked recipients unioned with the `@Handle` names typed into the body (`mentionedMemberIds`, matched on the Host's own case-insensitive word boundaries), with `@all` listing the menu's expansion. That derived set is display-only and never travels as explicit recipients, where a name outside the Channel would be a rejected target instead of the prose the Host reads. Drafts and recipients are stored per Channel/Thread in the bounded `TeamDraftStore`; successful sends clear them and failures preserve them.
 
-The 「作为任务」 intent is not persisted and resets off after success.
+The 「作为任务」 intent is not persisted and resets off after success. The mode chip keeps its word label at every width and narrows the toolbar gap below 560px rather than hiding the word.
 
 Taskless Thread promotion is Human-only, durable, and non-optimistic. On success reread Thread and supplemental Channel/Member projections; on unread/stale fence errors preserve Host error and reread relevant facts.
 

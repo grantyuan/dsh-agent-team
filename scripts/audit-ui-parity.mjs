@@ -65,6 +65,32 @@ function collectRules(css) {
   }))
 }
 
+// Nested at-rule blocks (`@container`, `@media`) carry narrow-width values of
+// their own — the composer's 560px branch narrows control gaps to 8px — so the
+// flat rule scanner must not read them as the base rhythm. An at-rule that is
+// never closed at column 0 would otherwise swallow the rest of the file in
+// silence, so an unbalanced block is reported instead (once per file: several
+// later sections run the same strip over the same sheet).
+const unclosedAtRules = new Set()
+
+function stripNestedAtRules(css, file) {
+  const kept = []
+  let depth = 0
+  for (const line of css.split('\n')) {
+    if (depth === 0) {
+      if (/^@(container|media|supports)\b/.test(line)) { depth = 1; continue }
+      kept.push(line)
+      continue
+    }
+    if (line.startsWith('}')) depth = 0
+  }
+  if (depth !== 0 && !unclosedAtRules.has(file)) {
+    unclosedAtRules.add(file)
+    note('error', file, 'an unclosed @container/@media/@supports block hides every rule after it from the flat scan; close it at column 0')
+  }
+  return kept.join('\n')
+}
+
 for (const file of readdirSync(clientDir).filter(name => name.endsWith('.module.css'))) {
   const css = readFileSync(join(clientDir, file), 'utf8')
   const rules = collectRules(css)
@@ -144,7 +170,7 @@ for (const file of readdirSync(clientDir).filter(name => name.endsWith('.module.
 // ---------------------------------------------------------------------------
 
 for (const file of ['composer.module.css', 'sidebar.module.css']) {
-  const css = readFileSync(join(clientDir, file), 'utf8')
+  const css = stripNestedAtRules(readFileSync(join(clientDir, file), 'utf8'), file)
   for (const rule of collectRules(css)) {
     if (!/\.(toolbar|trailing|tools|modes|row)\b/.test(rule.selector)) continue
     const gap = rule.body.match(/gap\s*:\s*(\d+)px/)
@@ -270,14 +296,14 @@ if (shippedPrimitives.size === 0) {
 
 const GEOMETRY = [
   ['composer.module.css', '.attachButton', [['height', '28px'], ['width', '28px'], ['border-radius', '999px']], 'icon-only control is 28×28, radius 999px'],
-  ['composer.module.css', '.asTaskPill', [['height', '28px'], ['border-radius', '24px']], 'mode pill keeps the shipped chip geometry'],
+  ['composer.module.css', '.asTaskPill', [['height', '28px'], ['border-radius', '8px']], 'the mode chip keeps the shipped 0.1.7 mode-chrome radius'],
   ['composer.module.css', '.sendButton', [['height', '34px'], ['width', '34px'], ['border-radius', '999px'], ['transform', 'translateY(-2px)']], 'primary round action is 34×34 with the -2px seat compensation'],
-  ['sidebar.module.css', '.channelRow', [['border-radius', '8px']], 'list row radius is 8px'],
-  ['sidebar.module.css', '.agentRow', [['border-radius', '8px']], 'list row radius is 8px'],
-  ['sidebar.module.css', '.workspaceTrigger', [['border-radius', '8px'], ['min-height', '34px']], 'the Workspace selector keeps the sidebar row geometry: 8px radius, 34px line'],
-  ['sidebar.module.css', '.inboxCard', [['border-radius', '8px'], ['height', '34px']], 'the Inbox entry is a sidebar row: 8px radius, 34px height'],
+  ['sidebar.module.css', '.channelRow', [['border-radius', '12px']], 'list row radius is 12px (shipped .panelRow moved 8px to 12px in 0.1.7)'],
+  ['sidebar.module.css', '.agentRow', [['border-radius', '12px']], 'list row radius is 12px (shipped .panelRow moved 8px to 12px in 0.1.7)'],
+  ['sidebar.module.css', '.workspaceTrigger', [['border-radius', '12px'], ['min-height', '34px']], 'the Workspace selector keeps the sidebar row geometry: 12px radius, 34px line'],
+  ['sidebar.module.css', '.inboxCard', [['border-radius', '12px'], ['height', '34px']], 'the Inbox entry is a sidebar row: 12px radius, 34px height'],
   ['countBadge.module.css', '.badge', [['height', '18px'], ['min-width', '18px'], ['border-radius', '999px'], ['box-sizing', 'border-box'], ['line-height', '18px'], ['flex', 'none']], 'every count is one 18px capsule in one place; border-box keeps one digit a circle instead of a padded oval, the line box is the capsule\'s own height so a surface inheriting `normal` cannot move the digit, and `flex: none` keeps a squeezed row from shrinking it'],
-  ['inbox.module.css', '.row', [['border-radius', '8px']], 'the mention queue row shares the shipped 8px list-row radius'],
+  ['inbox.module.css', '.row', [['border-radius', '8px']], 'the mention queue row is the two-line result-row language, not a sidebar list row: shipped .searchResultRow stays at 8px in 0.1.7'],
   ['inbox.module.css', '.rowTask', [['border-radius', '6px']], 'the Task marker on a queue row is a 6px chip'],
   ['composer.module.css', '.fileChip', [['border-radius', '6px']], 'chip radius is 6px'],
   ['conversation.module.css', '.attachmentChip', [['border-radius', '6px']], 'chip radius is 6px'],
@@ -334,10 +360,12 @@ function walkFiles(dir, out = []) {
 }
 
 function collectShippedTokens() {
-  const tokens = new Set()
+  const tokens = new Map()
   for (const file of walkFiles(join(shippedDir, 'ui-theme/src'))) {
-    for (const match of readFileSync(file, 'utf8').matchAll(/--dsw-[\w-]+:/g)) {
-      tokens.add(match[0].slice(0, -1))
+    for (const match of readFileSync(file, 'utf8').matchAll(/(--dsw-[\w-]+):\s*([^;]+)/g)) {
+      const [, name, value] = match
+      if (!tokens.has(name)) tokens.set(name, new Set())
+      tokens.get(name).add(value.trim())
     }
   }
   return tokens
@@ -365,13 +393,15 @@ if (shippedTokens.size === 0) {
 
 // ---------------------------------------------------------------------------
 // 10. Mode control language: as-task is a mode (it changes what Send means),
-//     not an action. A mode keeps a visible word label and may only drop that
-//     word behind an explicit narrow-container branch — the shipped permission
-//     chip's own cut. Reducing a mode to a bare glyph loses its state to a
-//     picture nobody agreed on, and a hover tooltip is not a label on touch.
+//     not an action, so it keeps a visible word label at every width.
+//     Reducing a mode to a bare glyph loses its state to a picture nobody
+//     agreed on, and a hover tooltip is not a label on touch. DSH 0.1.7 deleted
+//     the labeled permission chip and with it the 460px label cut: the base
+//     composer now keeps every mode's word and narrows its control gaps to 8px
+//     below 560px, which is the branch this check requires instead.
 // ---------------------------------------------------------------------------
 
-const MODE_LABEL_CUT = 460
+const MODE_NARROW_WIDTH = 560
 const composerCss = readFileSync(join(clientDir, 'composer.module.css'), 'utf8')
 const asTaskPill = composer.match(/css\.asTaskPill[\s\S]{0,600}?<\/button>/)?.[0] ?? ''
 if (asTaskPill === '') {
@@ -389,14 +419,17 @@ const labelRule = collectRules(composerCss).find(rule => rule.selector.replace(/
 if (labelRule === undefined) {
   note('error', 'composer.module.css .asTaskLabel', 'the mode label class is gone; a mode keeps a visible word')
 } else if (/display\s*:\s*none|visibility\s*:\s*hidden/.test(labelRule.body)) {
-  note('error', 'composer.module.css .asTaskLabel', 'the mode label is hidden unconditionally; hide it only inside the narrow-container branch')
+  note('error', 'composer.module.css .asTaskLabel', 'the mode label is hidden; a mode keeps its word at every width')
+}
+if (/\.asTaskLabel[^{}]*\{[^{}]*?(?:display\s*:\s*none|visibility\s*:\s*hidden)/.test(composerCss)) {
+  note('error', 'composer.module.css', 'a rule still hides the mode label; 0.1.7 keeps every mode word and narrows the control gaps instead')
 }
 
-const labelCut = composerCss.match(/@container\s*\(max-width:\s*(\d+)px\)\s*\{[\s\S]*?\.asTaskPill\s+\.asTaskLabel\s*\{[\s\S]*?display\s*:\s*none/)
-if (labelCut === null) {
-  note('error', 'composer.module.css', 'the as-task pill has no narrow-container label cut; the word may only be dropped behind an explicit @container branch')
-} else if (Number(labelCut[1]) !== MODE_LABEL_CUT) {
-  note('warn', 'composer.module.css', `as-task label cut at ${labelCut[1]}px (shipped cut: ${MODE_LABEL_CUT}px)`)
+const narrowBranch = composerCss.match(/@container\s*\(max-width:\s*(\d+)px\)\s*\{[\s\S]*?gap\s*:\s*8px/)
+if (narrowBranch === null) {
+  note('error', 'composer.module.css', 'no narrow-container branch narrowing the control gaps to 8px (the shipped composer does this below 560px)')
+} else if (Number(narrowBranch[1]) !== MODE_NARROW_WIDTH) {
+  note('warn', 'composer.module.css', `control gaps narrow at ${narrowBranch[1]}px (shipped: ${MODE_NARROW_WIDTH}px)`)
 }
 
 // ---------------------------------------------------------------------------
@@ -425,7 +458,57 @@ for (const file of readdirSync(clientDir).filter(name => name.endsWith('.module.
 }
 
 // ---------------------------------------------------------------------------
-// 12. Popup roles: a trigger that opens the shared Menu renders `role="menu"`
+// 12. Frosted surfaces: a token whose whole purpose is a floating surface must
+//     pair its translucency with the menu backdrop blur
+//     (`ui-primitives Menu.module.css`: `--dsw-specific-menu` +
+//     `--dsw-menu-backdrop-filter` + the elevation stroke and shadow).
+//     DSH 0.1.7 turned `--dsw-specific-menu` from an opaque layer token into
+//     `rgba(…, 0.5)`, which silently made an opaque popup unreadable while
+//     every existence check stayed green — a value change, not a rename.
+//     Only surface tokens are checked: interaction fills, skeletons and
+//     dividers are translucent by design and shipped leaves them unblurred.
+// ---------------------------------------------------------------------------
+
+const SURFACE_TOKENS = new Set([
+  '--dsw-specific-menu',
+  '--dsw-specific-input-major',
+  '--dsw-specific-input-minor',
+  '--dsw-specific-panel',
+  '--dsw-specific-selector',
+])
+
+function resolveTokenValue(value, depth = 0) {
+  const reference = value.match(/^var\((--dsw-[\w-]+)\)$/)
+  if (reference === null || depth > 8) return value
+  const values = shippedTokens.get(reference[1])
+  if (values === undefined || values.size !== 1) return value
+  return resolveTokenValue([...values][0], depth + 1)
+}
+
+function isTranslucentToken(token) {
+  const values = shippedTokens.get(token)
+  if (values === undefined) return false
+  let seen = false
+  for (const raw of values) {
+    if (!/^rgba\([^)]*,\s*0?\.\d+\)$/.test(resolveTokenValue(raw))) return false
+    seen = true
+  }
+  return seen
+}
+
+for (const file of readdirSync(clientDir).filter(name => name.endsWith('.module.css'))) {
+  const css = readFileSync(join(clientDir, file), 'utf8')
+  for (const rule of collectRules(stripNestedAtRules(css, file))) {
+    const bare = rule.selector.replace(/^[\s\S]*\*\//, '').trim()
+    const surface = rule.body.match(/background(?:-color)?\s*:\s*var\((--dsw-[\w-]+)/)
+    if (surface === null || !SURFACE_TOKENS.has(surface[1]) || !isTranslucentToken(surface[1])) continue
+    if (/backdrop-filter\s*:/.test(rule.body)) continue
+    note('error', `${file} ${bare}`, `paints the translucent surface token '${surface[1]}' without a backdrop blur; shipped pairs a frosted surface with var(--dsw-menu-backdrop-filter)`)
+  }
+}
+
+// ---------------------------------------------------------------------------
+// 13. Popup roles: a trigger that opens the shared Menu renders `role="menu"`
 //     with `role="menuitem"` rows — the primitive owns that markup — so a
 //     trigger announcing `aria-haspopup="listbox"` promises the reader a popup
 //     they will never get, and a screen reader voices the wrong control class.
@@ -440,6 +523,38 @@ for (const file of readdirSync(clientDir).filter(name => name.endsWith('.tsx')))
   for (const match of source.matchAll(/aria-haspopup="listbox"/g)) {
     const line = source.slice(0, match.index).split('\n').length
     note('error', `${file}:${line}`, 'aria-haspopup="listbox" on a trigger whose popup is the shared Menu (role="menu", menuitem rows); declare aria-haspopup="menu"')
+  }
+}
+
+// ---------------------------------------------------------------------------
+// 14. Container queries: a `@container` block restyles descendants of the box
+//     that declares `container-type` — an element never answers a query about
+//     itself. A rule whose target is that container class is therefore dead CSS
+//     that reads exactly like a working narrow-width branch, and it silently
+//     keeps the wide layout at every width. Shipped declares its container on
+//     the composer row and queries the group inside it; this check keeps the
+//     same shape.
+// ---------------------------------------------------------------------------
+
+for (const file of readdirSync(clientDir).filter(name => name.endsWith('.module.css'))) {
+  const css = readFileSync(join(clientDir, file), 'utf8')
+  const containers = new Set()
+  for (const rule of collectRules(css)) {
+    if (!/container-type\s*:/.test(rule.body)) continue
+    for (const match of rule.selector.matchAll(/\.([\w-]+)/g)) containers.add(match[1])
+  }
+  if (containers.size === 0) continue
+  const lines = css.split('\n')
+  for (let index = 0; index < lines.length; index += 1) {
+    if (!/^@container\b/.test(lines[index])) continue
+    for (let inner = index + 1; inner < lines.length && !lines[inner].startsWith('}'); inner += 1) {
+      const selector = lines[inner].match(/^\s*([^{}]*?)\s*\{/)
+      if (selector === null) continue
+      for (const match of selector[1].matchAll(/\.([\w-]+)/g)) {
+        if (!containers.has(match[1])) continue
+        note('error', `${file} ${selector[1].trim()}`, 'restyles the container element itself inside its own @container block; a query only answers for descendants, so this branch never applies')
+      }
+    }
   }
 }
 
@@ -463,5 +578,5 @@ console.log('')
 console.log(`info (${bySeverity.info.length}):`)
 print(bySeverity.info)
 console.log('')
-if (bySeverity.error.length === 0) console.log('No mechanical language violations. Design judgment still lives in docs/frontend-design/README.md.')
+if (bySeverity.error.length === 0) console.log('No mechanical language violations. Design judgment still lives in docs/frontend-design/principles-and-language.md.')
 process.exit(bySeverity.error.length === 0 ? 0 : 1)

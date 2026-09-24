@@ -53,7 +53,7 @@
   align-items: center;
   background: var(--dsw-alias-bg-layer-1);
   border: 1px solid var(--dsw-alias-border-l2);
-  border-radius: 8px;
+  border-radius: 12px;
   box-sizing: border-box;
   color: var(--dsw-alias-label-primary);
   cursor: pointer;
@@ -125,7 +125,7 @@
   align-items: center;
   background: transparent;
   border: 0;
-  border-radius: 8px;
+  border-radius: 12px;
   color: var(--dsw-alias-label-primary);
   cursor: pointer;
   display: flex;
@@ -379,7 +379,7 @@
 
 .channelRow {
   align-items: center;
-  border-radius: 8px;
+  border-radius: 12px;
   color: var(--dsw-alias-label-primary);
   display: flex;
   min-height: 30px;
@@ -389,7 +389,7 @@
   align-items: center;
   background: transparent;
   border: 0;
-  border-radius: 8px;
+  border-radius: 12px;
   box-sizing: border-box;
   color: inherit;
   cursor: pointer;
@@ -416,7 +416,7 @@
 
 .agentRow {
   align-items: center;
-  border-radius: 8px;
+  border-radius: 12px;
   color: var(--dsw-alias-label-primary);
   display: flex;
   min-height: 38px;
@@ -426,7 +426,7 @@
   align-items: center;
   background: transparent;
   border: 0;
-  border-radius: 8px;
+  border-radius: 12px;
   box-sizing: border-box;
   color: inherit;
   cursor: pointer;
@@ -447,7 +447,7 @@
    seat, its card carries the resident fill the workspace overview yields. */
 .agentSelect[aria-current='page'] {
   background: var(--dsw-alias-interactive-bg-hover);
-  border-radius: 8px;
+  border-radius: 12px;
 }
 /* While any row-level interaction state paints the full-row fill, suppress
    the card's own resident fill so the two never stack into a visible seam. */
