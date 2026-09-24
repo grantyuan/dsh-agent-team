@@ -4,6 +4,7 @@ All notable changes to this project are documented in this file. The format foll
 
 ## [Unreleased]
 
+- One radius per surface role, and every surface on the same footing: the roster rows shared by the members dialog, the Channel editor and the agent import now carry the same 12px list-row radius as the sidebar rows, and the `@mention` popup takes the shipped menu shape — a 16px surface over 8px rows — so it matches the menus DSH already draws beside it instead of reading as a second menu language.
 - The `@mention` menu in the composer is readable again: DSH 0.1.7 made the shared menu surface translucent, so the suggestion list now frosts what is behind it — blur, hairline stroke, and the floating shadow — instead of letting the conversation bleed through the names and the highlighted row.
 - The Team Client re-speaks DSH 0.1.7's surface language across the board: sidebar rows and the Workspace selector take the new 12px radius, the composer card is stroked by the same hairline and soft elevation as DSH's own card, the as-task mode reads as an 8px chip whose word never disappears on a narrow composer (the toolbar narrows its gaps instead), and the composer's attach and mode icons take the weight DSH gives its own controls.
 - Upgrades carry your profile across: the display name and avatar saved under the old settings section are adopted into the Team Host row on the first boot after upgrading — nothing to re-enter, and anything you already re-entered wins.

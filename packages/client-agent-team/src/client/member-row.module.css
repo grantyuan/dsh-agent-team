@@ -1,11 +1,16 @@
 /* The shared roster row: one Member's identity, presence and Channel
    membership. Every surface that draws a person renders this geometry, so the
    dialog, the Channel editor, the sidebar and the footer roster read as the
-   same list at the same density. */
+   same list at the same density.
+
+   Its 12px radius is the row tier this app shares with the shipped rail
+   (`.panelRow`, `.newSession`): a row that carries a person or an entity is a
+   list row, whichever surface it lands on. The dense two-line queue rows on the
+   Inbox page are the other dimension and keep 8px. */
 
 .row {
   align-items: center;
-  border-radius: 8px;
+  border-radius: 12px;
   display: grid;
   gap: 0 10px;
   /* The action track is declared only when one is rendered: a read-only roster

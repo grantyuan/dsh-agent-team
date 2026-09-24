@@ -84,7 +84,11 @@
    dark) and shipped pairs that translucency with the menu backdrop blur
    (ui-primitives Menu.module.css). Without the blur the conversation behind
    the card bleeds through its own rows and the suggestions stop reading; the
-   elevation stroke plus prominent shadow is the same floating-card recipe. */
+   elevation stroke plus prominent shadow is the same floating-card recipe.
+   That recipe also fixes the shape: the shipped menu surface is 16px with 8px
+   rows (`Menu.module.css .list` and `.item`), and the row menus this app
+   already renders come from that primitive — a hand-rolled popover at another
+   radius would put two menu languages in one app. */
 .mentionMenu {
   position: absolute;
   right: 0;
@@ -95,7 +99,7 @@
   overflow-y: auto;
   padding: 4px;
   border: 0;
-  border-radius: 12px;
+  border-radius: 16px;
   background: var(--dsw-specific-menu);
   backdrop-filter: var(--dsw-menu-backdrop-filter);
   /* --dsw-elevation-prominent lays its hairline stroke from this color. */
@@ -112,7 +116,7 @@
   min-height: 40px;
   padding: 8px 10px;
   border: 0;
-  border-radius: 10px;
+  border-radius: 8px;
   background: transparent;
   color: var(--dsw-alias-label-primary, var(--dsw-alias-label-primary));
   cursor: pointer;

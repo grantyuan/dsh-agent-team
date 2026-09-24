@@ -698,13 +698,23 @@ it('drives the complete opt-in Agent Team journey in real Web', async () => {
   await channelComposer.fill('请协作完成验收 @')
   // DSH 0.1.7's menu surface token is translucent, so the popup must frost what
   // is behind it — the blur plus that translucent fill is what keeps the roster
-  // legible over the conversation, which is the state this pins.
+  // legible over the conversation, which is the state this pins. Its shape is
+  // the shipped menu's too: a 16px surface over 8px rows, the geometry of the
+  // Menu primitive that draws this app's other popovers.
   const menuSurface = await page.getByRole('listbox', { name: '提及成员建议' }).evaluate(element => {
     const style = getComputedStyle(element)
-    return { blur: style.backdropFilter, fill: style.backgroundColor }
+    const firstRow = element.querySelector('[role="option"]')
+    return {
+      blur: style.backdropFilter,
+      fill: style.backgroundColor,
+      radius: style.borderTopLeftRadius,
+      rowRadius: firstRow === null ? '' : getComputedStyle(firstRow).borderTopLeftRadius,
+    }
   })
   expect(menuSurface.blur).toContain('blur')
   expect(menuSurface.fill).toContain('rgba(')
+  expect(menuSurface.radius).toBe('16px')
+  expect(menuSurface.rowRadius).toBe('8px')
   await page.getByRole('option', { name: /@builder/ }).click()
   await page.screenshot({ path: join(UI04_SHOTS, 'mention-menu-selected.png'), fullPage: true })
   const asTaskToggle = page.getByRole('button', { name: '作为任务' })
@@ -925,7 +935,8 @@ it('drives the complete opt-in Agent Team journey in real Web', async () => {
   // description, and one 28px membership action per row. The guards below pin
   // that geometry — a row that silently loses its avatar, lets the copy
   // overflow its grid, or drops the 12/11px type steps is the regression this
-  // surface keeps regrowing.
+  // surface keeps regrowing. The 12px radius is the list-row tier this row
+  // shares with the sidebar rows it sits beside in the same app.
   const rosterRows = await channelMembersDialog.locator('[data-team-member-row]').evaluateAll(rows => rows.map(row => {
     const avatar = row.querySelector('[role="img"]')
     const handle = row.querySelector('strong')
@@ -933,6 +944,7 @@ it('drives the complete opt-in Agent Team journey in real Web', async () => {
     const action = row.querySelector('button')
     return {
       height: Math.round(row.getBoundingClientRect().height),
+      radius: getComputedStyle(row).borderTopLeftRadius,
       avatarWidth: avatar === null ? 0 : Math.round(avatar.getBoundingClientRect().width),
       handle: handle?.textContent ?? '',
       handleSize: handle === null ? undefined : getComputedStyle(handle).fontSize,
@@ -948,6 +960,7 @@ it('drives the complete opt-in Agent Team journey in real Web', async () => {
   for (const row of rosterRows) {
     expect(row.avatarWidth).toBe(24)
     expect(row.height).toBeGreaterThanOrEqual(40)
+    expect(row.radius).toBe('12px')
     expect(row.handle.startsWith('@')).toBe(true)
     expect(row.handleSize).toBe('12px')
     expect(row.handleWeight).toBe('500')

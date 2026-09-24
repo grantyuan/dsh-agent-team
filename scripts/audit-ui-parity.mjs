@@ -290,20 +290,25 @@ if (shippedPrimitives.size === 0) {
 // ---------------------------------------------------------------------------
 // 8. Geometry language: the canonical controls keep the shipped dimensions —
 //    icon-only controls 28×28, the primary round action 34×34 with its -2px
-//    seat compensation, list rows 8px radius, chips 6px radius. A refactor or
-//    a DSH upgrade must not silently move them.
+//    seat compensation, and one radius per surface role: list rows 12px, a menu
+//    surface 16px over its own 8px rows, dense two-line result rows and compact
+//    controls 8px, chips 6px. A refactor or a DSH upgrade must not silently
+//    move them.
 // ---------------------------------------------------------------------------
 
 const GEOMETRY = [
   ['composer.module.css', '.attachButton', [['height', '28px'], ['width', '28px'], ['border-radius', '999px']], 'icon-only control is 28×28, radius 999px'],
   ['composer.module.css', '.asTaskPill', [['height', '28px'], ['border-radius', '8px']], 'the mode chip keeps the shipped 0.1.7 mode-chrome radius'],
   ['composer.module.css', '.sendButton', [['height', '34px'], ['width', '34px'], ['border-radius', '999px'], ['transform', 'translateY(-2px)']], 'primary round action is 34×34 with the -2px seat compensation'],
-  ['sidebar.module.css', '.channelRow', [['border-radius', '12px']], 'list row radius is 12px (shipped .panelRow moved 8px to 12px in 0.1.7)'],
-  ['sidebar.module.css', '.agentRow', [['border-radius', '12px']], 'list row radius is 12px (shipped .panelRow moved 8px to 12px in 0.1.7)'],
+  ['sidebar.module.css', '.channelRow', [['border-radius', '12px']], 'list row radius is 12px; the shipped rail put .panelRow on its .newSession bar\'s 12px in the 0.1.6 line (harness c6b81a75, 2026-09-15), which our 0.1.5-anchored docs only met at the 0.1.7 upgrade'],
+  ['sidebar.module.css', '.agentRow', [['border-radius', '12px']], 'list row radius is 12px, the same tier as .channelRow above'],
   ['sidebar.module.css', '.workspaceTrigger', [['border-radius', '12px'], ['min-height', '34px']], 'the Workspace selector keeps the sidebar row geometry: 12px radius, 34px line'],
   ['sidebar.module.css', '.inboxCard', [['border-radius', '12px'], ['height', '34px']], 'the Inbox entry is a sidebar row: 12px radius, 34px height'],
+  ['member-row.module.css', '.row', [['border-radius', '12px']], 'the shared roster row is a list row wherever it renders: 12px, the rail/settings row tier'],
+  ['composer.module.css', '.mentionMenu', [['border-radius', '16px']], 'the mention popover is the shipped menu surface: 16px, so it matches the Menu primitive this app already renders elsewhere'],
+  ['composer.module.css', '.mentionOption', [['border-radius', '8px']], 'a row inside a menu surface carries the shipped .item radius of 8px'],
   ['countBadge.module.css', '.badge', [['height', '18px'], ['min-width', '18px'], ['border-radius', '999px'], ['box-sizing', 'border-box'], ['line-height', '18px'], ['flex', 'none']], 'every count is one 18px capsule in one place; border-box keeps one digit a circle instead of a padded oval, the line box is the capsule\'s own height so a surface inheriting `normal` cannot move the digit, and `flex: none` keeps a squeezed row from shrinking it'],
-  ['inbox.module.css', '.row', [['border-radius', '8px']], 'the mention queue row is the two-line result-row language, not a sidebar list row: shipped .searchResultRow stays at 8px in 0.1.7'],
+  ['inbox.module.css', '.row', [['border-radius', '8px']], 'the Inbox queue row is the two-line result-row dimension, not the list-row one: shipped .searchResultRow stays at 8px in 0.1.7'],
   ['inbox.module.css', '.rowTask', [['border-radius', '6px']], 'the Task marker on a queue row is a 6px chip'],
   ['composer.module.css', '.fileChip', [['border-radius', '6px']], 'chip radius is 6px'],
   ['conversation.module.css', '.attachmentChip', [['border-radius', '6px']], 'chip radius is 6px'],
