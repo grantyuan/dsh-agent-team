@@ -62,7 +62,13 @@ Composer attachments 是 `$DSH_HOME/agent-team/attachments/v1/<attachmentId>/` �
 
 ## Human profile 与版本脚注
 
-Human 的显示名与头像引用存放在 Host settings namespace `agent-team-human`（user layer）；头像 bytes 存放在持久的 `$DSH_HOME/agent-team/human/v1/` store，从不进入带 TTL 的 attachment cache。 四个 typed Remote 服务设置页：`humanProfile`（名字、头像引用与版本脚注 facts），以及 `putHumanAvatar`/`getHumanAvatar`/`removeHumanAvatar`（只收图片，与 attachments 共用 10 MB 上限；已删除的条目读取时抛错，Client 回退到首字母）。 脚注携带本 Host 实际运行的那份 bundle 的版本（从已安装包自身的 manifest 读取，因此陈述的是 profile 真正装上的那一份，而不是每次发版都得记得改的字符串），以及 repository 链接；当后台检查观察到更新的已发布 release 时，再多一条点名该版号的更新 tip。
+Human 的显示名与头像引用存放在 Team Host row 自身的 Config（settings namespace 即该 row 的 id，user layer）；头像 bytes 存放在持久的 `$DSH_HOME/agent-team/human/v1/` store，从不进入带 TTL 的 attachment cache。
+
+已退役的 `agent-team-human` section 不再是权威：rc.1 的 settings importer 通过一份封闭的内置映射搬运 section，第三方 section 会留在改名后的 legacy document 里。启动时若发现该 row 仍是 pristine（默认名且无头像），就沿用设置页同一条写入路径收养这些 facts，已经重新填过的值优先。
+
+四个 typed Remote 服务设置页：`humanProfile`（名字、头像引用与版本脚注 facts），以及 `putHumanAvatar`/`getHumanAvatar`/`removeHumanAvatar`（只收图片，与 attachments 共用 10 MB 上限；已删除的条目读取时抛错，Client 回退到首字母）。
+
+脚注携带本 Host 实际运行的那份 bundle 的版本（从已安装包自身的 manifest 读取，因此陈述的是 profile 真正装上的那一份，而不是每次发版都得记得改的字符串），以及 repository 链接；当后台检查观察到更新的已发布 release 时，再多一条点名该版号的更新 tip。
 
 检查最多每 12h 询问一次公开 npm `latest` document，后台刷新使 profile 读取永不等待网络，任何失败都落为"无已知更新"，`DSH_AGENT_TEAM_UPDATE_CHECK=0` 时保持关闭。
 

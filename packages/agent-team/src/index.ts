@@ -7,12 +7,15 @@
  */
 
 import { randomUUID } from 'node:crypto'
+import { readFileSync } from 'node:fs'
+import { join } from 'node:path'
 import { isDeepStrictEqual } from 'node:util'
 import { Context, Service, type Volatile } from '@deepseek-ai/cordis'
 import { installModelSelection, type Agent, type AgentHandle, type ModelSelectionRef } from '@deepseek-ai/dsh-agent'
 import { createUserMessage, type UserMessage } from '@deepseek-ai/dsh-llm'
 import type {} from '@deepseek-ai/dsh-agent-default-model'
 import type {} from '@deepseek-ai/dsh-agent-preset-registry'
+import type {} from '@deepseek-ai/dsh-app-boot'
 import { dshHomePath } from '@deepseek-ai/dsh-home-paths'
 import { scopeOf } from '@deepseek-ai/dsh-scope'
 import { Session, SessionId, SessionLogOffset, type SessionEvent } from '@deepseek-ai/dsh-session'
@@ -24,7 +27,7 @@ import type { SettingsPathOp } from '@deepseek-ai/dsh-settings'
 import type { Domain } from '@deepseek-ai/dsh-storage-domain'
 import type { WorkspaceId } from '@deepseek-ai/dsh-workspace'
 import { ATTACHMENT_MAX_BYTES, attachmentPayloadPath, attachmentsRoot, copyPathAttachment, newAttachmentId, readAttachment, sanitizeMediaType, sweepAttachmentCache, validatePathAttachment, writeAttachment } from './attachments.ts'
-import { HUMAN_PROFILE_DEFAULT_NAME, HUMAN_PROFILE_REPO_URL, HUMAN_PROFILE_SETTINGS_NAMESPACE, HUMAN_PROFILE_SETTINGS_SCHEMA, HUMAN_PROFILE_VERSION, assertValidHumanName, normalizeHumanName, type HumanProfileSettings } from './human-profile.ts'
+import { HUMAN_PROFILE_DEFAULT_NAME, HUMAN_PROFILE_REPO_URL, HUMAN_PROFILE_SETTINGS_NAMESPACE, HUMAN_PROFILE_SETTINGS_SCHEMA, HUMAN_PROFILE_VERSION, assertValidHumanName, normalizeHumanName, parseLegacyHumanProfile, planLegacyAdoption, type HumanProfileSettings, type LegacyHumanProfileFields } from './human-profile.ts'
 import { humanAvatarsRoot, readHumanAvatar, removeHumanAvatar, writeHumanAvatar } from './human-avatar.ts'
 import { createHumanUpdateChecker } from './human-update-check.ts'
 import { PressurePolicyCoordinator } from './pressure-policy.ts'
@@ -474,6 +477,8 @@ export default class AgentTeam extends TypertRemoteService {
   })
   private lifecycleTail: Promise<void> = Promise.resolve()
   private accepting = true
+  /** One adoption attempt per boot: the two readiness edges fire once each, and this keeps their attempt single. */
+  private legacyAdoptionStarted = false
   /**
    * Presence wake epoch: Agent running/idle/failure is runtime state with no
    * durable fact behind it, so the presence scope counts those edge wakes in
@@ -509,6 +514,7 @@ export default class AgentTeam extends TypertRemoteService {
     // be — the ledger's runtime @ handle follows every edit.
     this.ctx.inject(['settings'], settingsCtx => {
       settingsCtx.effect(() => settingsCtx.settings.configure({ auto: false }, this.ctx.fiber))
+      this.adoptLegacyHumanProfile()
     })
     this.ctx.on('loader/volatile-update', () => { this.syncHumanHandle() })
   }
@@ -551,6 +557,69 @@ export default class AgentTeam extends TypertRemoteService {
         throw new Error(`human name '${name}' collides with an existing Member handle`)
       }
     }
+  }
+
+  /**
+   * One-time adoption of the profile facts the retired `agent-team-human`
+   * settings section held (see `LEGACY_HUMAN_PROFILE_SECTION` for why the
+   * upstream importer cannot carry them over). The values land in this Host
+   * row's own Config through the same Remote the profile page writes, so the
+   * page, the ledger's @ handle, and every avatar seat follow as after any
+   * edit. Readiness has two one-way edges — the settings service arrives, the
+   * ledger opens — and whichever fires second starts the attempt; only a
+   * pristine profile is adopted, and one attempt per boot is its whole
+   * lifetime, so adoption never loops and never re-writes.
+   */
+  private adoptLegacyHumanProfile(): void {
+    if (this.legacyAdoptionStarted) return
+    if (this.ctx.get('settings') === undefined || this.ledger === undefined) return
+    this.legacyAdoptionStarted = true
+    void this.adoptLegacyHumanProfileNow().catch((error: unknown) => {
+      this.ctx.logger.warn('agent-team: legacy human profile adoption failed: %s', String(error))
+    })
+  }
+
+  /** Carry the first legacy document that still has the section into a pristine profile. */
+  private async adoptLegacyHumanProfileNow(): Promise<void> {
+    // A profile-launched Host always carries the profile context; a Host booted
+    // without one still adopts from the DSH home, which is where a pre-rc.1
+    // install kept the document. Read through `get`: cordis refuses a direct
+    // `ctx.profileContext` for a service this plugin does not declare, and
+    // adoption may not gate the Host on app-boot.
+    const profileHome: string | undefined = this.ctx.get('profileContext')?.home
+    const homes = profileHome === undefined ? [dshHomePath()] : [dshHomePath(), profileHome]
+    const candidates = new Set(homes.flatMap(home => [join(home, 'settings.yaml'), join(home, 'settings.yaml.imported')]))
+    let legacy: LegacyHumanProfileFields | undefined
+    let source: string | undefined
+    for (const candidate of candidates) {
+      let text: string
+      try {
+        text = readFileSync(candidate, 'utf8')
+      } catch {
+        // Absent candidates are the steady state once adoption settles; the
+        // live document is one only because the first boot after the upgrade
+        // can race the importer that renames it.
+        continue
+      }
+      const parsed = parseLegacyHumanProfile(text)
+      if (parsed !== undefined) {
+        legacy = parsed
+        source = candidate
+        break
+      }
+    }
+    if (legacy === undefined || source === undefined) return
+    // The reference is carried only while its bytes still draw: the avatar
+    // store is the authority for whether this avatar exists at all.
+    let avatarRef = legacy.avatarRef
+    if (avatarRef !== undefined && await readHumanAvatar(humanAvatarsRoot(), avatarRef) === undefined) avatarRef = undefined
+    const plan = planLegacyAdoption(this.humanProfile(), {
+      ...(legacy.name === undefined ? {} : { name: legacy.name }),
+      ...(avatarRef === undefined ? {} : { avatarRef }),
+    })
+    if (plan === undefined) return
+    await this.setHumanProfile(plan)
+    this.ctx.logger.info('agent-team: adopted the legacy human profile from %s', source)
   }
 
   /** Open the durable ledger and restore every enabled Member independently. */
@@ -642,6 +711,7 @@ export default class AgentTeam extends TypertRemoteService {
     // the ledger existed; sync once here so @ matching starts from the stored
     // name.
     this.syncHumanHandle()
+    this.adoptLegacyHumanProfile()
     const initialization = await ledger.initialize()
     if (initialization.committed) this.emitCommitted(initialization.value)
     this.startAttachmentGc(ledger)

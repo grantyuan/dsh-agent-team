@@ -1,17 +1,19 @@
-import { mkdtemp, rm, readFile } from 'node:fs/promises'
+import { mkdtemp, rm, readFile, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { Context } from '@deepseek-ai/cordis'
 import Storage from '@deepseek-ai/dsh-storage'
+import SessionProjectionRegistry from '@deepseek-ai/dsh-session-projection'
 import { DomainFacility } from '@deepseek-ai/dsh-storage-domain'
 import type { KvTable } from '@deepseek-ai/dsh-storage-domain'
 import { WorkspaceId } from '@deepseek-ai/dsh-workspace'
 import { MemoryMediaPool, MemoryStorageBackend } from './helpers/memory-backend.ts'
+import AgentTeam from '../src/index.ts'
 import { AgentTeamLedger, AGENT_TEAM_HUMAN_HANDLE, agentTeamHumanActor } from '../src/ledger.ts'
 import { agentTeamDomainSpec } from '../src/spec.ts'
-import { assertValidHumanName, HUMAN_PROFILE_DEFAULT_NAME, HUMAN_PROFILE_VERSION, normalizeHumanName } from '../src/human-profile.ts'
-import { readHumanAvatar, removeHumanAvatar, writeHumanAvatar } from '../src/human-avatar.ts'
+import { assertValidHumanName, HUMAN_PROFILE_DEFAULT_NAME, HUMAN_PROFILE_SETTINGS_NAMESPACE, HUMAN_PROFILE_VERSION, normalizeHumanName, parseLegacyHumanProfile, planLegacyAdoption } from '../src/human-profile.ts'
+import { humanAvatarsRoot, readHumanAvatar, removeHumanAvatar, writeHumanAvatar } from '../src/human-avatar.ts'
 import type { AgentTeamMemberId, AgentTeamOperation, AgentTeamOperationId, AgentTeamRequestId } from '../src/types.ts'
 
 const alpha = WorkspaceId('workspace:alpha')
@@ -114,5 +116,143 @@ describe('bundle version footnote', () => {
     // the 0.1.14 bundle ended up reporting 0.1.13.
     expect(HUMAN_PROFILE_VERSION).not.toBe('unknown')
     expect(HUMAN_PROFILE_VERSION).toBe(manifest.version)
+  })
+})
+
+describe('legacy human profile adoption', () => {
+  const legacyDocument = [
+    'ui-theme:',
+    '  preference: light',
+    'agent-team-human:',
+    '  avatarRef: 8dbafa6d-06a8-4b4b-8a34-1b1f73c99aa0',
+    '  name: YuCreate',
+    '',
+  ].join('\n')
+
+  it('reads the section out of a legacy settings document', () => {
+    expect(parseLegacyHumanProfile(legacyDocument)).toEqual({
+      avatarRef: '8dbafa6d-06a8-4b4b-8a34-1b1f73c99aa0',
+      name: 'YuCreate',
+    })
+  })
+
+  it('treats an unparsable or section-less document as nothing to adopt', () => {
+    expect(parseLegacyHumanProfile('}{')).toBeUndefined()
+    expect(parseLegacyHumanProfile('ui-theme:\n  preference: light')).toBeUndefined()
+    expect(parseLegacyHumanProfile('agent-team-human: not-an-object')).toBeUndefined()
+  })
+
+  it('drops an unusable name but keeps a usable avatar reference', () => {
+    expect(parseLegacyHumanProfile('agent-team-human:\n  name: "   "\n  avatarRef: ref-1')).toEqual({ avatarRef: 'ref-1' })
+  })
+
+  it('returns undefined when no field survives validation', () => {
+    expect(parseLegacyHumanProfile('agent-team-human:\n  name: "   "\n  avatarRef: ""')).toBeUndefined()
+  })
+
+  it('carries both fields into a pristine profile', () => {
+    expect(planLegacyAdoption({ name: HUMAN_PROFILE_DEFAULT_NAME }, { name: 'YuCreate', avatarRef: 'ref-1' }))
+      .toEqual({ name: 'YuCreate', avatarRef: 'ref-1' })
+  })
+
+  it('never writes over a profile the Human already filled', () => {
+    expect(planLegacyAdoption({ name: 'Ada' }, { name: 'YuCreate', avatarRef: 'ref-1' })).toBeUndefined()
+    expect(planLegacyAdoption({ name: HUMAN_PROFILE_DEFAULT_NAME, avatarRef: 'mine' }, { name: 'YuCreate' })).toBeUndefined()
+  })
+
+  it('skips a legacy name that is the default and reports nothing when nothing survives', () => {
+    expect(planLegacyAdoption({ name: HUMAN_PROFILE_DEFAULT_NAME }, { name: 'human', avatarRef: 'ref-1' })).toEqual({ avatarRef: 'ref-1' })
+    expect(planLegacyAdoption({ name: HUMAN_PROFILE_DEFAULT_NAME }, { name: 'human' })).toBeUndefined()
+  })
+})
+
+describe('legacy human profile adoption on boot', () => {
+  const legacyDocument = (avatarRef: string): string => [
+    'ui-theme:',
+    '  preference: light',
+    'agent-team-human:',
+    `  avatarRef: ${avatarRef}`,
+    '  name: YuCreate',
+    '',
+  ].join('\n')
+
+  /** Throwaway DSH home with the environment pointed at it for this test. */
+  async function tempDshHome(): Promise<string> {
+    const home = await mkdtemp(join(tmpdir(), 'agent-team-adoption-'))
+    tempRoots.push(home)
+    const previous = process.env.DSH_HOME
+    process.env.DSH_HOME = home
+    cleanups.push(async () => {
+      if (previous === undefined) delete process.env.DSH_HOME
+      else process.env.DSH_HOME = previous
+    })
+    return home
+  }
+
+  /**
+   * Boot a real Host over that home and record every profile write it makes.
+   * The settings stub is the write surface: adoption has to reach it through
+   * the same namespace and op shape the profile page's Remote uses.
+   */
+  async function bootHost(home: string, config?: { readonly name: string }): Promise<Array<{ readonly namespace: string; readonly ops: unknown }>> {
+    const mutations: Array<{ readonly namespace: string; readonly ops: unknown }> = []
+    const ctx = new Context()
+    await ctx.plugin(Storage)
+    ctx.storage.backend.register('memory', new MemoryStorageBackend(new MemoryMediaPool()))
+    const facility = new DomainFacility(ctx, { backend: 'memory', routes: {} })
+    ctx.storage.mount('domain', facility)
+    ctx.provide('storageDomain', facility)
+    cleanups.push(async () => { await facility.closeAll() })
+    ctx.provide('workspaceRegistry', { get: () => undefined, list: () => [], archiveSession: async () => {} })
+    ctx.provide('agents', { create: async () => { throw new Error('unused') }, resume: async () => { throw new Error('unused') } })
+    ctx.provide('agentDefaultModel', { currentSelection: () => ({ provider: 'mock', model: 'mock' }) })
+    ctx.provide('agentPresets', { mount: async () => { throw new Error('unused') } })
+    ctx.provide('tools', { schemas: () => [] })
+    ctx.provide('sessionPersistence', { list: async () => [] })
+    ctx.provide('settings', {
+      configure: () => () => {},
+      mutate: async (namespace: string, ops: unknown) => { mutations.push({ namespace, ops }) },
+    } as never)
+    await ctx.plugin(SessionProjectionRegistry)
+    const fiber = config === undefined ? await ctx.plugin(AgentTeam) : await ctx.plugin(AgentTeam, config)
+    cleanups.push(async () => { await fiber.dispose() })
+    expect(home).toBe(process.env.DSH_HOME)
+    return mutations
+  }
+
+  it('carries a legacy name and avatar into a pristine Host row', async () => {
+    const home = await tempDshHome()
+    const avatar = await writeHumanAvatar(humanAvatarsRoot(), 'logo.jpg', 'image/jpeg', Buffer.from([0xff, 0xd8, 0xff]))
+    await writeFile(join(home, 'settings.yaml.imported'), legacyDocument(avatar.avatarRef))
+    const mutations = await bootHost(home)
+    await vi.waitFor(() => { expect(mutations).toHaveLength(1) })
+    expect(mutations[0]).toEqual({
+      namespace: HUMAN_PROFILE_SETTINGS_NAMESPACE,
+      ops: [
+        { op: 'set', path: ['name'], value: 'YuCreate' },
+        { op: 'set', path: ['avatarRef'], value: avatar.avatarRef },
+      ],
+    })
+  })
+
+  it('carries the name alone when the referenced avatar bytes are gone', async () => {
+    const home = await tempDshHome()
+    await writeFile(join(home, 'settings.yaml.imported'), legacyDocument('8dbafa6d-06a8-4b4b-8a34-1b1f73c99aa0'))
+    const mutations = await bootHost(home)
+    await vi.waitFor(() => { expect(mutations).toHaveLength(1) })
+    expect(mutations[0]).toEqual({
+      namespace: HUMAN_PROFILE_SETTINGS_NAMESPACE,
+      ops: [{ op: 'set', path: ['name'], value: 'YuCreate' }],
+    })
+  })
+
+  it('leaves a profile the Human already filled alone', async () => {
+    const home = await tempDshHome()
+    await writeFile(join(home, 'settings.yaml.imported'), legacyDocument('ref-1'))
+    const mutations = await bootHost(home, { name: 'Ada' })
+    // Nothing to wait for: the pristine gate rejects before any write is
+    // planned, so a settled boot is the whole evidence.
+    await new Promise(resolve => setTimeout(resolve, 50))
+    expect(mutations).toEqual([])
   })
 })

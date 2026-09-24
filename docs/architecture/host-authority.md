@@ -74,7 +74,11 @@ Garbage collection runs at startup and every 24 hours: referenced uploads older 
 
 ## Human profile and version footnote
 
-The Human's display name and avatar reference live in the Host settings namespace `agent-team-human` (user layer); avatar bytes live in the persistent `$DSH_HOME/agent-team/human/v1/` store, never in the TTL-bound attachment cache. Four typed Remotes serve the settings page: `humanProfile` (name, avatar reference, and version footnote facts) and `putHumanAvatar`/`getHumanAvatar`/`removeHumanAvatar` (images only, 10 MB cap shared with attachments; a removed entry throws and the Client falls back to the initial).
+The Human's display name and avatar reference live in the Team Host row's own Config, in the settings namespace `wowyuarm-agent-team-host` (user layer); avatar bytes live in the persistent `$DSH_HOME/agent-team/human/v1/` store, never in the TTL-bound attachment cache.
+
+The retired `agent-team-human` section is no longer an authority: the rc.1 settings importer carries sections across through a closed built-in mapping, so a third-party section stays behind in the renamed legacy document. A boot that finds the row still pristine — the default name and no avatar — adopts those facts through the same write path the settings page uses, and anything already re-entered wins.
+
+Four typed Remotes serve the settings page: `humanProfile` (name, avatar reference, and version footnote facts) and `putHumanAvatar`/`getHumanAvatar`/`removeHumanAvatar` (images only, 10 MB cap shared with attachments; a removed entry throws and the Client falls back to the initial).
 
 The footnote carries the version of the bundle this Host runs from — read from the installed package's own manifest, so it states what the profile actually installed rather than a string every release must remember to bump — plus the repository link and an update tip naming the newer version once a background check has observed a newer published release. The check asks the public npm `latest` document at most every 12 hours, refreshes in the background so profile reads never wait on the network, settles every failure as "no update known", and stays off while `DSH_AGENT_TEAM_UPDATE_CHECK=0`.
 

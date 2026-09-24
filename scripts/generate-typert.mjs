@@ -46,21 +46,31 @@ try {
   // workspace has one root package, so a clean install never creates it and the
   // stale directory on a long-lived checkout must not be the only reason the
   // build works.
-  const zodSource = join(projectRoot, 'node_modules/zod')
-  if (!existsSync(zodSource)) {
-    throw new Error(
-      `Typert analysis resolves the bundle's 'zod' dependency at '${zodSource}', which is not installed.`
-      + ' Run `corepack pnpm install` at the repository root (never npm install: it breaks the workspace links).',
-    )
+  // LINK one root-install dependency into the temp analysis package: a
+  // symlink on POSIX, a directory junction on Windows, where a real symlink
+  // needs a privilege the runner may not have (link-harness-packages.mjs uses
+  // junctions for the same reason). Either form leaves the package's real path
+  // in this repository's install, OUTSIDE the analysed package, which is what
+  // the analyzer's reachable-files walk assumes.
+  const linkRootDependency = async (name) => {
+    const source = join(projectRoot, 'node_modules', name)
+    if (!existsSync(source)) {
+      throw new Error(
+        `Typert analysis resolves the bundle's '${name}' dependency at '${source}', which is not installed.`
+        + ' Run `corepack pnpm install` at the repository root (never npm install: it breaks the workspace links).',
+      )
+    }
+    const target = join(tempPackage, 'node_modules', name)
+    if (process.platform === 'win32') {
+      await symlink(realpathSync(source), target, 'junction')
+    } else {
+      await symlink(source, target, 'file')
+    }
   }
-  const zodTarget = join(tempPackage, 'node_modules/zod')
-  if (process.platform === 'win32') {
-    // Junction to the resolved directory: no privilege needed, and the entry
-    // still reports zod's real path under this repository's install.
-    await symlink(realpathSync(zodSource), zodTarget, 'junction')
-  } else {
-    await symlink(zodSource, zodTarget, 'file')
-  }
+  await linkRootDependency('zod')
+  // The Host face's second root-install dependency: the legacy settings
+  // document parse rides the same chain, for the same reasons as zod above.
+  await linkRootDependency('yaml')
   // The sibling context-continuity engine is the second external package the
   // Host face imports. The temp package sits inside the harness checkout, so
   // only its own manifest and built declarations travel: copying the checkout
