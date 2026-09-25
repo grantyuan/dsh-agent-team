@@ -497,6 +497,13 @@ export async function runtimeWithTeam(options?: { mode?: 'team'; workspaceId?: s
     $stream: <T,>(options: ConstructorParameters<typeof RemoteStream<T>>[1]) => new RemoteStream(connection, options),
     $mount: async () => async () => {},
   })
+  // rc.2: the shared layout/workspace features require the shortcuts service;
+  // the Team surfaces never register a command, so a no-op double is enough.
+  runtime.ctx.provide('shortcuts', {
+    runtime: 'web',
+    register: () => () => {},
+    catalog: { getSnapshot: () => [], subscribe: () => () => {} },
+  } as never)
   runtime.ctx.provide('connection', { isLoopback: true, generation: { getSnapshot: () => ({}) }, state: { getSnapshot: () => ({}) }, rpc: {}, reconnect: vi.fn(), registerGenerationSource: vi.fn(), start: vi.fn(), stop: vi.fn() })
   await runtime.sessions.add({ id: 'ordinary-session', summary: { title: 'Ordinary', cwd: '/work/alpha' } })
   // The workspace service restores the Human's saved selection at boot; the
