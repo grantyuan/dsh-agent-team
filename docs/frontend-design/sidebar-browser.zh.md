@@ -20,7 +20,9 @@ Workspace 概览是当前页时它携带 `aria-current='page'`，与原先被选
 
 定位高亮单一化（对齐宿主会话树「父静叶亮」的惯例）：任一时刻侧栏只有一行携带 `aria-current='page'` 与 hover 底色——打开频道/Thread 时是频道行，成员会话视图打开时是被选 Agent 卡片（`.agentSelect[aria-current='page']`），否则是工作区选择器（其概览为当前页时）。嵌入的成员会话是唯一能压在「读者仍身处其上的 Team 面」之上的覆盖层——那可能是 Inbox 页，也可能是他打开该 Agent 时所处的频道/Thread——此时高亮归它自己的 Agent 卡片：下层那个面保留原位但不携带高亮，覆盖层关闭后原样取回（Inbox 入口同样如此，它的页面在屏上时才是被标记的那一行）。
 
-行级 ⋯ 菜单：`TeamRowMenu` 复用公共 `Menu`（`portal` + `closeOnPointerLeave`，锚为裸 ellipsis 图标按钮），hover / focus-within / 菜单开启三种状态可见；菜单开启时该行钉住 hover 底色（`data-menu-open`）。菜单含「编辑」入口，打开对应编辑器；error 态成员额外出现「恢复」项，走 `recoverMember` Remote（Host 向该成员活跃会话 steer 续作 prompt，运行时动作、不落 ledger）。历史上的「从全新上下文开始」入口已移除——Member 经 `context_rollover` 工具自管上下文，Host 侧 clear-context Remote 保留为无可见入口的迁移逃生门。
+行级 ⋯ 菜单：`TeamRowMenu` 复用公共 `Menu`（`portal` + `closeOnPointerLeave`，锚为裸 ellipsis 图标按钮），hover / focus-within / 菜单开启三种状态可见；菜单开启时该行钉住 hover 底色（`data-menu-open`）。菜单含「编辑」入口，打开对应编辑器；error 态成员额外出现「恢复」项，走 `recoverMember` Remote（Host 向该成员活跃会话 steer 续作 prompt，运行时动作、不落 ledger）。
+
+活跃成员（availability active）另有两个上下文动作：「重置」经 `clearMemberContext` 换新 Member Session（破坏性确认后执行，嵌入的会话页重绑到新 Session）；「压缩」经 `compactMemberContext` 调度一次 context 压缩，可在编辑器同款模型选择器中指定摘要 LLM——弹层在提交即确认，Host 把压缩排在成员当前动作之后执行。Member 依旧可经 `context_rollover` 工具自管上下文。
 
 频道编辑器（`编辑频道`）：名称/说明输入框 + 成员增删字段集。保存钮无改动即禁用（dirty 门），提交走 `updateChannel` Remote（幂等 request 同载荷复用），成功后由投影刷新回填行文案——不做乐观行内改名；成员增删仍走既有 join/remove Remote（request 按 方向+成员+频道 键复用）。
 

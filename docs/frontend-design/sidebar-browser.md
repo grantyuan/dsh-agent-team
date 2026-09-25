@@ -22,7 +22,11 @@ Row ellipsis menus use public `Menu`, are visible on hover/focus/menu-open, and 
 
 Channel and Agent editors use public Remote mutations and Host projections rather than optimistic inline edits. Agent model selection uses the public menu and Host model directory; changing an active model preserves Member and Session identity. Selecting an Agent opens its embedded Session without leaving Team mode; explicit Team navigation closes that overlay.
 
-When a Member rolls over to a fresh context through `context_rollover`, the Agents panel observes the old→new Session binding and follows exactly once — only when the embedded page equals the observed old live Session id — and never redirects an archive view; the manual clear-context row action is retired. The narrow rail's three icon buttons read top-down Inbox (`IconQueueOutline14` at 16px) → Channels (`IconListPenOutline16`) → Agents (`IconAgentPresetOutline16`); none reuse the checklist (Task) or member icons.
+When a Member rolls over to a fresh context through `context_rollover`, the Agents panel observes the old→new Session binding and follows exactly once — only when the embedded page equals the observed old live Session id — and never redirects an archive view.
+
+Live Members (active availability) also get two context actions in the row menu: 重置 (reset) renews the Member Session through `clearMemberContext` behind a destructive confirm and rebinds an embedded seat to the renewed Session, and 压缩 (compact) schedules one context compaction through `compactMemberContext`, optionally pinning the summarization LLM in the same model picker the editors use — the dialog acknowledges at schedule time, because the Host runs the reduction behind the Member's current activity.
+
+The narrow rail's three icon buttons read top-down Inbox (`IconQueueOutline14` at 16px) → Channels (`IconListPenOutline16`) → Agents (`IconAgentPresetOutline16`); none reuse the checklist (Task) or member icons.
 
 The Inbox icon is a destination: clicking it opens the Inbox page and expands the sidebar; the Channels/Agents icons expand the sidebar and focus their section header. Agent creation carries no Channel page and the Agent editor carries no membership section: Channel membership is managed from the Channel side (create-dialog initial members, Channel editor member rows, and the member-management dialog); a Channel-less Member stays reachable through its DM view.
 

@@ -13,6 +13,9 @@ Team 是每个 DSH home 内唯一的协作域。append-only operation ledger 是
 
 ## Lifecycle 与通知
 - Agent lifecycle、JSON/SQLite replay、authorization、idempotency 和 revision checks 都留在 Host 侧。durable unread 变化可以通过 public Agent safe-boundary API 产生一条有界、合并后的 Agent context notification：direct mentions 携带其 Message 和 source，Task/Claim Activities 携带简要状态变化，ordinary unread 只携带不含正文的 Thread-first route（若存在则带 Task overlay）。Promotion 与其他 Task transition 一样是 Task activity，通过 Activity markers 到达 followers。这类 notification 不是第二权威，也不保证模型恰好处理一次。
+- Member supervision（`supervisor.ts`）是 `recovery.ts` 之后的自动兜底。巡查每十分钟一趟——只在 startup 的 Member restore 落定后才挂上定时器，冷 Session 不会被误读为停止——观察对象恰好是仍持有活跃 Claim 的 enabled Members。被判定异常停止的 Member（unreachable 或 error presence；活着但闲置且持有未竟 Claim 是按设计等待，不被打扰）每个 pass 拉起一次、至多三次；三次 `agent/error` 之间没有任何干净回合结束则当场替换。
+- 替换在一个串行化的 lifecycle step 内以普通 Host 生命周期完成：失败 Member 走同一条 `archiveMember`（其 Claims 照常以公开 `claims_released` Activities 释放），同角色的下一代以 Human 权限入队——handle 取该角色下一个空闲的 `-N` 代际，可变角色事实照搬，私有记忆（`memory.md` 与 `notes/`，`skills/` 有意不继承）在替补首次 activation 之前拷贝完成，前任的 Channel 参与关系逐一补授。
+- 随后替补在共享 Channel 发一条不含 Task 的 `@human` 交接公告，逐条点名被释放的 Claim，请管理员通过 ordinary Task routing 重新派工。计数器与观察名单是进程内的——重启即重新挣回预算，与压力策略同构——而一切 durable 结果都是 ledger operation，因此交接中途崩溃只会按正常台账重放，绝不会留下半真半假的 Team 事实。
 
 ## 变更流与 Projection
 - `changes()` 是流式 Remote，可声明一个 scope（workspace/channel/thread/presence）；省略 scope 时观察共享 Team 投影变化，不包含 presence。Host 先注册监听，再发送当前基线，之后只发送匹配的变更通知；消费者暂停期间仅保留最新待发送版本。取消或 Host 释放时关闭订阅。Thread read 与 `team/dm-sent` 不改变共享投影，因此既不推进其版本也不唤醒订阅者。Presence 使用进程内 epoch，其余 scope 使用最近一次共享投影提交的 ledger sequence。版本只在同一 scope 和 Host 生命周期内有意义。Host 只为受 operation 影响的 Members 重算 Inbox hints。
