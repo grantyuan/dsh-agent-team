@@ -76,12 +76,14 @@ export function warmModelCatalog(loadModels: TeamSidebarProps['loadModels']): vo
  * failed read with no warmed value renders a retryable error instead of
  * stranding the field on "loading".
  */
-export function ModelPickerField({ model, onModelChange, loadModels, disabled, t }: {
+export function ModelPickerField({ model, onModelChange, loadModels, disabled, t, defaultLabel }: {
   readonly model: AgentTeamModelSelection | undefined
   readonly onModelChange: (choice: AgentTeamModelSelection | undefined) => void
   readonly loadModels: TeamSidebarProps['loadModels']
   readonly disabled: boolean
   readonly t: TeamSidebarProps['t']
+  /** Overrides the follow-default option's label when the picker's fallback reads differently. */
+  readonly defaultLabel?: string
 }) {
   const [groups, setGroups] = useState<readonly TeamModelProviderGroup[] | undefined>(() => peekCatalogGroups(loadModels))
   const [modelsError, setModelsError] = useState<string>()
@@ -122,7 +124,7 @@ export function ModelPickerField({ model, onModelChange, loadModels, disabled, t
     return () => { mounted = false }
   }, [loadModels, reloadToken])
 
-  const items: MenuEntry[] = [{ id: '', label: t('modelFollowDefault') }]
+  const items: MenuEntry[] = [{ id: '', label: defaultLabel ?? t('modelFollowDefault') }]
   const byKey = new Map<string, { provider: string; id: string; name: string; efforts: readonly TeamModelEffortOption[] }>()
   for (const group of groups ?? []) {
     items.push({ type: 'label', id: `model-group:${group.id}`, text: group.name })
@@ -134,7 +136,7 @@ export function ModelPickerField({ model, onModelChange, loadModels, disabled, t
   }
   const selectedModelKey = model === undefined ? '' : modelKey(model.provider, model.model)
   const triggerLabel = model === undefined
-    ? t('modelFollowDefault')
+    ? defaultLabel ?? t('modelFollowDefault')
     : byKey.get(selectedModelKey)?.name ?? `${model.provider} / ${model.model}`
   // The effort sub-row only makes sense for a pinned model with adapter-exposed
   // efforts; following the Host default inherits the operator's whole selection.

@@ -9,6 +9,8 @@ import type {
   AgentTeamClientMemberStatus,
   AgentTeamClearMemberContextRequest,
   AgentTeamClearMemberContextResult,
+  AgentTeamCompactMemberContextRequest,
+  AgentTeamCompactMemberContextResult,
   AgentTeamCreateChannelRequest,
   AgentTeamCreateChannelResult,
   AgentTeamInbox,
@@ -117,11 +119,18 @@ export type TeamSidebarProps = PropsRuntime<'sidebar.workspaces'>
     updateMember: (request: AgentTeamUpdateMemberRequest) => Promise<RemoteResult<AgentTeamMemberResult>>
     recoverMember: (request: AgentTeamRecoverMemberRequest) => Promise<RemoteResult<AgentTeamRecoverMemberResult>>
     /**
-     * Host clear-context remote kept as a hidden migration escape hatch.
-     * The visible row action is retired: Members manage their own context
-     * through the context_rollover tool (see docs/architecture/README.md).
+     * Host clear-context remote: the visible "reset" row action renews the
+     * Member's Session — identity, memory, and binding survive, the previous
+     * log stays archived on disk, and the next turn starts with no history.
      */
     clearMemberContext: (request: AgentTeamClearMemberContextRequest) => Promise<RemoteResult<AgentTeamClearMemberContextResult>>
+    /**
+     * Schedule an in-place compaction of the Member's live Session, optionally
+     * naming the LLM that writes the summary. The Host acknowledges the
+     * schedule; the compaction itself runs behind the Member's current
+     * activity and never blocks later conversation.
+     */
+    compactMemberContext: (request: AgentTeamCompactMemberContextRequest) => Promise<RemoteResult<AgentTeamCompactMemberContextResult>>
     archiveMember: (request: AgentTeamArchiveMemberRequest) => Promise<RemoteResult<AgentTeamArchiveMemberResult>>
     joinWorkspace: (request: AgentTeamJoinWorkspaceRequest) => Promise<RemoteResult<AgentTeamJoinWorkspaceResult>>
     leaveWorkspace: (request: AgentTeamLeaveWorkspaceRequest) => Promise<RemoteResult<AgentTeamLeaveWorkspaceResult>>

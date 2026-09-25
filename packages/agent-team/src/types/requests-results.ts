@@ -184,6 +184,26 @@ export interface AgentTeamClearMemberContextResult {
 }
 
 /**
+ * Human intent to compact one enabled Member's live Session in place. The
+ * Host schedules the compaction behind the Member's current activity: it runs
+ * at the next true idle boundary through the public CompactionEngine, and
+ * input that arrives meanwhile queues and is served after it — the request
+ * neither interrupts a running turn nor blocks later conversation.
+ */
+export interface AgentTeamCompactMemberContextRequest {
+  readonly requestId: AgentTeamRequestId
+  readonly workspaceId: WorkspaceId
+  readonly memberId: AgentTeamMemberId
+  /** The LLM that writes the summary; absent falls back to the Member's own routed model. */
+  readonly model?: AgentTeamModelSelection
+}
+
+/** Schedule-time acknowledgement: the result carries the Member status at scheduling, not the compaction outcome. */
+export interface AgentTeamCompactMemberContextResult {
+  readonly status: AgentTeamAgentMemberStatus
+}
+
+/**
  * Member-authored intent (carried by its live Agent) to continue in its next
  * private context generation. The requestId and new Session id derive stably
  * from the successful `context_rollover` tool call so crash replay converges on

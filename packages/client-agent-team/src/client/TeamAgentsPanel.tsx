@@ -5,7 +5,7 @@ import type {
   AgentTeamModelSelection,
 } from '@wowyuarm/dsh-agent-team/types'
 import type { WorkspaceId } from '@deepseek-ai/dsh-api-workspace-controller/client'
-import { Button, IconArchiveOutlineRegular, IconEditOutlineRegular, IconPlayOutlineRegular, IconPlusOutlineRegular, IconRefreshOutlineRegular, Input, Modal, Tooltip } from '@deepseek-ai/dsh-client-ui-primitives'
+import { Button, IconArchiveOutlineRegular, IconEditOutlineRegular, IconGaugeOutlineRegular, IconNewChatOutlineRegular, IconPlayOutlineRegular, IconPlusOutlineRegular, IconRefreshOutlineRegular, Input, Modal, Tooltip } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { TeamSidebarProps } from './slots.ts'
 import { TeamMemberIdentity } from './TeamMemberRow.tsx'
 import { SortableRow, useSidebarRowDrag } from './sidebar-drag.tsx'
@@ -27,6 +27,8 @@ interface TeamAgentsPanelProps {
   readonly addMember: TeamSidebarProps['addMember']
   readonly updateMember: TeamSidebarProps['updateMember']
   readonly recoverMember: TeamSidebarProps['recoverMember']
+  readonly clearMemberContext: TeamSidebarProps['clearMemberContext']
+  readonly compactMemberContext: TeamSidebarProps['compactMemberContext']
   readonly archiveMember: TeamSidebarProps['archiveMember']
   readonly joinWorkspace: TeamSidebarProps['joinWorkspace']
   readonly leaveWorkspace: TeamSidebarProps['leaveWorkspace']
@@ -38,7 +40,7 @@ interface TeamAgentsPanelProps {
   readonly t: TeamSidebarProps['t']
 }
 
-export function TeamAgentsPanel({ workspaceId, loadMembers, subscribeChanges, addMember, updateMember, recoverMember, archiveMember, joinWorkspace, leaveWorkspace, loadModels, memberSessionId, openMemberSession, onCreatingChange, t }: TeamAgentsPanelProps) {
+export function TeamAgentsPanel({ workspaceId, loadMembers, subscribeChanges, addMember, updateMember, recoverMember, clearMemberContext, compactMemberContext, archiveMember, joinWorkspace, leaveWorkspace, loadModels, memberSessionId, openMemberSession, onCreatingChange, t }: TeamAgentsPanelProps) {
   const [members, setMembers] = useState<readonly AgentTeamClientMemberStatus[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string>()
@@ -264,7 +266,7 @@ export function TeamAgentsPanel({ workspaceId, loadMembers, subscribeChanges, ad
         <div className={css.agentList}>
           {orderedMembers.map(status => (
             <SortableRow key={status.member.memberId} drag={drag} orderKey={status.member.memberId}>
-              <AgentRow workspaceId={workspaceId} leaveWorkspace={leaveWorkspace} status={status} {...(memberSessionId === undefined ? {} : { current: status.member.sessionId === memberSessionId })} updateMember={updateMember} recoverMember={recoverMember} archiveMember={archiveMember} loadModels={loadModels} openMemberSession={openMemberSession} onUpdated={refresh} t={t} />
+              <AgentRow workspaceId={workspaceId} leaveWorkspace={leaveWorkspace} status={status} {...(memberSessionId === undefined ? {} : { current: status.member.sessionId === memberSessionId })} updateMember={updateMember} recoverMember={recoverMember} clearMemberContext={clearMemberContext} compactMemberContext={compactMemberContext} archiveMember={archiveMember} loadModels={loadModels} openMemberSession={openMemberSession} onUpdated={refresh} t={t} />
             </SortableRow>
           ))}
         </div>
@@ -284,7 +286,7 @@ export function TeamAgentsPanel({ workspaceId, loadMembers, subscribeChanges, ad
  * conversation page, the avatar carries identity plus the presence badge, and
  * the row menu opens the editor.
  */
-function AgentRow({ workspaceId, leaveWorkspace, status, current, updateMember, recoverMember, archiveMember, loadModels, openMemberSession, onUpdated, t }: {
+function AgentRow({ workspaceId, leaveWorkspace, status, current, updateMember, recoverMember, clearMemberContext, compactMemberContext, archiveMember, loadModels, openMemberSession, onUpdated, t }: {
   readonly workspaceId: WorkspaceId
   readonly leaveWorkspace: TeamSidebarProps['leaveWorkspace']
   readonly status: AgentTeamClientMemberStatus
@@ -292,6 +294,8 @@ function AgentRow({ workspaceId, leaveWorkspace, status, current, updateMember, 
   readonly current?: boolean
   readonly updateMember: TeamSidebarProps['updateMember']
   readonly recoverMember: TeamSidebarProps['recoverMember']
+  readonly clearMemberContext: TeamSidebarProps['clearMemberContext']
+  readonly compactMemberContext: TeamSidebarProps['compactMemberContext']
   readonly archiveMember: TeamSidebarProps['archiveMember']
   readonly loadModels: TeamSidebarProps['loadModels']
   readonly openMemberSession: TeamSidebarProps['openMemberSession']
@@ -301,8 +305,13 @@ function AgentRow({ workspaceId, leaveWorkspace, status, current, updateMember, 
   const [menuOpen, setMenuOpen] = useState(false)
   const [editing, setEditing] = useState(false)
   const [archiving, setArchiving] = useState(false)
+  const [resetting, setResetting] = useState(false)
+  const [compacting, setCompacting] = useState(false)
   const [rowAlert, setRowAlert] = useState<string>()
   const [archivePending, setArchivePending] = useState(false)
+  const [resetPending, setResetPending] = useState(false)
+  const [compactPending, setCompactPending] = useState(false)
+  const [compactModel, setCompactModel] = useState<AgentTeamModelSelection | undefined>(undefined)
   const archiveRequest = useRef<ReturnType<typeof mintRequestId>>()
   const withdrawing = workspaceId !== status.member.workspaceId
   // Both row actions ride the same runtime remote: the Host steers a live
@@ -354,6 +363,51 @@ function AgentRow({ workspaceId, leaveWorkspace, status, current, updateMember, 
       setArchivePending(false)
     }
   }
+  const reset = async (): Promise<void> => {
+    if (resetPending) return
+    setResetPending(true)
+    setRowAlert(undefined)
+    try {
+      const result = await clearMemberContext({
+        requestId: mintRequestId(),
+        workspaceId: status.member.workspaceId,
+        memberId: status.member.memberId,
+      })
+      if (!result.ok) throw new Error(result.error.message)
+      setResetting(false)
+      await onUpdated()
+      // The seat may still show the retired Session; rebind it to the renewed one.
+      if (current === true) openMemberSession(result.value.status.member.sessionId)
+    } catch (cause) {
+      setRowAlert(t('resetAgentFailed', { message: cause instanceof Error ? cause.message : String(cause) }))
+    } finally {
+      setResetPending(false)
+    }
+  }
+  const compact = async (): Promise<void> => {
+    if (compactPending) return
+    setCompactPending(true)
+    setRowAlert(undefined)
+    try {
+      const result = await compactMemberContext({
+        requestId: mintRequestId(),
+        workspaceId: status.member.workspaceId,
+        memberId: status.member.memberId,
+        ...(compactModel === undefined ? {} : { model: compactModel }),
+      })
+      if (!result.ok) throw new Error(result.error.message)
+      setCompacting(false)
+      // Schedule-time acknowledgement only: the Host runs the compaction
+      // behind the Member's current activity, and the conversation surface
+      // shows the committed summary once it lands.
+      setRowAlert(t('compactAgentScheduled'))
+      await onUpdated()
+    } catch (cause) {
+      setRowAlert(t('compactAgentFailed', { message: cause instanceof Error ? cause.message : String(cause) }))
+    } finally {
+      setCompactPending(false)
+    }
+  }
   return (
     <>
       <div className={css.agentRow} data-agent-row data-menu-open={menuOpen || undefined}>
@@ -367,18 +421,63 @@ function AgentRow({ workspaceId, leaveWorkspace, status, current, updateMember, 
               { id: 'edit', label: t('editAgent'), icon: <IconEditOutlineRegular /> },
               ...(status.presence === 'error' ? [{ id: 'resume', label: t('resumeAgent'), icon: <IconPlayOutlineRegular /> }] : []),
               ...(status.availability === 'unavailable' && restartOffered(status) ? [{ id: 'restart', label: t('restartAgent'), icon: <IconRefreshOutlineRegular /> }] : []),
+              // Both context actions need a live Member Session: the Host
+              // rollover replaces the active log, and compaction is scheduled
+              // behind the active Agent's current activity.
+              ...(status.availability === 'active' ? [
+                { id: 'reset', label: t('resetAgent'), icon: <IconNewChatOutlineRegular /> },
+                { id: 'compact', label: t('compactAgent'), icon: <IconGaugeOutlineRegular /> },
+              ] : []),
               { id: 'archive', label: t(withdrawing ? 'withdrawAgent' : 'archiveAgent'), icon: <IconArchiveOutlineRegular size={16} />, danger: true },
             ]}
             onSelect={(id) => {
               if (id === 'edit') setEditing(true)
               else if (id === 'archive') setArchiving(true)
+              else if (id === 'reset') setResetting(true)
+              else if (id === 'compact') {
+                setCompactModel(undefined)
+                setCompacting(true)
+              }
               else void recover()
             }}
             onOpenChange={setMenuOpen}
           />
         </span>
       </div>
-      {!archiving && rowAlert !== undefined && <div className={css.rowAlert} role="alert">{rowAlert}</div>}
+      {!archiving && !resetting && !compacting && rowAlert !== undefined && <div className={css.rowAlert} role="alert">{rowAlert}</div>}
+      {resetting && (
+        <Modal
+          open
+          onClose={() => { if (!resetPending) setResetting(false) }}
+          title={t('resetAgentTitle', { name: status.member.handle })}
+          closeLabel={t('close')}
+          contentClassName={createCss.dialogContent!}
+          footer={<>
+            <Button variant="outline" disabled={resetPending} onClick={() => { setResetting(false) }}>{t('cancel')}</Button>
+            <Button variant="primary" disabled={resetPending} onClick={() => { void reset() }}>{t('resetAgentConfirm')}</Button>
+          </>}
+        >
+          <p className={createCss.error}>{t('resetAgentNotice', { name: status.member.handle })}</p>
+          {rowAlert !== undefined && <p className={createCss.error} role="alert">{rowAlert}</p>}
+        </Modal>
+      )}
+      {compacting && (
+        <Modal
+          open
+          onClose={() => { if (!compactPending) setCompacting(false) }}
+          title={t('compactAgentTitle', { name: status.member.handle })}
+          closeLabel={t('close')}
+          contentClassName={createCss.dialogContent!}
+          footer={<>
+            <Button variant="outline" disabled={compactPending} onClick={() => { setCompacting(false) }}>{t('cancel')}</Button>
+            <Button variant="primary" disabled={compactPending} onClick={() => { void compact() }}>{compactPending ? t('compactAgentRunning') : t('compactAgentRun')}</Button>
+          </>}
+        >
+          <p className={createCss.error}>{t('compactAgentNotice', { name: status.member.handle })}</p>
+          <ModelPickerField model={compactModel} onModelChange={setCompactModel} loadModels={loadModels} disabled={compactPending} t={t} defaultLabel={t('compactModelFollowSession')} />
+          {rowAlert !== undefined && <p className={createCss.error} role="alert">{rowAlert}</p>}
+        </Modal>
+      )}
       {archiving && (
         <Modal
           open

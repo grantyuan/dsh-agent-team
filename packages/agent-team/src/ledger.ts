@@ -874,6 +874,21 @@ export class AgentTeamLedger {
     return Object.freeze([...this.state.members.values()])
   }
 
+  /**
+   * The active Channels one Member belongs to inside one Workspace, oldest
+   * first. Read-only projection over the membership index — the supervised
+   * handover uses it to give a replacement the same reach its predecessor had.
+   */
+  channelsForMember(memberId: AgentTeamMemberId, workspaceId: WorkspaceId): readonly AgentTeamChannelRef[] {
+    const channels: AgentTeamChannel[] = []
+    for (const channel of this.state.channels.values()) {
+      if (channel.workspaceId !== workspaceId || channel.state !== 'active') continue
+      if (this.state.memberships.get(channel.channelRef)?.has(memberId) !== true) continue
+      channels.push(channel)
+    }
+    return Object.freeze(channels.sort((a, b) => a.createdAtSequence - b.createdAtSequence).map(channel => channel.channelRef))
+  }
+
   joinChannel(request: AgentTeamAuthorizedJoinChannelRequest): Promise<AgentTeamLedgerResult<AgentTeamJoinChannelResult>> {
     return this.enqueue(async () => {
       const existing = this.state.byRequest.get(request.requestId)

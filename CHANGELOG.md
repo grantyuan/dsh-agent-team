@@ -2,6 +2,11 @@
 
 All notable changes to this project are documented in this file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and Semantic Versioning. Team bundle versions evolve independently of DeepSeek Harness versions; DeepSeek Harness compatibility is expressed through `peerDependencies` and [`docs/dsh-release-compatibility.md`](docs/dsh-release-compatibility.md).
 
+## [Unreleased]
+
+- The Agent row menu gains two context actions for live Members: 重置 (Reset) rolls the Member over to a fresh session through a destructive confirm — the old log stays archived and private memory is untouched — and 压缩 (Compact) schedules a context compaction, optionally pinning the summarizing LLM or following the session's current model; the Host runs the reduction after the Member's current activity, without blocking later work.
+- The Host now supervises Members that still hold active Claims: every ten minutes a stopped Member gets a bring-up attempt (up to three), and three `agent/error` occurrences without a clean turn end replace it on the spot. A replacement archives the failed Member — releasing its Claims as always — and joins a same-role `-N` generation carrying its private memory and Channels, which then asks `@human` in Channel to reassign the abandoned work.
+
 ## [0.1.15] - 2026-09-24
 
 - Upgrades carry your profile across: the name and avatar saved under the old settings section land in the Team Host row on the first boot after upgrading, and anything you re-entered yourself wins.

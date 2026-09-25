@@ -22,6 +22,8 @@ import { Session, SessionId, SessionLogOffset, type SessionEvent } from '@deepse
 import type {} from '@deepseek-ai/dsh-session-persistence'
 import { setSandboxMode } from '@deepseek-ai/dsh-sandbox-policy'
 import { Remote, TypertRemoteService } from '@deepseek-ai/dsh-typert-protocol'
+import { ManualCompactionError } from '@deepseek-ai/dsh-compaction'
+import { BasicCompactionEngine } from '@deepseek-ai/dsh-compaction-basic'
 import type {} from '@deepseek-ai/dsh-tools'
 import type { SettingsPathOp } from '@deepseek-ai/dsh-settings'
 import type { Domain } from '@deepseek-ai/dsh-storage-domain'
@@ -36,9 +38,10 @@ import { createTeamContextManagement, TEAM_CONTEXT_CODEC } from './context-conti
 import { AGENT_TEAM_PLUGIN_ID, isAgentTeamSource } from './context-source.ts'
 import { boundaryByRef, carriedInputOf, checkpointByRef, checkpointRefFor, createTeamContextProjectionConfig, createTeamContextProjectionDefinition, foldTeamContextProjection, retainedTopicsThrough, TeamContextProjectionHost } from './context-projection.ts'
 import { AGENT_TEAM_HUMAN_MEMBER_ID, AgentTeamLedger, agentTeamHumanActor, type AgentTeamDurableMemberResult } from './ledger.ts'
-import { AGENT_TEAM_TOOL_NAMES, deepCopyCapabilities, memberMemoryDirectoryName, MemberRuntime } from './member-runtime.ts'
+import { AGENT_TEAM_TOOL_NAMES, deepCopyCapabilities, memberMemoryDirectoryName, memberMemoryDirectoryPath, MemberRuntime } from './member-runtime.ts'
 import type { MemberSkillSelectionRef } from './member-skills.ts'
 import { classifyRecoverableError, RecoveryCoordinator, RECOVERY_MAX_CONSECUTIVE_ERRORS } from './recovery.ts'
+import { MemberSupervisor, nextReplacementHandle, supervisionHandoffText, SUPERVISION_MAX_CONSECUTIVE_FAILURES, SUPERVISION_MAX_RESTART_ATTEMPTS, type MemberSupervisionState, type SupervisionTrigger } from './supervisor.ts'
 import { StoredSessionReadError, StoredSessionReader, sessionFailureOf } from './stored-session-reader.ts'
 import { agentTeamDomainSpec } from './spec.ts'
 import { formatTeamTimestamp } from './time-format.ts'
@@ -52,6 +55,7 @@ import type {
   AgentTeamArchiveMemberRequest,
   AgentTeamArchiveMemberResult,
   AgentTeamChangeScope,
+  AgentTeamChannelRef,
   AgentTeamChangesRequest,
   AgentTeamChangesResult,
   AgentTeamActivity,
@@ -103,6 +107,8 @@ import type {
   AgentTeamRecoverMemberResult,
   AgentTeamClearMemberContextRequest,
   AgentTeamClearMemberContextResult,
+  AgentTeamCompactMemberContextRequest,
+  AgentTeamCompactMemberContextResult,
   AgentTeamRolloverSessionRequest,
   AgentTeamDmRequest,
   AgentTeamDmResult,
@@ -155,6 +161,9 @@ export const AGENT_TEAM_PRESET_MARKER = Symbol.for('@wowyuarm/dsh-agent-team.pre
 const INBOX_NOTICE_SUMMARY = 'Team Inbox has unread work.'
 const RECOVERY_NOTICE_SUMMARY = 'Recovery: continue your interrupted work.'
 const ORPHANED_MEMBER_DIAGNOSTIC = 'Member preset composition was lost after a reload; its tools are unavailable. Resume rebuilds the member in place.'
+
+/** Idle-boundary attempts one scheduled background compaction gets before conversation wins and the request is dropped. */
+const MEMBER_COMPACT_BUSY_ATTEMPTS = 3
 
 /**
  * A preset mount/validation failure during activation, carrying its own class
@@ -443,6 +452,26 @@ export default class AgentTeam extends TypertRemoteService {
     },
   })
   /**
+   * The automatic last resort behind {@link recovery}: a Member that still holds
+   * active Claims and cannot be brought back is archived and replaced by a
+   * same-role generation that inherits its private memory and Channels, and asks
+   * the Human admin in Channel to reassign the released work. See
+   * `supervisor.ts` for the pass policy.
+   */
+  private readonly supervisor = new MemberSupervisor({
+    candidates: () => {
+      const ledger = this.ledger
+      if (ledger === undefined) return []
+      return ledger.listMembers()
+        .filter(member => member.state === 'enabled' && ledger.activeClaimCountForMember(member.memberId) > 0)
+        .map(member => member.memberId)
+    },
+    stateOf: memberId => this.supervisionStateOf(memberId),
+    restart: async memberId => { await this.restartMemberUnderSupervision(memberId) },
+    replace: async (memberId, trigger, restartAttempts) => { await this.handOverSupervisedMember(memberId, trigger, restartAttempts) },
+    log: message => { this.ctx.logger.warn(`agent-team: ${message}`) },
+  })
+  /**
    * Team's domain half of the continuity projection: the durable ref naming,
    * the Team-notice rule, and the boundary judgement (committed messages,
    * claim changes, first Thread arrivals). Its claim attribution resolves the
@@ -479,6 +508,12 @@ export default class AgentTeam extends TypertRemoteService {
   private accepting = true
   /** One adoption attempt per boot: the two readiness edges fire once each, and this keeps their attempt single. */
   private legacyAdoptionStarted = false
+  /**
+   * Members with one scheduled background compaction. The remote rejects a
+   * second schedule per Member while one is pending; membership clears when
+   * the background body settles (ran, dropped, or failed).
+   */
+  private readonly pendingCompactions = new Set<AgentTeamMemberId>()
   /**
    * Presence wake epoch: Agent running/idle/failure is runtime state with no
    * durable fact behind it, so the presence scope counts those edge wakes in
@@ -640,6 +675,7 @@ export default class AgentTeam extends TypertRemoteService {
       const kind = classifyRecoverableError(message)
       if (kind !== undefined) this.ctx.logger.warn(`agent-team: member '${member.handle}' hit a recoverable ${kind} error; recording a consecutive error occurrence`)
       this.recovery.onError(member.memberId, message)
+      this.supervisor.onError(member.memberId)
       this.emitMemberPresenceChanged(member)
     })
     this.ctx.on('agent/status', ({ agent, status }) => {
@@ -664,6 +700,7 @@ export default class AgentTeam extends TypertRemoteService {
       if (status === 'idle' && member !== undefined) {
         if (this.memberFailures.get(member.memberId)?.runtime === undefined) {
           this.recovery.onCleanTurnEnd(member.memberId)
+          this.supervisor.onCleanTurn(member.memberId)
         }
         this.emitMemberPresenceChanged(member)
       }
@@ -691,6 +728,7 @@ export default class AgentTeam extends TypertRemoteService {
     this.ctx.effect(() => async () => {
       this.accepting = false
       this.recovery.dispose()
+      this.supervisor.dispose()
       this.contextManagement.dispose()
       this.pressurePolicy.dispose()
       if (this.attachmentGcTimer !== undefined) clearInterval(this.attachmentGcTimer)
@@ -723,6 +761,10 @@ export default class AgentTeam extends TypertRemoteService {
       if (member.state === 'enabled') await this.activateMember(member, undefined, persistedSessions)
       else if (member.state === 'inactive') await this.memberRuntime.cleanupRemovedMember(member)
     }
+    // Supervision starts only after the restore settled: a pass that ran while
+    // Members were still activating would read every cold Session as an
+    // abnormal stop and start handing work over to fresh generations.
+    this.supervisor.start()
   }
 
   /**
@@ -1030,6 +1072,93 @@ export default class AgentTeam extends TypertRemoteService {
   }
 
   /**
+   * Human-requested in-place context compaction for one enabled Member's live
+   * Session. The remote only validates and schedules: the compaction runs in
+   * the background at the Member's next true idle boundary through the public
+   * compaction-basic engine, so it is inserted after the Member's current
+   * actions without blocking later conversation — input that arrives meanwhile
+   * queues and is served once the compaction settles (runMaintenance latches
+   * waking input, it never drops it).
+   *
+   * The engine instance is transient and carries the Human-selected
+   * summarization LLM in its config; it shares the Host context's public
+   * llm/tokenMeter/sessions seams and reuses exactly the implementation the
+   * Team preset mounts (see docs/architecture.md). Failures surface through
+   * the Member's compaction failure slot, the same diagnostic surface the
+   * pressure policy reports through.
+   */
+  @Remote('compactMemberContext')
+  async compactMemberContext(request: AgentTeamCompactMemberContextRequest): Promise<AgentTeamCompactMemberContextResult> {
+    this.requireAccepting()
+    this.requireWorkspace(request.workspaceId)
+    const stored = this.requireLedger().getMember(request.memberId)
+    if (stored === undefined || !this.requireLedger().participatesIn(request.memberId, request.workspaceId)) throw new Error(`unknown Member '${request.memberId}' in workspace '${request.workspaceId}'`)
+    if (stored.state !== 'enabled') throw new Error(`Agent Member '${stored.handle}' is ${stored.state}; only enabled Members can compact their context`)
+    if (this.contextManagement.isTransitioning(request.memberId)) throw new Error(`Agent Member '${stored.handle}' has a context rollover already scheduled; wait for it to finish before compacting`)
+    const active = this.handles.get(request.memberId)
+    if (active === undefined) throw new Error(`Agent Member '${stored.handle}' has no active session to compact`)
+    if (this.pendingCompactions.has(request.memberId)) throw new Error(`Agent Member '${stored.handle}' already has a compaction scheduled; wait for it to finish`)
+    this.pendingCompactions.add(request.memberId)
+    void this.runMemberCompaction(stored, active, request.model)
+    return Object.freeze({ status: this.memberStatus(stored) })
+  }
+
+  /**
+   * Background body of one scheduled compaction. Waits for the Member's idle
+   * boundary, then forces one useful reduction even below the pressure
+   * threshold. A member that stays busy (fresh waking input between idle
+   * checks) is retried a bounded number of times and then silently dropped —
+   * conversation takes precedence over the optional reduction. A real
+   * compaction failure reports through the compaction failure slot.
+   */
+  private async runMemberCompaction(member: AgentTeamAgentMember, active: AgentHandle, model: AgentTeamModelSelection | undefined): Promise<void> {
+    const memberId = member.memberId
+    try {
+      const engine = new BasicCompactionEngine(this.ctx, {
+        auto: false,
+        ...(model === undefined ? {} : { summarizationProvider: model.provider, summarizationModel: model.model }),
+      })
+      const agent = active.agent
+      let lastError: unknown
+      for (let attempt = 0; attempt < MEMBER_COMPACT_BUSY_ATTEMPTS; attempt += 1) {
+        await agent.whenIdle()
+        if (this.handles.get(memberId) !== active) return
+        try {
+          const result = await engine.compactNow(agent, new AbortController().signal)
+          if (result === null) {
+            this.ctx.logger.info(`agent-team: manual compaction for member '${member.handle}' found no compactable range`)
+          } else {
+            this.ctx.logger.info(`agent-team: manual compaction for member '${member.handle}' shadowed ${result.shadowedSeqs.length} surface nodes (~${result.shadowedTokenCount} tokens)`)
+          }
+          lastError = undefined
+          break
+        } catch (error) {
+          lastError = error
+          // Only a busy Member is worth re-awaiting; every other failure class
+          // is terminal for this request.
+          if (!(error instanceof ManualCompactionError) || error.code !== 'busy') break
+        }
+      }
+      if (lastError !== undefined) {
+        // A persistently busy Member loses no data — log only, the Human can
+        // retry once the conversation settles.
+        this.ctx.logger.warn(`agent-team: manual compaction for member '${member.handle}' stayed busy and was dropped`)
+        return
+      }
+      // A successful in-place reduction resolves a stale compaction failure
+      // the pressure policy may have left behind.
+      if (this.clearMemberFailure(memberId, 'compaction')) this.emitAutoCompactionChanged(memberId)
+    } catch (error) {
+      const diagnostic = `manual context compaction failed: ${error instanceof Error ? error.message : String(error)}`
+      this.ctx.logger.warn(`agent-team: ${diagnostic} (member '${member.handle}')`)
+      this.setMemberFailure(memberId, 'compaction', diagnostic)
+      this.emitAutoCompactionChanged(memberId)
+    } finally {
+      this.pendingCompactions.delete(memberId)
+    }
+  }
+
+  /**
    * Retire one Member's previous generation after its durable binding moved
    * onto a new Session id: drop the old handle's transient state, dispose the
    * Agent, and archive the old Session log (which stays on disk for history).
@@ -1199,6 +1328,155 @@ export default class AgentTeam extends TypertRemoteService {
     const member = agent !== undefined ? this.memberForAgent(agent) : undefined
     if (agent === undefined || member === undefined || member.state !== 'enabled') throw new Error(`member '${memberId}' cannot be recovered automatically`)
     this.steerResume(member, this.automaticResumeText())
+  }
+
+  /**
+   * Run one supervision pass now: the periodic timer calls this, and a test or an
+   * operator can drive it directly. Overlapping passes are skipped by the policy,
+   * never queued, so a slow handover cannot pile up more work behind itself.
+   */
+  runSupervisionPass(): Promise<void> {
+    return this.supervisor.runPass()
+  }
+
+  /**
+   * What supervision sees of one Member: a live Session whose preset composition
+   * survived and no failure record. A context rollover or an in-flight turn is
+   * `settling` (this policy never interrupts either), and anything the roster
+   * reports as unreachable or erroring is the abnormal stop it acts on. A Member
+   * that is live and simply idle with open Claims is waiting by design.
+   */
+  private supervisionStateOf(memberId: AgentTeamMemberId): MemberSupervisionState {
+    const ledger = this.requireLedger()
+    const member = ledger.getMember(memberId)
+    if (member === undefined || member.state !== 'enabled') return 'healthy'
+    if (this.contextManagement.isTransitioning(memberId)) return 'settling'
+    const handle = this.handles.get(memberId)
+    if (handle !== undefined && this.runningAgents.has(handle.agent.id)) return 'settling'
+    const status = this.memberStatus(member)
+    if (status.availability !== 'active' || status.presence === 'error') return 'stopped'
+    return 'healthy'
+  }
+
+  /**
+   * One supervised bring-up: the same repair `recoverMember` performs, chosen by
+   * what is actually missing. No live Session (or an orphaned composition) is
+   * rebuilt; a live Agent that stopped mid-work gets the automatic continuation
+   * prompt. The next pass judges the attempt, so a throw here only means it did
+   * not help.
+   */
+  private async restartMemberUnderSupervision(memberId: AgentTeamMemberId): Promise<void> {
+    const ledger = this.requireLedger()
+    const member = ledger.getMember(memberId)
+    if (member === undefined || member.state !== 'enabled') return
+    const handle = this.handles.get(memberId)
+    if (handle === undefined || this.ctx.agentPresets.composedPreset(handle.agent.ctx) === undefined) {
+      this.ctx.logger.warn(`agent-team: supervision rebuilding member '${member.handle}' after it stopped with no live composition`)
+      await this.reactivateMember(memberId)
+      return
+    }
+    this.ctx.logger.warn(`agent-team: supervision asking member '${member.handle}' to continue the work it stopped on`)
+    this.steerResume(member, this.automaticResumeText())
+  }
+
+  /**
+   * The terminal supervision action: archive the Member that cannot be brought
+   * back and put a same-role generation in its place.
+   *
+   * Every fact this writes is an ordinary ledger operation committed under the
+   * Host's Human authority — the same shape an operator's own archive-then-add
+   * would write — inside one serialized lifecycle step, so no Remote call
+   * interleaves with the handover. What the replacement inherits is the role
+   * (preset, description, pinned model, capabilities), the private memory, and
+   * the Channel reach of its predecessor; never its Session log. The abandoned
+   * work itself becomes durable Team facts through archival's own
+   * `claims_released` Activities, and the public notice asks the Human admin to
+   * reassign those Tasks to the new handle.
+   */
+  private async handOverSupervisedMember(memberId: AgentTeamMemberId, trigger: SupervisionTrigger, restartAttempts: number): Promise<void> {
+    await this.enqueueLifecycle(async () => {
+      const ledger = this.requireLedger()
+      const failed = ledger.getMember(memberId)
+      if (failed === undefined || failed.state !== 'enabled') return
+      // Capture the participation before archival: the ledger keeps memberships
+      // across archival, but reading the handover input after the fact would
+      // couple this step to that decision.
+      const channelsByWorkspace = new Map<WorkspaceId, readonly AgentTeamChannelRef[]>(
+        ledger.workspacesOf(memberId).map(workspaceId => [workspaceId, ledger.channelsForMember(memberId, workspaceId)] as const),
+      )
+      const homeChannels = channelsByWorkspace.get(failed.workspaceId) ?? []
+      const releasedClaims = ledger.activeClaimsForMember(memberId)
+        .map(claim => Object.freeze({ direction: claim.direction, taskRef: claim.taskRef as string }))
+      // A Workspace that no longer exists is left to the startup sweep instead of
+      // being re-granted onto a Member that cannot activate in it.
+      const otherWorkspaces = [...channelsByWorkspace.keys()].filter(workspaceId =>
+        workspaceId !== failed.workspaceId && this.ctx.workspaceRegistry.get(workspaceId) !== undefined)
+      const replacementHandle = nextReplacementHandle(failed.handle,
+        ledger.listMembers().filter(member => member.state !== 'inactive').map(member => member.handle))
+      const replacementId = `member:${randomUUID()}` as AgentTeamMemberId
+      const replacement: AgentTeamAgentMember = Object.freeze({
+        memberId: replacementId,
+        sessionId: SessionId(`agent-team-${randomUUID()}`),
+        workspaceId: failed.workspaceId,
+        handle: replacementHandle,
+        description: failed.description,
+        presetId: failed.presetId,
+        ...(failed.model === undefined ? {} : { model: Object.freeze({ ...failed.model }) }),
+        ...(failed.capabilities === undefined ? {} : { capabilities: Object.freeze(deepCopyCapabilities(failed.capabilities)) }),
+        privateMemoryPath: dshHomePath('agent-team', 'members', memberMemoryDirectoryName(replacementId)),
+        state: 'enabled',
+      })
+      const archived = await ledger.archiveMember({ requestId: randomUUID() as AgentTeamRequestId, memberId, actor: agentTeamHumanActor() })
+      this.emitCommitted(archived.value.receipt)
+      await this.disposeMemberSession(memberId, archived.value.member)
+      await this.ctx.workspaceRegistry.archiveSession(archived.value.member.sessionId)
+      const added = await ledger.addMember({
+        requestId: randomUUID() as AgentTeamRequestId,
+        actor: agentTeamHumanActor(),
+        workspaceId: failed.workspaceId,
+        handle: replacementHandle,
+        description: failed.description,
+        presetId: failed.presetId,
+        ...(replacement.model === undefined ? {} : { model: replacement.model }),
+        ...(replacement.capabilities === undefined ? {} : { capabilities: replacement.capabilities }),
+        channelRefs: homeChannels,
+        member: replacement,
+      })
+      if (!added.committed) throw new Error(`supervision could not commit a replacement Member for '${failed.handle}'`)
+      const stored = added.value.member
+      this.ctx.logger.warn(`agent-team: supervision replaced member '${failed.handle}' with '${stored.handle}' after ${trigger === 'abnormal-stop' ? `${restartAttempts} failed bring-up attempts` : 'three consecutive failures'}`)
+      // The inherited index has to be in place before the first activation:
+      // provisioning only writes a missing `memory.md`, so the copy wins and the
+      // replacement's first turn already reads what its predecessor knew.
+      const inheritance = await this.memberRuntime.inheritPrivateMemory(archived.value.member, memberMemoryDirectoryPath(stored))
+      if (inheritance === 'refused-foreign-home') this.ctx.logger.warn(`agent-team: supervision refused to inherit private memory from '${failed.privateMemoryPath}': it names a directory outside this DSH home`)
+      await this.activateMember(stored, this.requireWorkspace(failed.workspaceId).path)
+      for (const workspaceId of otherWorkspaces) {
+        const joined = await ledger.joinWorkspace({ requestId: randomUUID() as AgentTeamRequestId, workspaceId, memberId: stored.memberId, actor: agentTeamHumanActor() })
+        this.emitCommitted(joined.value.receipt)
+        for (const channelRef of channelsByWorkspace.get(workspaceId) ?? []) {
+          const channelJoin = await ledger.joinChannel({ requestId: randomUUID() as AgentTeamRequestId, workspaceId, channelRef, memberId: stored.memberId, actor: agentTeamHumanActor() })
+          this.emitCommitted(channelJoin.value.receipt)
+        }
+      }
+      if (homeChannels.length === 0) {
+        // No shared Channel means no admin surface to ask through; the roster
+        // change and the released Claims are still the durable record.
+        this.ctx.logger.warn(`agent-team: supervision could not announce the '${failed.handle}' → '${stored.handle}' handover: the Member belonged to no Channel`)
+        return
+      }
+      await this.sendMessageAs({ kind: 'member', memberId: stored.memberId, handle: stored.handle }, {
+        requestId: randomUUID() as AgentTeamRequestId,
+        workspaceId: stored.workspaceId,
+        channelRef: homeChannels[0]!,
+        body: supervisionHandoffText({
+          failedHandle: failed.handle, replacementHandle: stored.handle, trigger,
+          restartAttempts, maxRestartAttempts: SUPERVISION_MAX_RESTART_ATTEMPTS,
+          maxConsecutiveFailures: SUPERVISION_MAX_CONSECUTIVE_FAILURES, releasedClaims,
+        }),
+        asTask: false,
+      })
+    })
   }
 
   /**

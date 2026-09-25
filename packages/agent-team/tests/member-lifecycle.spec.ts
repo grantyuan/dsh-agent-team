@@ -531,6 +531,32 @@ describe('Agent Team Member lifecycle', () => {
     expect(ctx.tools.schemas(renewed).length).toBeGreaterThan(0)
   })
 
+  it('schedules a member context compaction behind the current activity', async () => {
+    const { ctx, workspaceId } = await realHarness()
+    const added = await ctx.agentTeam.addMember({ requestId: requestId('add'), workspaceId, handle: 'builder', description: 'Builds the implementation', presetId: 'team-member', channelRefs: [] })
+    expect(added.status.presence).toBe('available')
+
+    // Scheduling returns immediately with the Member's current status; the
+    // reduction itself runs behind the Member's idle boundary in the
+    // background. The fresh session holds nothing compactable, so the run
+    // drains without touching the summarizer and the Member stays healthy.
+    const scheduled = await ctx.agentTeam.compactMemberContext({ requestId: requestId('compact'), workspaceId, memberId: added.status.member.memberId })
+    expect(scheduled.status.presence).toBe('available')
+    const deadline = Date.now() + 2000
+    while (Date.now() < deadline) {
+      const member = ctx.agentTeam.members().find(member => member.member.memberId === added.status.member.memberId)!
+      if (member.presence !== 'available') throw new Error(`compaction run turned the Member ${member.presence}: ${member.diagnostic?.detail ?? ''}`)
+      await new Promise(resolve => setTimeout(resolve, 50))
+    }
+    expect(ctx.agentTeam.members().find(member => member.member.memberId === added.status.member.memberId)!.presence).toBe('available')
+
+    // Guards: unknown and suspended Members cannot schedule a compaction.
+    await expect(ctx.agentTeam.compactMemberContext({ requestId: requestId('compact-unknown'), workspaceId, memberId: 'member:missing' as AgentTeamMemberId })).rejects.toThrow(/unknown Member/)
+    await ctx.agentTeam.suspendMember({ requestId: requestId('compact-suspend'), memberId: added.status.member.memberId })
+    await expect(ctx.agentTeam.compactMemberContext({ requestId: requestId('compact-suspended'), workspaceId, memberId: added.status.member.memberId }))
+      .rejects.toThrow(/only enabled Members can compact their context/)
+  })
+
   it('restarts a Member whose activation failed and rejects restart for suspended Members', async () => {
     const { ctx, workspaceId, presets } = await realHarness()
     presets.failingMount = true
@@ -4468,5 +4494,102 @@ describe('Agent Team change version domains', () => {
     // The edge left every projection cursor exactly where it was.
     expect((await changeBaseline(ctx.agentTeam)).version).toBe(projection)
     expect(await staysPending(nextChange(ctx.agentTeam))).toBe(true)
+  })
+})
+
+describe('Member supervision handover', () => {
+  /** The shared supervision input: one Channel Member holding an active Claim. */
+  async function setupClaimedMember(ctx: Context, workspaceId: WorkspaceId, prefix: string) {
+    const channel = await ctx.agentTeam.createChannel({ requestId: requestId(`${prefix}-channel`), workspaceId, name: 'engineering', description: 'Engineering work' })
+    const added = await ctx.agentTeam.addMember({ requestId: requestId(`${prefix}-add`), workspaceId, handle: 'builder', description: 'Builds the implementation', presetId: 'team-member', channelRefs: [channel.channel.channelRef] })
+    const memberId = added.status.member.memberId
+    const agent = ctx.agents.get(added.status.member.sessionId)!
+    const started = await ctx.agentTeam.sendMessage({ asTask: true, requestId: requestId(`${prefix}-task`), workspaceId, channelRef: channel.channel.channelRef, body: 'Build the feature', recipients: [memberId] })
+    if (started.kind !== 'committed') throw new Error(`expected committed start, received ${started.kind}`)
+    await ctx.agentTeam.readThreadForAgent(agent, { requestId: requestId(`${prefix}-read`), workspaceId, taskRef: started.task!.taskRef })
+    const claimed = await ctx.agentTeam.changeClaimForAgent(agent, { requestId: requestId(`${prefix}-claim`), workspaceId, taskRef: started.task!.taskRef, action: 'claim', direction: 'implements the feature', baseRevision: started.thread.revision })
+    if (claimed.kind !== 'committed') throw new Error(`expected committed claim, received ${claimed.kind}`)
+    // Supervision never observes a Member mid-turn it just woke for the Task:
+    // every pass it runs from here is a real judgement, not a settling skip.
+    await waitForIdle(ctx, agent)
+    return { channel, added, memberId, agent, taskRef: started.task!.taskRef }
+  }
+
+  it('hands claimed work to a -2 generation after the bring-up budget cannot heal a stopped Member', async () => {
+    const { ctx, workspaceId, archived, presets } = await realHarness()
+    const { added, memberId, taskRef } = await setupClaimedMember(ctx, workspaceId, 'supervise-stop')
+    await writeFile(join(added.status.member.privateMemoryPath, 'notes', 'design.md'), 'inherited note')
+
+    // The Member is stopped in a way no bring-up can repair: its live
+    // composition orphaned (presence error) and every re-mount fails.
+    const agent = ctx.agents.get(added.status.member.sessionId)!
+    presets.orphaned.add(agent.ctx)
+    presets.failingMount = true
+
+    // Each pass spends exactly one bring-up: the rebuild leaves the Member
+    // erroring again, and its activation wake is idled before the next pass so
+    // no pass is ever skipped as `settling`.
+    for (let pass = 0; pass < 3; pass += 1) {
+      await ctx.agentTeam.runSupervisionPass()
+      const rebuilt = ctx.agents.get(added.status.member.sessionId)
+      if (rebuilt !== undefined) await waitForIdle(ctx, rebuilt)
+    }
+    // The budget was spent on bring-ups, not on a handover: the roster still
+    // holds exactly the one Member, every rebuild landing on the same failing
+    // mount, so it stays unreachable.
+    expect(ctx.agentTeam.members().map(status => status.member.handle)).toEqual(['builder'])
+    expect(ctx.agentTeam.members().find(status => status.member.memberId === memberId)).toMatchObject({ availability: 'unavailable' })
+
+    // The fourth pass finds the Member still stopped and hands over. The
+    // mount failure is lifted so the replacement can activate like any add.
+    presets.failingMount = false
+    await ctx.agentTeam.runSupervisionPass()
+
+    const statuses = ctx.agentTeam.members()
+    expect(statuses.find(status => status.member.memberId === memberId)).toMatchObject({ availability: 'archived', presence: 'unavailable' })
+    const replacement = statuses.find(status => status.member.handle === 'builder-2')
+    expect(replacement, JSON.stringify(statuses.map(status => status.member.handle))).toMatchObject({ availability: 'active' })
+    expect(replacement!.member).toMatchObject({ description: 'Builds the implementation', presetId: 'team-member', state: 'enabled' })
+    expect(replacement!.member.memberId).not.toBe(memberId)
+    expect(replacement!.member.sessionId).not.toBe(added.status.member.sessionId)
+    expect(archived).toContain(added.status.member.sessionId)
+
+    // The released Claim drops the Task back to todo for the admin to reassign.
+    const view = ctx.agentTeam.view({ workspaceId })
+    expect(view.tasks.find(task => task.taskRef === taskRef)).toMatchObject({ status: 'todo' })
+
+    // The replacement carries its predecessor's private memory and Channel,
+    // and asked the Human in Channel for the work.
+    await expect(readFile(join(replacement!.member.privateMemoryPath, 'notes', 'design.md'), 'utf8')).resolves.toBe('inherited note')
+    const notice = view.items.map(item => item.message).filter(message => message.body.includes('Supervision handover'))
+    expect(notice).toHaveLength(1)
+    expect(notice[0]!.sender).toBe(replacement!.member.memberId)
+    expect(notice[0]!.body).toContain('@human')
+    expect(notice[0]!.body).toContain('`builder` stopped abnormally and stayed stopped after 3/3 bring-up attempts')
+    expect(notice[0]!.body).toContain('- implements the feature')
+    expect(() => ctx.agentTeam.validateLedger()).not.toThrow()
+  })
+
+  it('replaces a Member on the spot after three runtime errors with no clean turn between', async () => {
+    const { ctx, workspaceId } = await realHarness()
+    const { added, memberId } = await setupClaimedMember(ctx, workspaceId, 'supervise-streak')
+    const agent = ctx.agents.get(added.status.member.sessionId)!
+
+    // 'HTTP 500' is deliberately outside the recoverable families: the
+    // recovery coordinator ignores these occurrences, and only supervision's
+    // own streak counter reacts.
+    for (let failure = 0; failure < 3; failure += 1) {
+      ctx.emit('agent/error', { agent, turn: 1, step: 1, error: new Error('HTTP 500 backend exploded') })
+    }
+
+    await vi.waitFor(() => {
+      expect(ctx.agentTeam.members().map(status => status.member.handle)).toContain('builder-2')
+    })
+    expect(ctx.agentTeam.members().find(status => status.member.memberId === memberId)).toMatchObject({ availability: 'archived' })
+    const view = ctx.agentTeam.view({ workspaceId })
+    const notice = view.items.map(item => item.message).filter(message => message.body.includes('Supervision handover'))
+    expect(notice).toHaveLength(1)
+    expect(notice[0]!.body).toContain('failed 3 turns in a row without finishing any of them')
+    expect(() => ctx.agentTeam.validateLedger()).not.toThrow()
   })
 })

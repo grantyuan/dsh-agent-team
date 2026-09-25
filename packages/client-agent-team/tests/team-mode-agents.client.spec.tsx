@@ -336,13 +336,21 @@ describe('Team agent surfaces', () => {
     fireEvent.click(b.view.getByRole('button', { name: '团队' }))
     await b.view.findByText('builder')
 
-    // The manual clear-context row action is retired: Members manage their
-    // own context through the context_rollover tool, and every row menu —
-    // available, working, error, unavailable — omits the entry entirely.
+    // The retired manual clear-context escape hatch never returns under its
+    // old label. The visible context actions are 重置 and 压缩 instead,
+    // offered to every live Member (active availability) and withheld from an
+    // unavailable one.
     for (const handle of ['builder', 'worker', 'failed', 'offline']) {
       fireEvent.click(b.view.getByRole('button', { name: `${handle} 的操作` }))
       const menu = await within(document.body).findByRole('menu')
       expect(within(menu).queryByRole('menuitem', { name: '从全新上下文开始' })).toBeNull()
+      if (handle === 'offline') {
+        expect(within(menu).queryByRole('menuitem', { name: '重置' })).toBeNull()
+        expect(within(menu).queryByRole('menuitem', { name: '压缩' })).toBeNull()
+      } else {
+        expect(within(menu).getByRole('menuitem', { name: '重置' })).toBeTruthy()
+        expect(within(menu).getByRole('menuitem', { name: '压缩' })).toBeTruthy()
+      }
       fireEvent.keyDown(document, { key: 'Escape' })
     }
 
@@ -611,6 +619,48 @@ describe('Team archival surfaces', () => {
     })
     await b.publishChannelUpdate()
     await waitFor(() => expect(b.view.queryByRole('button', { name: 'builder 的操作' })).toBeNull())
+    await b.runtime.dispose()
+  })
+
+  it('resets an Agent session and schedules a compaction from the row menu', async () => {
+    const b = await runtimeWithTeam({ initialChannels: true })
+    fireEvent.click(b.view.getByRole('button', { name: '团队' }))
+    await b.view.findByText('builder')
+
+    // 重置 confirm: cancel routes nothing; confirm renews the Member's
+    // Session through the Host rollover.
+    fireEvent.click(b.view.getByRole('button', { name: 'builder 的操作' }))
+    fireEvent.click(await within(document.body).findByRole('menuitem', { name: '重置' }))
+    const resetDialog = b.view.getByRole('dialog', { name: '重置 Agent：builder' })
+    expect(resetDialog.textContent).toContain('私有记忆不受影响')
+    expect(b.clearMemberContext).not.toHaveBeenCalled()
+    fireEvent.click(within(resetDialog).getByRole('button', { name: '取消' }))
+    expect(b.view.queryByRole('dialog', { name: '重置 Agent：builder' })).toBeNull()
+    fireEvent.click(b.view.getByRole('button', { name: 'builder 的操作' }))
+    fireEvent.click(await within(document.body).findByRole('menuitem', { name: '重置' }))
+    fireEvent.click(await b.view.findByRole('button', { name: /^重置$/ }))
+    await waitFor(() => {
+      expect(b.clearMemberContext).toHaveBeenCalledWith(expect.objectContaining({ workspaceId: 'w1', memberId: 'member:builder' }))
+    })
+
+    // 压缩 picks the summarizing LLM: the default follows the session's
+    // routed model; picking one pins it into the request. The Host schedules
+    // the run behind the Member's current activity, so the dialog closes with
+    // a schedule acknowledgement instead of waiting for the reduction.
+    fireEvent.click(b.view.getByRole('button', { name: 'builder 的操作' }))
+    fireEvent.click(await within(document.body).findByRole('menuitem', { name: '压缩' }))
+    const compactDialog = b.view.getByRole('dialog', { name: '压缩 Agent：builder' })
+    const modelTrigger = await within(compactDialog).findByRole('button', { name: '模型' })
+    await waitFor(() => { expect(modelTrigger.textContent).toContain('跟随会话当前模型') })
+    fireEvent.click(modelTrigger)
+    fireEvent.click(within(document.body).getByRole('menuitem', { name: 'DeepSeek Reasoner' }))
+    fireEvent.click(within(compactDialog).getByRole('button', { name: '开始压缩' }))
+    await waitFor(() => {
+      expect(b.compactMemberContext).toHaveBeenCalledWith(expect.objectContaining({
+        workspaceId: 'w1', memberId: 'member:builder', model: { provider: 'deepseek-official', model: 'deepseek-reasoner' },
+      }))
+    })
+    await waitFor(() => { expect(b.view.getByRole('alert').textContent).toContain('已提交压缩') })
     await b.runtime.dispose()
   })
 
