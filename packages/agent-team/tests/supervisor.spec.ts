@@ -3,9 +3,11 @@ import {
   MemberSupervisor,
   nextReplacementHandle,
   supervisionHandoffText,
+  SUPERVISION_FAILURE_WINDOW_MS,
   SUPERVISION_INTERVAL_MS,
   SUPERVISION_MAX_CONSECUTIVE_FAILURES,
   SUPERVISION_MAX_RESTART_ATTEMPTS,
+  SUPERVISION_WINDOW_FAILURES,
   type MemberSupervisionState,
   type SupervisionTrigger,
 } from '../src/supervisor.ts'
@@ -172,12 +174,48 @@ describe('MemberSupervisor failure streaks', () => {
   })
 
   it('a clean turn ends the streak', () => {
+    vi.useFakeTimers()
+    try {
+      const { supervisor, replacements } = harness()
+      supervisor.onError(builder)
+      supervisor.onError(builder)
+      supervisor.onCleanTurn(builder)
+      // Beyond the rolling window the earlier occurrences stop counting, so
+      // the fresh post-clean-turn streak is what the policy judges.
+      vi.advanceTimersByTime(SUPERVISION_FAILURE_WINDOW_MS + 1)
+      for (let failure = 0; failure < SUPERVISION_MAX_CONSECUTIVE_FAILURES - 1; failure += 1) supervisor.onError(builder)
+      expect(replacements).toEqual([])
+      supervisor.onError(builder)
+      expect(replacements).toEqual([{ memberId: builder, trigger: 'consecutive-failures', restartAttempts: 0 }])
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('counts failures separated by clean turns inside the rolling window', () => {
     const { supervisor, replacements } = harness()
-    supervisor.onError(builder)
-    supervisor.onError(builder)
-    supervisor.onCleanTurn(builder)
-    for (let failure = 0; failure < SUPERVISION_MAX_CONSECUTIVE_FAILURES; failure += 1) supervisor.onError(builder)
-    expect(replacements).toEqual([{ memberId: builder, trigger: 'consecutive-failures', restartAttempts: 0 }])
+    for (let round = 0; round < SUPERVISION_WINDOW_FAILURES; round += 1) {
+      supervisor.onError(builder)
+      supervisor.onCleanTurn(builder)
+    }
+    expect(replacements).toEqual([{ memberId: builder, trigger: 'failure-rate', restartAttempts: 0 }])
+  })
+
+  it('forgets failures that fall out of the rolling window', () => {
+    vi.useFakeTimers()
+    try {
+      const { supervisor, replacements } = harness()
+      supervisor.onError(builder)
+      supervisor.onError(builder)
+      vi.advanceTimersByTime(SUPERVISION_FAILURE_WINDOW_MS + 1)
+      // A clean turn between them keeps the consecutive streak at one, and the
+      // expired occurrences no longer feed the rolling window.
+      supervisor.onCleanTurn(builder)
+      supervisor.onError(builder)
+      expect(replacements).toEqual([])
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   it('counts the bring-ups a Member already spent into its streak record', async () => {
@@ -238,11 +276,13 @@ describe('handover notice', () => {
       restartAttempts: SUPERVISION_MAX_RESTART_ATTEMPTS,
       maxRestartAttempts: SUPERVISION_MAX_RESTART_ATTEMPTS,
       maxConsecutiveFailures: SUPERVISION_MAX_CONSECUTIVE_FAILURES,
+      maxWindowFailures: SUPERVISION_WINDOW_FAILURES,
+      maxFailureWindowMs: SUPERVISION_FAILURE_WINDOW_MS,
       releasedClaims: [{ direction: 'implements the parser', taskRef: 'task:11111111-1111-1111-1111-111111111111' }],
     })
     expect(body).toContain('@human')
     expect(body).toContain('`builder` stopped abnormally and stayed stopped after 3/3 bring-up attempts')
-    expect(body).toContain('`builder-2`, the same role with its private memory inherited')
+    expect(body).toContain("`builder-2`, `builder`'s same-role replacement — same preset, same pinned settings, inherited private memory, and the same Channel reach")
     expect(body).toContain('- implements the parser (task:11111111-1111-1111-1111-111111111111)')
   })
 
@@ -254,6 +294,8 @@ describe('handover notice', () => {
       restartAttempts: 0,
       maxRestartAttempts: SUPERVISION_MAX_RESTART_ATTEMPTS,
       maxConsecutiveFailures: SUPERVISION_MAX_CONSECUTIVE_FAILURES,
+      maxWindowFailures: SUPERVISION_WINDOW_FAILURES,
+      maxFailureWindowMs: SUPERVISION_FAILURE_WINDOW_MS,
       releasedClaims: [],
     })
     expect(body).toContain('failed 3 turns in a row without finishing any of them')

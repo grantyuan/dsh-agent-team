@@ -7,6 +7,7 @@ import type {
   AgentTeamClaimRef,
   AgentTeamMemberId,
   AgentTeamRequestId,
+  AgentTeamSupervisionStatus,
   AgentTeamTaskRef,
   AgentTeamThreadRef,
 } from '@wowyuarm/dsh-agent-team/types'
@@ -700,11 +701,63 @@ const teamView = defineTool({
   },
 })
 
+const teamSupervise = defineTool({
+  name: 'team_supervise',
+  description: 'Check or repair a fellow Member\'s health through team supervision. status reports what the periodic supervision pass reads about one Member: pass state (healthy / settling / stopped), presence, the recorded failure diagnostic, and how many times that Member errored inside the 20-minute window. reset forces an abnormal Member — stopped with an error, failing repeatedly, or hung — into the same fresh-context reset the Human menu performs: its Session renews from empty, its identity, settings, and private memory survive, and its previous log stays archived. reset refuses a healthy Member: supervision repairs only what is actually abnormal. After a reset, re-brief the Member on its interrupted work and hand it fresh tasks.',
+  parameters: {
+    action: { type: 'string', required: true, enum: ['status', 'reset'] },
+    memberRef: { type: 'string', required: true, description: "Full branded Member ref exactly as returned by Team tools, including the 'member:' prefix. An unambiguous abbreviation of the first 6+ UUID hex characters also resolves. The target must be an enabled Agent Member of your Workspace; you cannot reset yourself." },
+    workspace: workspaceParam,
+  },
+  output: {
+    schema: { type: 'object', additionalProperties: false, properties: {
+      action: { type: 'string', required: true },
+      memberId: { type: 'string', required: true }, handle: { type: 'string', required: true },
+      state: { type: 'string', required: true }, presence: { type: 'string', required: true },
+      diagnostic: { type: 'string' }, recentFailureCount: { type: 'number', required: true }, failureWindowMinutes: { type: 'number', required: true },
+    } },
+    render: (_args, value) => {
+      if (value.action === 'status') {
+        return [{ type: 'text', text: [
+          `Supervision status — @${value.handle} (${value.memberId})`,
+          `State: ${value.state} · presence: ${value.presence} · failures in the last ${value.failureWindowMinutes} minutes: ${value.recentFailureCount}`,
+          ...(value.diagnostic === undefined ? [] : [`Diagnostic: ${value.diagnostic}`]),
+          value.state === 'stopped' || value.recentFailureCount > 0
+            ? `This Member reads abnormal — a team_supervise reset gives it a fresh context (identity, settings, and private memory survive), then re-brief it on its work.`
+            : 'No supervision action needed.',
+        ].join('\n') }]
+      }
+      return [{ type: 'text', text: [
+        `Committed — @${value.handle} (${value.memberId}) was reset to a fresh context.`,
+        `Its identity, settings, and private memory survive; durable Team facts (Tasks, Claims, Channels) are unaffected; its previous session log is archived.`,
+        'It remembers nothing from before the reset: re-share the key context and hand it fresh work.',
+      ].join('\n') }]
+    },
+  },
+  async execute(args, exec) {
+    const agent = exec.agent
+    if (agent === undefined) throw new Error('team_supervise requires an Agent session')
+    const host = service(agent)
+    const workspaceId = workspaceOf(args, agent)
+    if (args.action === 'status') {
+      const status: AgentTeamSupervisionStatus = host.supervisionStatusForAgent(agent, { workspaceId, memberId: args.memberRef as AgentTeamMemberId })
+      return { action: 'status', memberId: status.memberId, handle: status.handle, state: status.state, presence: status.presence,
+        ...(status.diagnostic === undefined ? {} : { diagnostic: status.diagnostic }),
+        recentFailureCount: status.recentFailureCount, failureWindowMinutes: status.failureWindowMinutes }
+    }
+    const result = await host.resetMemberForAgent(agent, { requestId: requestId(agent.id, exec.callId), workspaceId, memberId: args.memberRef as AgentTeamMemberId })
+    const member = result.status.member
+    return { action: 'reset', memberId: member.memberId, handle: member.handle, state: 'healthy', presence: result.status.presence,
+      recentFailureCount: 0, failureWindowMinutes: 0 }
+  },
+})
+
 export function apply(ctx: Context): void {
   ctx.tools.register(teamInbox)
   ctx.tools.register(teamThread)
   ctx.tools.register(teamMessage)
   ctx.tools.register(teamClaim)
   ctx.tools.register(teamView)
+  ctx.tools.register(teamSupervise)
   registerContextTools(ctx)
 }

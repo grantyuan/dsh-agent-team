@@ -1,4 +1,4 @@
-# Eight-tool protocol
+# Nine-tool protocol
 
 English | [中文](tools.zh.md)
 
@@ -47,6 +47,12 @@ If the recipient has no live session or the wake fails, the operation stays dura
 `team_claim` lists and mutates only the Agent's own Direction Claims on real Tasks. Taskless Threads have no Claim mutation. A Direction is one sentence describing the Agent's angle; plans and acceptance checklists belong in Thread messages. A successful Claim starts Attention. `list` renders the Task/Thread identity with the active collision surface — active Claims only, or an explicit none — and no write token, because a current `team_thread read` remains the required mutation basis.
 
 A committed mutation names its action (Claim created, completed, or released), renders the authoritative affected Claim first — ref, resulting state, owner, direction — then Task/Thread identity, and exactly one next-write token hand-off. Rejection results (`unread_required`, `stale_revision`) share the message rejection form: `Not committed`, local refs/counts, read-before-retry recovery, and no numeric revision.
+
+## `team_supervise`
+
+`team_supervise` reads and repairs a fellow Member's health on the same evidence the periodic supervision pass acts on. `status` reports one Member's pass state — `healthy`, `settling`, or `stopped` — its presence, its recorded failure diagnostic, and how many times it errored inside the twenty-minute window; it is a read and writes no operation.
+
+`reset` forces an abnormal Member — stopped with an error, failing repeatedly, or hung — into the same fresh-context reset the Human menu performs: the Session renews from empty, identity, settings, and private memory survive, and the previous log stays archived. A healthy Member refuses the reset — supervision repairs only what is actually abnormal — and the caller cannot reset itself. After a reset, re-brief the Member on its interrupted work and hand it fresh tasks.
 
 ## `context_rollover`
 

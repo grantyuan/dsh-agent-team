@@ -225,12 +225,15 @@ async function realHarness(
   await ctx.plugin(AgentRegistry)
   await ctx.plugin(AgentLoop, { agents: [] })
   ctx.provide('agentDefaultModel', { currentSelection: () => ({ provider: 'mock', model: 'mock' }) })
-  // The Team pressure policy reads the token meter at every Member pre-step;
-  // tests that need pressure control override this with a writable fake.
+  // The Team pressure policy reads the token meter at every Member pre-step,
+  // and manual compaction measures through the same Host seam; tests that
+  // need pressure control override this with a writable fake. The fake keeps
+  // the real measurement's `nodes` shape (empty: nothing priced) so compaction
+  // reads it as a surface with nothing compactable.
   const pressureState = { usageTokens: 0, bySession: new Map<string, number>(), failFor: new Set<string>() }
-  ctx.provide('tokenMeter', { measure: (session: { id: string }): { totalTokens: number } => {
+  ctx.provide('tokenMeter', { measure: (session: { id: string }): { totalTokens: number; nodes: readonly never[] } => {
     if (pressureState.failFor.has(session.id)) throw new Error('meter unavailable for this session')
-    return { totalTokens: pressureState.bySession.get(session.id) ?? pressureState.usageTokens }
+    return { totalTokens: pressureState.bySession.get(session.id) ?? pressureState.usageTokens, nodes: [] }
   } })
   // The rollover job guard reads the member-scoped jobs registry; a writable
   // fake lets tests drive owned-job states.
@@ -485,6 +488,30 @@ describe('Agent Team Member lifecycle', () => {
     await ctx.agentTeam.suspendMember({ requestId: requestId('clear-suspend'), memberId: added.status.member.memberId })
     await expect(ctx.agentTeam.clearMemberContext({ requestId: requestId('clear-suspended'), workspaceId, memberId: added.status.member.memberId }))
       .rejects.toThrow(/only enabled Members can start from a new context/)
+  })
+
+  it('broadcasts a context-reset notice to the Channels after a manual clear', async () => {
+    const { ctx, workspaceId } = await realHarness()
+    const channel = await ctx.agentTeam.createChannel({ requestId: requestId('reset-channel'), workspaceId, name: 'engineering', description: 'Engineering work' })
+    const added = await ctx.agentTeam.addMember({ requestId: requestId('reset-add'), workspaceId, handle: 'builder', description: 'Builds the implementation', presetId: 'team-member', channelRefs: [channel.channel.channelRef] })
+    const peer = await ctx.agentTeam.addMember({ requestId: requestId('reset-peer'), workspaceId, handle: 'watcher', description: 'Works alongside', presetId: 'team-member', channelRefs: [channel.channel.channelRef] })
+    const peerAgent = ctx.agents.get(peer.status.member.sessionId)!
+    expect(ctx.agentTeam.inboxForAgent(peerAgent, { workspaceId }).totalDirectCount).toBe(0)
+
+    const cleared = await ctx.agentTeam.clearMemberContext({ requestId: requestId('reset-clear'), workspaceId, memberId: added.status.member.memberId })
+    expect(cleared.status.availability).toBe('active')
+
+    // The renewed Member announced its reset in the Channel it kept, and the
+    // fellow Member received it as a direct mention to re-brief against.
+    const view = ctx.agentTeam.view({ workspaceId })
+    const notices = view.items.map(item => item.message).filter(message => message.body.includes('Context reset notice'))
+    expect(notices).toHaveLength(1)
+    expect(notices[0]!.sender).toBe(added.status.member.memberId)
+    expect(notices[0]!.channelRef).toBe(channel.channel.channelRef)
+    const peerInbox = ctx.agentTeam.inboxForAgent(peerAgent, { workspaceId })
+    expect(peerInbox.totalDirectCount).toBe(1)
+    expect(peerInbox.items[0]!.thread.threadRef).not.toBeUndefined()
+    expect(() => ctx.agentTeam.validateLedger()).not.toThrow()
   })
 
   it('surfaces an orphaned preset composition and rebuilds the Member on resume', async () => {
@@ -1378,7 +1405,7 @@ describe('Agent Team Member lifecycle', () => {
   })
 
   it('validates the final Team tool marker during unpublished setup', async () => {
-    expect(AGENT_TEAM_TOOL_NAMES).toEqual(['team_inbox', 'team_thread', 'team_message', 'team_claim', 'team_view', 'context_rollover', 'context_checkpoint', 'context_timeline'])
+    expect(AGENT_TEAM_TOOL_NAMES).toEqual(['team_inbox', 'team_thread', 'team_message', 'team_claim', 'team_view', 'team_supervise', 'context_rollover', 'context_checkpoint', 'context_timeline'])
     const definition = markAgentTeamPreset({ name: 'team_message' })
     expect(Reflect.get(definition, Symbol.for('@wowyuarm/dsh-agent-team.preset'))).toBe(true)
   })
@@ -4540,8 +4567,20 @@ describe('Member supervision handover', () => {
     expect(ctx.agentTeam.members().map(status => status.member.handle)).toEqual(['builder'])
     expect(ctx.agentTeam.members().find(status => status.member.memberId === memberId)).toMatchObject({ availability: 'unavailable' })
 
-    // The fourth pass finds the Member still stopped and hands over. The
-    // mount failure is lifted so the replacement can activate like any add.
+    // The proven Member walks the escalation chain one step per pass: the
+    // fourth pass posts the alert that asks any teammate to reset it through
+    // `team_supervise`, the fifth pass is the Host's own fallback context
+    // reset (its re-activation still fails on the broken mount), and the
+    // sixth pass is the archive-and-replace handover. The mount failure is
+    // lifted before the last pass so the replacement can activate like any
+    // add, and the escalation step runs before the pass's own bring-up so
+    // the healed mount cannot quietly revive the old Member instead.
+    await ctx.agentTeam.runSupervisionPass()
+    const alerts = ctx.agentTeam.view({ workspaceId }).items.map(item => item.message).filter(message => message.body.includes('Supervision alert'))
+    expect(alerts).toHaveLength(1)
+    expect(alerts[0]!.sender).toBe(memberId)
+    expect(alerts[0]!.body).toContain('`team_supervise`')
+    await ctx.agentTeam.runSupervisionPass()
     presets.failingMount = false
     await ctx.agentTeam.runSupervisionPass()
 
@@ -4570,10 +4609,9 @@ describe('Member supervision handover', () => {
     expect(() => ctx.agentTeam.validateLedger()).not.toThrow()
   })
 
-  it('replaces a Member on the spot after three runtime errors with no clean turn between', async () => {
+  it('escalates a three-error streak through the alert and then the Host reset', async () => {
     const { ctx, workspaceId } = await realHarness()
-    const { added, memberId } = await setupClaimedMember(ctx, workspaceId, 'supervise-streak')
-    const agent = ctx.agents.get(added.status.member.sessionId)!
+    const { added, memberId, agent } = await setupClaimedMember(ctx, workspaceId, 'supervise-streak')
 
     // 'HTTP 500' is deliberately outside the recoverable families: the
     // recovery coordinator ignores these occurrences, and only supervision's
@@ -4582,14 +4620,72 @@ describe('Member supervision handover', () => {
       ctx.emit('agent/error', { agent, turn: 1, step: 1, error: new Error('HTTP 500 backend exploded') })
     }
 
+    // Step one is the alert, posted by the failing Member itself: it names the
+    // streak and the exact `team_supervise` remedy any teammate can perform.
     await vi.waitFor(() => {
-      expect(ctx.agentTeam.members().map(status => status.member.handle)).toContain('builder-2')
+      expect(ctx.agentTeam.view({ workspaceId }).items.map(item => item.message).filter(message => message.body.includes('Supervision alert'))).toHaveLength(1)
     })
-    expect(ctx.agentTeam.members().find(status => status.member.memberId === memberId)).toMatchObject({ availability: 'archived' })
+    const alert = ctx.agentTeam.view({ workspaceId }).items.map(item => item.message).find(message => message.body.includes('Supervision alert'))!
+    expect(alert.body).toContain('failed 3 turns in a row without finishing any of them')
+    expect(alert.body).toContain('action `reset`')
+
+    // Nobody acted within the pass window, so the Host performs the same
+    // context reset the Human menu performs: the Member keeps its handle,
+    // identity, and Claims, and starts a fresh Session — no replacement.
+    const previousSessionId = added.status.member.sessionId
+    await ctx.agentTeam.runSupervisionPass()
+    await vi.waitFor(() => {
+      const status = ctx.agentTeam.members().find(status => status.member.memberId === memberId)
+      expect(status, JSON.stringify(ctx.agentTeam.members().map(entry => entry.member.handle))).toBeDefined()
+      expect(status!.member.sessionId).not.toBe(previousSessionId)
+      expect(status).toMatchObject({ availability: 'active' })
+    })
+    expect(ctx.agentTeam.members().map(status => status.member.handle)).toEqual(['builder'])
+    expect(() => ctx.agentTeam.validateLedger()).not.toThrow()
+  })
+
+  it('broadcasts the handover on every inherited Channel and mentions every live fellow Member', async () => {
+    const { ctx, workspaceId, presets } = await realHarness()
+    const { channel, added, memberId } = await setupClaimedMember(ctx, workspaceId, 'supervise-wide')
+    // A second Channel the replacement will inherit, plus a bystander Member
+    // in the first Channel who must hear the news as a direct mention.
+    const second = await ctx.agentTeam.createChannel({ requestId: requestId('supervise-wide-ops'), workspaceId, name: 'ops', description: 'Ops work' })
+    await ctx.agentTeam.joinChannel({ requestId: requestId('supervise-wide-join'), workspaceId, channelRef: second.channel.channelRef, memberId })
+    const bystander = await ctx.agentTeam.addMember({ requestId: requestId('supervise-wide-watch'), workspaceId, handle: 'watcher', description: 'Works alongside', presetId: 'team-member', channelRefs: [channel.channel.channelRef] })
+    const bystanderAgent = ctx.agents.get(bystander.status.member.sessionId)!
+
+    // The Member stops in a way no bring-up can repair, and the budget is
+    // spent the same way the single-Channel handover test spends it.
+    const agent = ctx.agents.get(added.status.member.sessionId)!
+    presets.orphaned.add(agent.ctx)
+    presets.failingMount = true
+    for (let pass = 0; pass < 3; pass += 1) {
+      await ctx.agentTeam.runSupervisionPass()
+      const rebuilt = ctx.agents.get(added.status.member.sessionId)
+      if (rebuilt !== undefined) await waitForIdle(ctx, rebuilt)
+    }
+    // Then the chain itself: the alert pass, the Host's fallback reset pass
+    // (its re-activation still fails on the broken mount), and the handover
+    // pass with the mount lifted before the escalation step runs.
+    await ctx.agentTeam.runSupervisionPass()
+    await ctx.agentTeam.runSupervisionPass()
+    presets.failingMount = false
+    await ctx.agentTeam.runSupervisionPass()
+
+    const replacement = ctx.agentTeam.members().find(status => status.member.handle === 'builder-2')
+    expect(replacement, JSON.stringify(ctx.agentTeam.members().map(status => status.member.handle))).toMatchObject({ availability: 'active' })
+    // Both inherited Channels carry the handover notice, not just the first.
     const view = ctx.agentTeam.view({ workspaceId })
-    const notice = view.items.map(item => item.message).filter(message => message.body.includes('Supervision handover'))
-    expect(notice).toHaveLength(1)
-    expect(notice[0]!.body).toContain('failed 3 turns in a row without finishing any of them')
+    const notices = view.items.map(item => item.message).filter(message => message.body.includes('Supervision handover'))
+    expect(notices).toHaveLength(2)
+    expect(new Set(notices.map(message => message.channelRef))).toEqual(new Set([channel.channel.channelRef, second.channel.channelRef]))
+    for (const notice of notices) expect(notice.sender).toBe(replacement!.member.memberId)
+    // The bystander was addressed directly on the shared Channel, so its Inbox
+    // carries the mention even though the notice is authored by the replacement.
+    // The escalation adds the supervision alert before it; the Host's fallback
+    // reset could not run (the broken mount left no live Session to renew), so
+    // no context-reset notice reached the Channel.
+    expect(ctx.agentTeam.inboxForAgent(bystanderAgent, { workspaceId }).totalDirectCount).toBe(2)
     expect(() => ctx.agentTeam.validateLedger()).not.toThrow()
   })
 })

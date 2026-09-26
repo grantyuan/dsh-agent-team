@@ -28,6 +28,7 @@ describe('Agent Team generated Typert boundary', () => {
       'clearMemberContext',
       'compactMemberContext',
       'createChannel',
+      'diagnoseMember',
       'getAttachment',
       'getHumanAvatar',
       'humanProfile',

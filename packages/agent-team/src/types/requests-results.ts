@@ -184,6 +184,56 @@ export interface AgentTeamClearMemberContextResult {
 }
 
 /**
+ * Human intent to have the Team doctor analyze one failed Member. The Host
+ * ensures a persistent doctor Member exists (creating or renewing it as
+ * needed), starts the analysis from a fresh doctor context, and hands the
+ * doctor the failed Member's recent Session transcript as a bounded research
+ * subject; the doctor reports its findings back to the Human.
+ */
+export interface AgentTeamDiagnoseMemberRequest {
+  readonly requestId: AgentTeamRequestId
+  readonly workspaceId: WorkspaceId
+  readonly memberId: AgentTeamMemberId
+}
+
+/** The doctor Member row after the analysis request was accepted. */
+export interface AgentTeamDiagnoseMemberResult {
+  readonly status: AgentTeamAgentMemberStatus
+}
+
+/**
+ * What one Member's periodic supervision reads, as any fellow Member may see
+ * it through the team_supervise tool: the pass state, the current presence,
+ * the recorded failure diagnostic, and the windowed failure count the policy
+ * acts on.
+ */
+export interface AgentTeamSupervisionStatus {
+  readonly memberId: AgentTeamMemberId
+  readonly handle: string
+  /** The pass state: healthy, mid-transition/running, or abnormally stopped. */
+  readonly state: 'healthy' | 'settling' | 'stopped'
+  readonly presence: 'available' | 'working' | 'error' | 'unavailable'
+  /** The recorded failure diagnostic (runtime, compaction, or activation), when any. */
+  readonly diagnostic?: string
+  /** `agent/error` occurrences inside the supervision failure window (20 minutes). */
+  readonly recentFailureCount: number
+  /** The window, in whole minutes, that {@link recentFailureCount} counts in. */
+  readonly failureWindowMinutes: number
+}
+
+/** A Member-actor request to reset one abnormal fellow Member's context. */
+export interface AgentTeamResetMemberRequest {
+  readonly requestId: AgentTeamRequestId
+  readonly workspaceId: WorkspaceId
+  readonly memberId: AgentTeamMemberId
+}
+
+/** The reset Member row after the forced context reset was committed. */
+export interface AgentTeamResetMemberResult {
+  readonly status: AgentTeamAgentMemberStatus
+}
+
+/**
  * Human intent to compact one enabled Member's live Session in place. The
  * Host schedules the compaction behind the Member's current activity: it runs
  * at the next true idle boundary through the public CompactionEngine, and

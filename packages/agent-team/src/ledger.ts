@@ -889,6 +889,23 @@ export class AgentTeamLedger {
     return Object.freeze(channels.sort((a, b) => a.createdAtSequence - b.createdAtSequence).map(channel => channel.channelRef))
   }
 
+  /**
+   * The enabled Agent Members of one Channel, sorted for deterministic order.
+   * Read-only projection over the membership index — broadcast notices
+   * (supervised handover, context reset) use it to reach every live Member the
+   * notice concerns; the Human is addressed through the `@human` body mention
+   * instead, and the sender is excluded by the caller.
+   */
+  enabledChannelMembers(channelRef: AgentTeamChannelRef): readonly AgentTeamMemberId[] {
+    const members: AgentTeamMemberId[] = []
+    for (const memberId of this.state.memberships.get(channelRef) ?? []) {
+      if (memberId === AGENT_TEAM_HUMAN_MEMBER_ID) continue
+      if (this.state.members.get(memberId)?.state !== 'enabled') continue
+      members.push(memberId)
+    }
+    return Object.freeze(members.sort())
+  }
+
   joinChannel(request: AgentTeamAuthorizedJoinChannelRequest): Promise<AgentTeamLedgerResult<AgentTeamJoinChannelResult>> {
     return this.enqueue(async () => {
       const existing = this.state.byRequest.get(request.requestId)

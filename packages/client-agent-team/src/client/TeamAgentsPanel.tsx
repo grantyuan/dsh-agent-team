@@ -5,7 +5,7 @@ import type {
   AgentTeamModelSelection,
 } from '@wowyuarm/dsh-agent-team/types'
 import type { WorkspaceId } from '@deepseek-ai/dsh-api-workspace-controller/client'
-import { Button, IconArchiveOutlineRegular, IconEditOutlineRegular, IconGaugeOutlineRegular, IconNewChatOutlineRegular, IconPlayOutlineRegular, IconPlusOutlineRegular, IconRefreshOutlineRegular, Input, Modal, Tooltip } from '@deepseek-ai/dsh-client-ui-primitives'
+import { Button, IconArchiveOutlineRegular, IconEditOutlineRegular, IconGaugeOutlineRegular, IconInspectOutlineRegular, IconNewChatOutlineRegular, IconPlayOutlineRegular, IconPlusOutlineRegular, IconRefreshOutlineRegular, Input, Modal, Tooltip } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { TeamSidebarProps } from './slots.ts'
 import { TeamMemberIdentity } from './TeamMemberRow.tsx'
 import { SortableRow, useSidebarRowDrag } from './sidebar-drag.tsx'
@@ -29,6 +29,7 @@ interface TeamAgentsPanelProps {
   readonly recoverMember: TeamSidebarProps['recoverMember']
   readonly clearMemberContext: TeamSidebarProps['clearMemberContext']
   readonly compactMemberContext: TeamSidebarProps['compactMemberContext']
+  readonly diagnoseMember: TeamSidebarProps['diagnoseMember']
   readonly archiveMember: TeamSidebarProps['archiveMember']
   readonly joinWorkspace: TeamSidebarProps['joinWorkspace']
   readonly leaveWorkspace: TeamSidebarProps['leaveWorkspace']
@@ -40,7 +41,7 @@ interface TeamAgentsPanelProps {
   readonly t: TeamSidebarProps['t']
 }
 
-export function TeamAgentsPanel({ workspaceId, loadMembers, subscribeChanges, addMember, updateMember, recoverMember, clearMemberContext, compactMemberContext, archiveMember, joinWorkspace, leaveWorkspace, loadModels, memberSessionId, openMemberSession, onCreatingChange, t }: TeamAgentsPanelProps) {
+export function TeamAgentsPanel({ workspaceId, loadMembers, subscribeChanges, addMember, updateMember, recoverMember, clearMemberContext, compactMemberContext, diagnoseMember, archiveMember, joinWorkspace, leaveWorkspace, loadModels, memberSessionId, openMemberSession, onCreatingChange, t }: TeamAgentsPanelProps) {
   const [members, setMembers] = useState<readonly AgentTeamClientMemberStatus[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string>()
@@ -266,7 +267,7 @@ export function TeamAgentsPanel({ workspaceId, loadMembers, subscribeChanges, ad
         <div className={css.agentList}>
           {orderedMembers.map(status => (
             <SortableRow key={status.member.memberId} drag={drag} orderKey={status.member.memberId}>
-              <AgentRow workspaceId={workspaceId} leaveWorkspace={leaveWorkspace} status={status} {...(memberSessionId === undefined ? {} : { current: status.member.sessionId === memberSessionId })} updateMember={updateMember} recoverMember={recoverMember} clearMemberContext={clearMemberContext} compactMemberContext={compactMemberContext} archiveMember={archiveMember} loadModels={loadModels} openMemberSession={openMemberSession} onUpdated={refresh} t={t} />
+              <AgentRow workspaceId={workspaceId} leaveWorkspace={leaveWorkspace} status={status} {...(memberSessionId === undefined ? {} : { current: status.member.sessionId === memberSessionId })} updateMember={updateMember} recoverMember={recoverMember} clearMemberContext={clearMemberContext} compactMemberContext={compactMemberContext} diagnoseMember={diagnoseMember} archiveMember={archiveMember} loadModels={loadModels} openMemberSession={openMemberSession} onUpdated={refresh} t={t} />
             </SortableRow>
           ))}
         </div>
@@ -286,7 +287,7 @@ export function TeamAgentsPanel({ workspaceId, loadMembers, subscribeChanges, ad
  * conversation page, the avatar carries identity plus the presence badge, and
  * the row menu opens the editor.
  */
-function AgentRow({ workspaceId, leaveWorkspace, status, current, updateMember, recoverMember, clearMemberContext, compactMemberContext, archiveMember, loadModels, openMemberSession, onUpdated, t }: {
+function AgentRow({ workspaceId, leaveWorkspace, status, current, updateMember, recoverMember, clearMemberContext, compactMemberContext, diagnoseMember, archiveMember, loadModels, openMemberSession, onUpdated, t }: {
   readonly workspaceId: WorkspaceId
   readonly leaveWorkspace: TeamSidebarProps['leaveWorkspace']
   readonly status: AgentTeamClientMemberStatus
@@ -296,6 +297,7 @@ function AgentRow({ workspaceId, leaveWorkspace, status, current, updateMember, 
   readonly recoverMember: TeamSidebarProps['recoverMember']
   readonly clearMemberContext: TeamSidebarProps['clearMemberContext']
   readonly compactMemberContext: TeamSidebarProps['compactMemberContext']
+  readonly diagnoseMember: TeamSidebarProps['diagnoseMember']
   readonly archiveMember: TeamSidebarProps['archiveMember']
   readonly loadModels: TeamSidebarProps['loadModels']
   readonly openMemberSession: TeamSidebarProps['openMemberSession']
@@ -311,6 +313,7 @@ function AgentRow({ workspaceId, leaveWorkspace, status, current, updateMember, 
   const [archivePending, setArchivePending] = useState(false)
   const [resetPending, setResetPending] = useState(false)
   const [compactPending, setCompactPending] = useState(false)
+  const [diagnosePending, setDiagnosePending] = useState(false)
   const [compactModel, setCompactModel] = useState<AgentTeamModelSelection | undefined>(undefined)
   const archiveRequest = useRef<ReturnType<typeof mintRequestId>>()
   const withdrawing = workspaceId !== status.member.workspaceId
@@ -408,6 +411,28 @@ function AgentRow({ workspaceId, leaveWorkspace, status, current, updateMember, 
       setCompactPending(false)
     }
   }
+  // The Host creates or reuses the durable `doctor` Member, starts it on a
+  // fresh Session, and hands it the failed Member's transcript as research
+  // material; the doctor reports its analysis to the Human.
+  const diagnose = async (): Promise<void> => {
+    if (diagnosePending) return
+    setDiagnosePending(true)
+    setRowAlert(undefined)
+    try {
+      const result = await diagnoseMember({
+        requestId: mintRequestId(),
+        workspaceId: status.member.workspaceId,
+        memberId: status.member.memberId,
+      })
+      if (!result.ok) throw new Error(result.error.message)
+      setRowAlert(t('analyzeAgentDispatched', { name: status.member.handle }))
+      await onUpdated()
+    } catch (cause) {
+      setRowAlert(t('analyzeAgentFailed', { message: cause instanceof Error ? cause.message : String(cause) }))
+    } finally {
+      setDiagnosePending(false)
+    }
+  }
   return (
     <>
       <div className={css.agentRow} data-agent-row data-menu-open={menuOpen || undefined}>
@@ -419,7 +444,10 @@ function AgentRow({ workspaceId, leaveWorkspace, status, current, updateMember, 
             label={t('actionsAgent', { name: status.member.handle })}
             items={[
               { id: 'edit', label: t('editAgent'), icon: <IconEditOutlineRegular /> },
-              ...(status.presence === 'error' ? [{ id: 'resume', label: t('resumeAgent'), icon: <IconPlayOutlineRegular /> }] : []),
+              ...(status.presence === 'error' ? [
+                { id: 'resume', label: t('resumeAgent'), icon: <IconPlayOutlineRegular /> },
+                { id: 'diagnose', label: t('analyzeAgent'), icon: <IconInspectOutlineRegular /> },
+              ] : []),
               ...(status.availability === 'unavailable' && restartOffered(status) ? [{ id: 'restart', label: t('restartAgent'), icon: <IconRefreshOutlineRegular /> }] : []),
               // Both context actions need a live Member Session: the Host
               // rollover replaces the active log, and compaction is scheduled
@@ -438,6 +466,7 @@ function AgentRow({ workspaceId, leaveWorkspace, status, current, updateMember, 
                 setCompactModel(undefined)
                 setCompacting(true)
               }
+              else if (id === 'diagnose') void diagnose()
               else void recover()
             }}
             onOpenChange={setMenuOpen}

@@ -13,9 +13,11 @@ Team 是每个 DSH home 内唯一的协作域。append-only operation ledger 是
 
 ## Lifecycle 与通知
 - Agent lifecycle、JSON/SQLite replay、authorization、idempotency 和 revision checks 都留在 Host 侧。durable unread 变化可以通过 public Agent safe-boundary API 产生一条有界、合并后的 Agent context notification：direct mentions 携带其 Message 和 source，Task/Claim Activities 携带简要状态变化，ordinary unread 只携带不含正文的 Thread-first route（若存在则带 Task overlay）。Promotion 与其他 Task transition 一样是 Task activity，通过 Activity markers 到达 followers。这类 notification 不是第二权威，也不保证模型恰好处理一次。
-- Member supervision（`supervisor.ts`）是 `recovery.ts` 之后的自动兜底。巡查每十分钟一趟——只在 startup 的 Member restore 落定后才挂上定时器，冷 Session 不会被误读为停止——观察对象恰好是仍持有活跃 Claim 的 enabled Members。被判定异常停止的 Member（unreachable 或 error presence；活着但闲置且持有未竟 Claim 是按设计等待，不被打扰）每个 pass 拉起一次、至多三次；三次 `agent/error` 之间没有任何干净回合结束则当场替换。
+- Member supervision（`supervisor.ts`）是 `recovery.ts` 之后的自动兜底。巡查每十分钟一趟——只在 startup 的 Member restore 落定后才挂上定时器，冷 Session 不会被误读为停止——观察对象是所有 enabled Members。Agent 活着且 turn 仍可能推进时读作 settling（活着但闲置且持有未竟 Claim 是按设计等待，不被打扰）；不处于 active、携带 error presence、或已运行但超过三十分钟没有任何 durable session event 时读作 stopped。stopped 的 Member 每个 pass 拉起一次、至多三次。
+- 反复失败不再当场替换，而是走三级升级链：三次 `agent/error` 之间没有任何干净回合结束、或二十分钟滚动窗口内出现三次失败，会开启一条每 pass 推进一步的三步链。第一步向该 Member 的 Channels 发监督告警，任何其他 Member 都可以通过 `team_supervise` 读取同样的状态并亲手执行重置；第二步由 Host 兜底执行与 Human 菜单相同的 fresh-context 重置；第三步是下述的归档与换代交接。任一时刻重新读作 healthy 都会退出升级链，被治好的 Member 为未来的 episode 重新武装最温和的第一步。
+- 每一轮完成的模型请求都要通过返回结果检查：一轮在结束时既没有工具调用也没有可见文本——或文本没有以「任务结束」完成标记收尾——即视为一轮故障，Host 会向同一轮 steer 一条 `continue` 提示让 Member 继续执行。连续三次提示后熔断，任何健康的一轮（出现工具调用或以标记收尾）都会重置 episode；被中断的轮次是人为取消而非故障，且该提示在 context projection 中始终按纯提醒处理。
 - 替换在一个串行化的 lifecycle step 内以普通 Host 生命周期完成：失败 Member 走同一条 `archiveMember`（其 Claims 照常以公开 `claims_released` Activities 释放），同角色的下一代以 Human 权限入队——handle 取该角色下一个空闲的 `-N` 代际，可变角色事实照搬，私有记忆（`memory.md` 与 `notes/`，`skills/` 有意不继承）在替补首次 activation 之前拷贝完成，前任的 Channel 参与关系逐一补授。
-- 随后替补在共享 Channel 发一条不含 Task 的 `@human` 交接公告，逐条点名被释放的 Claim，请管理员通过 ordinary Task routing 重新派工。计数器与观察名单是进程内的——重启即重新挣回预算，与压力策略同构——而一切 durable 结果都是 ledger operation，因此交接中途崩溃只会按正常台账重放，绝不会留下半真半假的 Team 事实。
+- 随后替补在其继承的每个 Channel 各发一条不含 Task 的交接公告，逐条点名被释放的 Claim，并用显式 recipients 直接触达所有存活的其他 Member（包括 `@human` 管理员），让团队知道谁顶替了谁——以及替补继承了前任的设置与私有记忆——管理员则通过 ordinary Task routing 重新派工。计数器与观察名单是进程内的——重启即重新挣回预算，与压力策略同构——而一切 durable 结果都是 ledger operation，因此交接中途崩溃只会按正常台账重放，绝不会留下半真半假的 Team 事实。
 
 ## 变更流与 Projection
 - `changes()` 是流式 Remote，可声明一个 scope（workspace/channel/thread/presence）；省略 scope 时观察共享 Team 投影变化，不包含 presence。Host 先注册监听，再发送当前基线，之后只发送匹配的变更通知；消费者暂停期间仅保留最新待发送版本。取消或 Host 释放时关闭订阅。Thread read 与 `team/dm-sent` 不改变共享投影，因此既不推进其版本也不唤醒订阅者。Presence 使用进程内 epoch，其余 scope 使用最近一次共享投影提交的 ledger sequence。版本只在同一 scope 和 Host 生命周期内有意义。Host 只为受 operation 影响的 Members 重算 Inbox hints。
@@ -35,7 +37,7 @@ Team 是每个 DSH home 内唯一的协作域。append-only operation ledger 是
 ## Session 策略与上下文压力
 - Team 管理的 Agent sessions 使用显式 Team preset 和可信的 `danger-full-access` policy，这是面向可信 Workspace 的有意产品边界。
 - Host 激活 Member 时，会通过 session-title service 用其 handle 命名没有标题的 Member session，使普通 Session list 显示 Member identity。显式 rename 或任何已有 title 始终优先，命名失败不会导致 activation 失败。
-- 已接受 Task 的自动 compaction 已退役。Member 上下文压力由 Host 压力策略持有（见 Tools and preset）：预算阈值从当前 route 的 context window 派生，handoff 预算每 generation 一条通知，硬上限强制原地 compaction 并 fail-closed 验证，provider context-overflow 获得一条有界 compact-and-retry。Pending/error bookkeeping 只在进程内维护；只有进入 transaction 的 compactions 才会写入 durable Session history，绝不写入 Team ledger。
+- 已接受 Task 的自动 compaction 已退役。Member 上下文压力由 Host 压力策略持有（见 Tools and preset）：预算阈值从当前 route 的 context window 派生，handoff 预算每 generation 一条通知，硬上限强制原地 compaction 且只有实测压力被证明降到硬限之下才放行该 step（否则 fail closed，每次恢复链只一次强制压缩），provider context-overflow 获得一条有界 compact-and-retry。Pending/error bookkeeping 只在进程内维护；只有进入 transaction 的 compactions 才会写入 durable Session history，绝不写入 Team ledger。
 
 ## 私有记忆、归档与身份效应
 - `$DSH_HOME/agent-team/members/` 下的 private-memory directories 是 Member identity 的 Host-owned effects，不是第二权威。Member activation 确保 private-memory directory、`notes/` 和缺失的 `memory.md` 存在；startup 不会清理 ledger 不知道的 `member:` directories。显式 Member removal 会归档其 Session 并移除该 Member 的 private-memory directory；Team removal path 之外的 entries 保持不动。这项删除与 activation 时对旧式 colon 目录的改名都限定在当前进程自己的 members root 之内——记录里的 `privateMemoryPath` 是一条 durable 绝对事实，指向「当初添加该 Member 的那个 DSH home」里的目录；因此解析到另一个 home 的进程会拒绝搬移或删除它（并告警），而不是把 Member 的真实私有记忆搬出它自己的 home。
@@ -45,7 +47,7 @@ Team 是每个 DSH home 内唯一的协作域。append-only operation ledger 是
 
 ## Member capabilities 与 skills
 - Member capabilities（Member 实体上的 `capabilities` 字段：预留的 `tools.allow` 与 `skills.allow`）是随全部 lifecycle operation 原样流转的 durable intent。commit 时不做已知名白名单校验，保证 Harness 升级后旧 ledger 仍可重放；与已知名的偏差在 activation 时派生为不持久化的 `capabilityWarnings`。`tools.allow` 是有意的接口预留（无 UI 写入路径），供后续 Runtime Revision manifest 编排依赖，cleanup 时勿删。编辑语义与 `model` 一致（absent 即清除）；不管理 capabilities 的调用方必须回传已存储的值。
-- Activation 把 `tools.allow` 作为 scoped restriction 应用在已组合的 preset 面上，顺序为 mount → restrict → validate（validate 观察限制后的可见面），并在配置之上强制并集八个 Team tools。未知名 drop + warning，不阻断 activation。对 live Member 编辑 allow-list 在 turn 边界同 Session 换装 restriction：idle 立即生效；running 的编辑等待 turn 结束，后续 lifecycle 操作在该等待之后排队（lifecycle Remote 严格串行——等待期间发起的 suspend 在 swap 之后执行；disposed-scope 监听器覆盖 lifecycle 之外的销毁）。restriction 失败只表现为该 Member 的 activation failure。
+- Activation 把 `tools.allow` 作为 scoped restriction 应用在已组合的 preset 面上，顺序为 mount → restrict → validate（validate 观察限制后的可见面），并在配置之上强制并集九个 Team tools。未知名 drop + warning，不阻断 activation。对 live Member 编辑 allow-list 在 turn 边界同 Session 换装 restriction：idle 立即生效；running 的编辑等待 turn 结束，后续 lifecycle 操作在该等待之后排队（lifecycle Remote 严格串行——等待期间发起的 suspend 在 swap 之后执行；disposed-scope 监听器覆盖 lifecycle 之外的销毁）。restriction 失败只表现为该 Member 的 activation failure。
 - Skills 是 Member 私有的。 preset 不带共享 skill-filesystem row；Host 在每个 Member 的 agent exact scope layer 上（traceable-service 接缝，与 tool restriction 同构）注册一个 filesystem provider，只扫两个 Team 自有 root（排除默认 roots）：插件内置的只读 core skills（`packages/agent-team/core-skills/`，排前——同名内置 skill 跨升级保持稳定）和 Member 可写的 `$DSH_HOME/agent-team/members/<memberId>/skills/`。
 
   Member catalog 因此以内置集起始（`member-skill-manager` meta skill——全部 skill 写作/安装/credentials 引导都在它里面，persona 只陈述私有空间物理事实）；安装就是往自己目录写（目录形态 `skills/<name>/SKILL.md` + 可选 references/scripts，或平铺 `.md`），有意不提供上传 Remote，filesystem watcher 驱动发现。

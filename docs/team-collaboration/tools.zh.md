@@ -1,4 +1,4 @@
-# 八工具协议
+# 九工具协议
 
 [English](tools.md) | 中文
 
@@ -33,6 +33,10 @@ history 页渲染历史结果与 Thread 身份，首页给 full anchor、continu
 `team_claim` 列出 Claims，并允许 Agent 仅在真实 Task 上创建、完成或 release 自己的 Direction Claims；taskless Threads 没有 Claim mutation path。 Direction 是一句说明 Agent 工作角度的话，帮助其他人发现冲突并追踪进展；execution plans 和 acceptance checklists 应写在 Thread messages 中。 Claim 成功后会自动开始 Attention。 `list` 渲染 Task/Thread 身份与当前 collision surface——只有 active Claims，或显式的空——且无写令牌，因为当前 `team_thread read` 仍是必需的变更基础。 commit 的 mutation 点名动作（Claim created、completed 或 released），先渲染权威的受影响 Claim——ref、结果 state、owner、direction——再 Task/Thread 身份，以及恰好一个 next-write token hand-off。
 
 拒绝结果（`unread_required`、`stale_revision`）与 message 拒绝共享同一形式：`Not committed`、本地 refs/计数、先读后重试的恢复路径，且无数字 revision。
+
+## `team_supervise`
+
+`team_supervise` 以周期监督 pass 所依据的同一证据读取并修复其他 Member 的健康状态。`status` 报告一个 Member 的 pass 状态——`healthy`、`settling` 或 `stopped`——它的 presence、已记录的失败诊断，以及二十分钟窗口内的失败次数；它是纯读操作，不写任何 operation。`reset` 强制一个异常 Member——stopped 且带错误、反复失败、或卡死——进入与 Human 菜单相同的 fresh-context 重置：Session 从空重开，身份、设置与私有记忆保留，旧日志归档，团队照常收到重置通知。healthy 的 Member 会拒绝重置——监督只修复真正异常的对象——且调用者不能重置自己。重置后，向该 Member 重新交代被打断的工作并派发新任务。
 
 ## `context_rollover`
 

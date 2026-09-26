@@ -17,7 +17,7 @@
 
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import { CONTEXT_WINDOW_EXCEEDED_CODE } from '@deepseek-ai/dsh-llm'
-import type { CompactionEngine, CompactionResult } from '@deepseek-ai/dsh-compaction'
+import type { CompactionEngine } from '@deepseek-ai/dsh-compaction'
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
 import type { AgentTeamMemberId } from './types.ts'
 import { AGENT_TEAM_PLUGIN_ID, isAgentTeamSourceKind } from './context-source.ts'
@@ -80,6 +80,13 @@ export interface PressurePolicyOptions {
   readonly runningJobLabels: (memberId: AgentTeamMemberId) => readonly string[]
   /** Report a Member failure with a recoverable diagnostic. */
   readonly failed: (memberId: AgentTeamMemberId, sessionId: Agent['id'], diagnostic: string) => void
+  /**
+   * The other-LLM summarizer fallback, run when the Member-scoped engine's
+   * forced reduction throws: tries the Host catalog's other configured routes
+   * (bounded) and reports whether the durable surface advanced. Absent, the
+   * coordinator fails closed on the original failure exactly as before.
+   */
+  readonly compactWithFallback?: (agent: Agent, memberId: AgentTeamMemberId, signal: AbortSignal) => Promise<boolean>
   /** Log one coordinator diagnostic. */
   readonly log: (message: string) => void
 }
@@ -99,6 +106,16 @@ export class PressurePolicyCoordinator {
    * Process-only by design: a restart re-earns one sequence per chain.
    */
   private readonly overflowRetries = new Map<Agent, number>()
+  /**
+   * Forced hard-limit compactions already spent per agent in the current
+   * recovery chain. Each successful model request or any observed dip below
+   * the hard limit re-arms the budget; while the chain stays open, at most one
+   * surface rewrite is attempted. Bounding the rewrite cadence is what keeps a
+   * hard-limit Member from compacting on every step — each rewrite invalidates
+   * the provider's prompt cache, so a compaction loop that never gets below the
+   * limit would re-prefill the whole context per request.
+   */
+  private readonly forcedCompactions = new WeakMap<Agent, number>()
   /**
    * Whether the one-shot notice was already delivered, folded incrementally per
    * Member. The scan below is a monotone "has this ever happened" fold over the
@@ -141,6 +158,9 @@ export class PressurePolicyCoordinator {
   /** A successful assistant response ends any open overflow-recovery sequence. */
   onAssistantMessage(agent: Agent): void {
     this.overflowRetries.delete(agent)
+    // The request got through, so the previous forced compaction was a real
+    // reduction: the next hard-limit crossing opens a fresh chain.
+    this.forcedCompactions.delete(agent)
   }
 
   /**
@@ -164,9 +184,12 @@ export class PressurePolicyCoordinator {
     }
     const { usageTokens, hardLimit, handoffAt } = limits
     if (usageTokens >= hardLimit) {
-      const outcome = await this.enforceHardLimit(agent, member.memberId, member.sessionId, signal)
+      const outcome = await this.enforceHardLimit(agent, member.memberId, member.sessionId, hardLimit, signal)
       return outcome ? { kind: 'continue' } : { kind: 'reject' }
     }
+    // Pressure receded below the hard limit: whatever reduced it (compaction,
+    // rollover, manual action) closed the current recovery chain.
+    this.forcedCompactions.delete(agent)
     if (usageTokens >= handoffAt && !this.noticeDelivered(agent, member.memberId)) {
       const notice = createUserMessage({
         content: [{ type: 'text', text: contextPressureNoticeText({
@@ -210,6 +233,15 @@ export class PressurePolicyCoordinator {
         return true
       }
       this.options.log(`context-overflow recovery failed: ${error instanceof Error ? error.message : String(error)} (member ${member.memberId})`)
+      // Last resort on the primary engine's failure: the other configured LLM
+      // routes. A fallback that advances the surface earns the same single
+      // retry the prune-progress path grants.
+      const fell = !signal.aborted && this.options.compactWithFallback !== undefined
+        && await this.options.compactWithFallback(agent, member.memberId, signal)
+      if (fell && agent.session.surface.replaceGeneration > generation) {
+        this.overflowRetries.set(agent, retries + 1)
+        return true
+      }
       return false
     }
     if (signal.aborted || agent.session.surface.replaceGeneration <= generation) return false
@@ -218,40 +250,54 @@ export class PressurePolicyCoordinator {
   }
 
   /**
-   * The one Team hard-limit translation: force a CompactionEngine reduction
-   * in the current Agent/Session and prove it advanced the durable surface
-   * (or measurably reduced pressure) before continuing. Background jobs are
-   * untouched — compaction never cancels or discards them.
+   * The one Team hard-limit translation: force a CompactionEngine reduction in
+   * the current Agent/Session and prove the pressure actually dropped below the
+   * hard limit before continuing. One rewrite is attempted per recovery chain —
+   * a chain closes on a successful request or on any observed dip below the
+   * limit — and a compaction that leaves the context at or above the limit
+   * fails closed: submitting anyway would exceed the Team limit with a cache
+   * the next rewrite invalidates, compounding into the compact-per-step loop
+   * this bound exists to prevent. Background jobs are untouched — compaction
+   * never cancels or discards them.
    * @returns whether the request may proceed.
    */
-  private async enforceHardLimit(agent: Agent, memberId: AgentTeamMemberId, sessionId: Agent['id'], signal: AbortSignal): Promise<boolean> {
+  private async enforceHardLimit(agent: Agent, memberId: AgentTeamMemberId, sessionId: Agent['id'], hardLimit: number, signal: AbortSignal): Promise<boolean> {
     const engine = this.options.compactionForAgent(agent)
     if (engine === undefined) {
       const diagnostic = 'context hard limit reached and compaction is unavailable in the Member scope; the request was blocked'
       this.options.failed(memberId, sessionId, diagnostic)
       return false
     }
-    const meter = agent.ctx.get('tokenMeter')
-    const before = meter?.measure(agent.session)?.totalTokens ?? Number.POSITIVE_INFINITY
-    const generation = agent.session.surface.replaceGeneration
-    let result: CompactionResult | null
-    try {
-      result = await engine.compactIfNeeded(agent, 'context-overflow', signal)
-    } catch (error) {
-      const diagnostic = `context hard limit compaction failed: ${error instanceof Error ? error.message : String(error)}; the request was blocked`
+    if ((this.forcedCompactions.get(agent) ?? 0) >= 1) {
+      const diagnostic = 'context hard limit reached and the forced-compaction budget for this recovery chain is already spent; the request was blocked'
       this.options.failed(memberId, sessionId, diagnostic)
       return false
     }
+    this.forcedCompactions.set(agent, 1)
+    const meter = agent.ctx.get('tokenMeter')
+    try {
+      await engine.compactIfNeeded(agent, 'context-overflow', signal)
+    } catch (error) {
+      this.options.log(`context hard limit compaction failed: ${error instanceof Error ? error.message : String(error)}; trying fallback LLM routes (member ${memberId})`)
+      // Last resort before failing closed: the other configured LLM routes. A
+      // fallback that advanced the surface still has to pass the same measured
+      // below-limit proof every continuing request needs.
+      const fell = !signal.aborted && this.options.compactWithFallback !== undefined
+        && await this.options.compactWithFallback(agent, memberId, signal)
+      if (!fell) {
+        const diagnostic = `context hard limit compaction failed: ${error instanceof Error ? error.message : String(error)}; the request was blocked`
+        this.options.failed(memberId, sessionId, diagnostic)
+        return false
+      }
+    }
     if (signal.aborted) return false
-    const after = meter?.measure(agent.session)?.totalTokens ?? Number.POSITIVE_INFINITY
-    const surfaceAdvanced = agent.session.surface.replaceGeneration > generation
-    const pressureReduced = meter === undefined ? false : after < before
-    if (!surfaceAdvanced && !pressureReduced) {
-      // No-op or unchanged replacement generation: fail closed rather than
-      // knowingly submit over the Team limit.
-      const diagnostic = result === null
-        ? 'context hard limit reached and no compactable range exists; the request was blocked'
-        : 'context hard limit compaction produced no measurable reduction; the request was blocked'
+    const after = meter?.measure(agent.session)?.totalTokens
+    if (after === undefined || after >= hardLimit) {
+      // No meter or an unproven reduction: fail closed rather than knowingly
+      // submit over the Team limit.
+      const diagnostic = after === undefined
+        ? 'context hard limit compaction left the context pressure unmeasurable; the request was blocked'
+        : `context hard limit compaction left ${after} tokens at or above the ${hardLimit} hard limit; the request was blocked`
       this.options.failed(memberId, sessionId, diagnostic)
       return false
     }

@@ -13,6 +13,8 @@ import type {
   AgentTeamCompactMemberContextResult,
   AgentTeamCreateChannelRequest,
   AgentTeamCreateChannelResult,
+  AgentTeamDiagnoseMemberRequest,
+  AgentTeamDiagnoseMemberResult,
   AgentTeamInbox,
   AgentTeamInboxRequest,
   AgentTeamJoinWorkspaceRequest,
@@ -124,6 +126,12 @@ export type TeamSidebarProps = PropsRuntime<'sidebar.workspaces'>
      * log stays archived on disk, and the next turn starts with no history.
      */
     clearMemberContext: (request: AgentTeamClearMemberContextRequest) => Promise<RemoteResult<AgentTeamClearMemberContextResult>>
+    /**
+     * Host doctor dispatch: create or reuse the durable `doctor` Member, start
+     * it on a fresh Session, and hand it the failed Member's transcript as
+     * research material. The doctor reports its analysis to the Human.
+     */
+    diagnoseMember: (request: AgentTeamDiagnoseMemberRequest) => Promise<RemoteResult<AgentTeamDiagnoseMemberResult>>
     /**
      * Schedule an in-place compaction of the Member's live Session, optionally
      * naming the LLM that writes the summary. The Host acknowledges the

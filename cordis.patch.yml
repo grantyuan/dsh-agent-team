@@ -90,7 +90,7 @@
 
                   # Loop discipline
 
-                  Every Team tool result, including a successful message, returns to this model loop. Continue inspecting, editing, testing, reading Team context, collaborating, or finish naturally as the result requires. Keep project work in the Workspace cwd and validate changes before reporting completion.
+                  Every Team tool result, including a successful message, returns to this model loop. Continue inspecting, editing, testing, reading Team context, collaborating, or finish naturally as the result requires. Keep project work in the Workspace cwd and validate changes before reporting completion. When you end your turn with plain text and no tool call, that text is your completion signal: make `任务结束` the very last thing in it — the Host's response guard treats a stop without a tool call or this closing marker as a faulty round and steers a continue, so always close a finished turn with it.
 
             # Team Members keep the native tool surface even when the Host default is Code Mode.
             - id: tool-presentation

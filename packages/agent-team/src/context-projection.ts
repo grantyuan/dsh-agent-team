@@ -47,6 +47,7 @@ import {
 } from '@wowyuarm/dsh-context-continuity'
 import { handoffOf, isAgentTeamContextSource, isAgentTeamSource } from './context-source.ts'
 import { TEAM_CONTEXT_CODEC } from './context-continuity-host.ts'
+import { RESPONSE_GUARD_NOTICE_SUMMARY } from './response-guard.ts'
 import type { AgentTeamContextCheckpointRef, AgentTeamTaskRef, AgentTeamThreadRef } from './types/entities.ts'
 
 /** Summary marker of the pre-compaction memory hint. */
@@ -91,7 +92,7 @@ type TeamBoundaryContribution = DomainBoundaryContribution & { readonly kind: Te
  * the fold keeps recognizing them (same pattern as the legacy `new_context`
  * tool name below).
  */
-const REMINDER_NOTICE_SUMMARIES = new Set(['Progress visibility reminder', 'Recovery: continue your interrupted work.'])
+const REMINDER_NOTICE_SUMMARIES = new Set(['Progress visibility reminder', 'Recovery: continue your interrupted work.', RESPONSE_GUARD_NOTICE_SUMMARY])
 
 /** Whether one notice summary is a pure reminder (never a semantic Team fact). */
 export function isReminderNoticeSummary(summary: string): boolean {

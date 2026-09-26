@@ -6,7 +6,9 @@
 `memory.md` 是有界路由索引而非仓库：只装身份与职责、必须每步生效的长期规则、当前在手，以及每个主题簇一行；`notes/` 按需读取、从不注入。成员把索引常态保持在 8 KiB 以内、硬顶 16 KiB——超过硬顶索引整块不再注入，注入块始终自带用量。维护手艺（什么配得上一行、三层结构、压实与降级）归内置 `member-memory-manager` core skill，与 skill 写作归 `member-skill-manager` 同一套路；persona 只常驻「索引必须有界、细节留在它点名的那篇笔记里」这一条，成员首次生成的 `memory.md` 脚手架陈述同样的小节。
 
 ## 上下文压力归属
-Host 端到端拥有 Member 的上下文压力管理。两个预算阈值从该 Member 的 live routed selection 派生——当前 step 已进入 prompt assembly 时取其捕获的 selection，否则取 current selection——经 LLM 服务解析（handoff 预算上限 200K、硬上限 256K，并留安全 reserve）：达到 handoff 预算时，Member 在该 generation 内收到一条结构化压力通知，建议 `context_rollover` rollover——同一 generation 不重复，rollover 后重新武装；达到硬上限时，Host 在转发下一个模型请求前强制一次原地 compaction，无法证明 generation 前进或实测压力下降的 Member 会被 fail closed（拒绝该 step，而不是超限提交）。Provider context-overflow 失败获得一条有界的 compact-and-retry 序列后再上浮。无法测量窗口的 route 会显式拒绝，绝不静默超限提交。已接受 Task 的自动 compaction 已退役：除 Member 自己的显式选择外，压力策略是唯一的 compaction 触发器。
+Host 端到端拥有 Member 的上下文压力管理。两个预算阈值从该 Member 的 live routed selection 派生——当前 step 已进入 prompt assembly 时取其捕获的 selection，否则取 current selection——经 LLM 服务解析（handoff 预算上限 200K、硬上限 256K，并留安全 reserve）：达到 handoff 预算时，Member 在该 generation 内收到一条结构化压力通知，建议 `context_rollover` rollover——同一 generation 不重复，rollover 后重新武装。
+
+达到硬上限时，Host 在转发下一个模型请求前强制一次原地 compaction，只有实测压力被证明降到硬上限之下才放行该 step——无法测量或仍超标即 fail closed（拒绝该 step，不超限提交）。每次恢复链只一次强制压缩，仅在干净响应或低于硬限的读数后重新武装，压不下来的上下文不再每步重复压缩重写、击穿 provider prompt cache。Provider context-overflow 失败获得一条有界的 compact-and-retry 序列后再上浮。无法测量窗口的 route 会显式拒绝，绝不静默超限提交。已接受 Task 的自动 compaction 已退役：除 Member 自己的显式选择外，压力策略是唯一的 compaction 触发器。
 
 Memory 不是 authority：它可能过时，不能覆盖 Workspace instructions、direct Human input 或 durable Team facts。Member 只能记录已验证且持久的知识，不得记录 credentials、sensitive data、guesses、chat logs、其他 Members' memory，或 ledger 已拥有的 facts。
 
@@ -26,6 +28,8 @@ Pending hints 按 Member 合并。Consumed 或 ignored hint 不会再触发 turn
 Web Client 的 Agent-row menu 提供两个 runtime recovery entrances（都不写 ledger）：有 live session 的 error Member 显示「恢复」，由 Host 向 session 注入 continuation prompt（孤儿 composition 则原地重建）；activation failed 的 Member 显示「重启」，由 Host 重新执行该 Member activation，再次失败时仍以 diagnostic 显示在 sidebar。
 
 Agent 行菜单对 live Member 持有两个可见的上下文动作。「重置」经 `clearMemberContext` 走持久的 rollover 机制换新 Member Session——新 Session id 带 fork lineage 指回被归档的上一份日志，私有记忆不受影响。「压缩」经 `compactMemberContext` 调度一次手动压缩：Remote 校验守卫（Member enabled、无进行中的 rollover、存在活跃 handle、没有已 pending 的压缩）并立即原样返回状态。
+
+重置成功后，该 Member 会向自己所在的每个 Channel 发一条不含 Task 的 context-reset 公告，用显式 recipients 直接触达所有存活的其他 Member，让团队知道其 Session 已清空重来，而 handle、设置与私有记忆都不变；公告发送失败只记日志。
 
 后台运行等待 Member 的 idle 边界后，经一个瞬态 `BasicCompactionEngine` 强制一次缩减——该引擎把 Human 选定的摘要 LLM 携带在自己的 config 里（缺省回退到 Member 当前路由的模型）。持续 busy 的 Member 只记一行日志后放弃该请求——对话优先；失败的运行经压力策略同一条 compaction 失败槽上报。压缩不提交 ledger operation；只写入它自己的 Session history。模型发起的 rollover 期间（ledger 绑定已迁移、新 Session 尚未就绪），Member 状态短暂显示为 unavailable 并带 "context rollover in progress" diagnostic；若该 Member 的 Session 正嵌入右栏，Client 只在旧→新绑定变化且当前页面正是被观察的旧 live Session 时跟随一次到新 Session，归档视图不会跳转。
 

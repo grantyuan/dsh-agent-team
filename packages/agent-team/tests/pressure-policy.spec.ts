@@ -8,10 +8,12 @@ import { AGENT_TEAM_PLUGIN_ID } from '../src/context-source.ts'
 import { advanceSessionEventCursor, initSessionEventCursor } from '../src/session-event-cursor.ts'
 
 /** One controllable fake agent exposing exactly what the policy reads. */
-function fakeAgent(options?: { readonly replaceGeneration?: number }): {
+function fakeAgent(options?: { readonly replaceGeneration?: number; readonly tokens?: number }): {
   readonly agent: Agent
   readonly steer: { readonly messages: unknown[] }
   readonly surface: { replaceGeneration: number }
+  /** Mutable usage the fake meter reports; tests and the fake engine move it. */
+  readonly usage: { totalTokens: number }
   /** Own-event log of this fake generation; steer appends the durable notice. */
   readonly ownEvents: { type: string; data: { source?: { plugin?: string; summary?: string } } }[]
   /** Replace the generation: a fresh Session starts with an empty own span. */
@@ -19,11 +21,13 @@ function fakeAgent(options?: { readonly replaceGeneration?: number }): {
 } {
   const steer = { messages: [] as unknown[] }
   const surface = { replaceGeneration: options?.replaceGeneration ?? 0 }
+  const usage = { totalTokens: options?.tokens ?? 0 }
   let ownEvents: { type: string; data: { source?: { plugin?: string; summary?: string } } }[] = []
   let generation = 0
   const agent = {
     id: 'session:test',
-    ctx: { get: (name: string) => (name === 'tokenMeter' ? { measure: () => ({ totalTokens: 0 }) } : undefined) },
+    usage,
+    ctx: { get: (name: string) => (name === 'tokenMeter' ? { measure: () => ({ totalTokens: usage.totalTokens }) } : undefined) },
     session: {
       surface,
       snapshotEvents: () => [],
@@ -40,7 +44,7 @@ function fakeAgent(options?: { readonly replaceGeneration?: number }): {
       if (source?.summary !== undefined) ownEvents.push({ type: 'user/message', data: { source } })
     },
   } as unknown as Agent
-  return { agent, steer, surface, ownEvents: ownEvents as never, newGeneration: () => { ownEvents = []; generation += 1 } }
+  return { agent, steer, surface, usage, ownEvents: ownEvents as never, newGeneration: () => { ownEvents = []; generation += 1 } }
 }
 
 /** A configurable fake engine recording calls and advancing the surface. */
@@ -52,6 +56,10 @@ function fakeEngine(behavior: 'advance' | 'noop' | 'throw' | 'reduce'): { readon
       if (behavior === 'throw') throw new Error('engine failure')
       if (behavior === 'advance') {
         ;(agent.session.surface as { replaceGeneration: number }).replaceGeneration += 1
+        // A real reduction: the rewritten surface halves the measured usage,
+        // which is what the policy's below-the-limit proof reads.
+        const usage = (agent as { usage?: { totalTokens: number } }).usage
+        if (usage !== undefined) usage.totalTokens = Math.floor(usage.totalTokens / 2)
         return null
       }
       return null
@@ -133,26 +141,83 @@ describe('Agent Team pressure policy (ticket 03)', () => {
     expect(steer.messages).toHaveLength(2)
   })
 
-  it('at the hard limit the request is forced through compaction before continuing', async () => {
+  it('at the hard limit the request is forced through compaction and proven below the limit before continuing', async () => {
     const failures: string[] = []
     const { policy, engine } = coordinator({ engineBehavior: 'advance', limits: { usageTokens: 256_000, hardLimit: 256_000, handoffAt: 200_000 }, failures })
-    const { agent, surface } = fakeAgent()
+    const { agent, usage, surface } = fakeAgent({ tokens: 256_000 })
     const decision = await policy.onPreStep(agent, new AbortController().signal)
     expect(decision.kind).toBe('continue')
     expect(engine.calls).toEqual(['context-overflow'])
     expect(surface.replaceGeneration).toBe(1)
+    expect(usage.totalTokens).toBe(128_000)
     expect(failures).toEqual([])
   })
 
   it('a hard-limit compaction that no-ops fails closed and blocks the request', async () => {
     const failures: string[] = []
     const { policy, engine } = coordinator({ engineBehavior: 'noop', limits: { usageTokens: 256_000, hardLimit: 256_000, handoffAt: 200_000 }, failures })
-    const { agent } = fakeAgent()
+    const { agent } = fakeAgent({ tokens: 256_000 })
     const decision = await policy.onPreStep(agent, new AbortController().signal)
     expect(decision.kind).toBe('reject')
     expect(engine.calls).toEqual(['context-overflow'])
     expect(failures).toHaveLength(1)
     expect(failures[0]).toContain('blocked')
+  })
+
+  it('a hard-limit compaction that reduces but stays above the limit fails closed instead of looping', async () => {
+    const failures: string[] = []
+    const { policy, engine } = coordinator({ engineBehavior: 'noop', limits: { usageTokens: 256_000, hardLimit: 256_000, handoffAt: 200_000 }, failures })
+    const { agent, usage, surface } = fakeAgent({ tokens: 256_000 })
+    // The engine rewrote the surface and shaved some tokens, but the context
+    // never got below the hard limit: submitting would exceed the limit with a
+    // cache every further rewrite invalidates, so the request must block.
+    surface.replaceGeneration += 1
+    usage.totalTokens = 260_000
+    const decision = await policy.onPreStep(agent, new AbortController().signal)
+    expect(decision.kind).toBe('reject')
+    expect(engine.calls).toEqual(['context-overflow'])
+    expect(failures[0]).toContain('at or above the 256000 hard limit')
+  })
+
+  it('the forced-compaction budget spends once per chain and re-arms below the limit', async () => {
+    const failures: string[] = []
+    // The reported usage rides a mutable limits object, mirroring how the live
+    // route report tracks the same reality the meter measures.
+    const limits = { usageTokens: 256_000, hardLimit: 256_000, handoffAt: 200_000 }
+    const { policy, engine } = coordinator({ engineBehavior: 'noop', limits, failures })
+    const { agent, usage } = fakeAgent({ tokens: 256_000 })
+    // First crossing: one compaction is attempted and fails to get below the
+    // limit, so the chain's budget is spent.
+    expect(await policy.onPreStep(agent, new AbortController().signal)).toMatchObject({ kind: 'reject' })
+    expect(engine.calls).toEqual(['context-overflow'])
+    // The very next step must not rewrite the surface again: the compact-per-
+    // step loop is the cache-breaker this budget exists to prevent.
+    expect(await policy.onPreStep(agent, new AbortController().signal)).toMatchObject({ kind: 'reject' })
+    expect(engine.calls).toEqual(['context-overflow'])
+    expect(failures[1]).toContain('budget')
+    // Pressure recedes below the hard limit (rollover, manual compaction, …):
+    // the chain closes and the budget re-arms.
+    usage.totalTokens = 150_000
+    limits.usageTokens = 150_000
+    expect(await policy.onPreStep(agent, new AbortController().signal)).toMatchObject({ kind: 'continue' })
+    // A fresh crossing earns its own compaction attempt.
+    usage.totalTokens = 256_000
+    limits.usageTokens = 256_000
+    expect(await policy.onPreStep(agent, new AbortController().signal)).toMatchObject({ kind: 'reject' })
+    expect(engine.calls).toEqual(['context-overflow', 'context-overflow'])
+  })
+
+  it('a successful assistant response re-arms the forced-compaction budget', async () => {
+    const failures: string[] = []
+    const { policy, engine } = coordinator({ engineBehavior: 'noop', limits: { usageTokens: 256_000, hardLimit: 256_000, handoffAt: 200_000 }, failures })
+    const { agent } = fakeAgent({ tokens: 256_000 })
+    expect(await policy.onPreStep(agent, new AbortController().signal)).toMatchObject({ kind: 'reject' })
+    expect(engine.calls).toEqual(['context-overflow'])
+    // The request never got through, but a later successful response (the
+    // member was unblocked another way) closes the chain like any re-arm.
+    policy.onAssistantMessage(agent)
+    expect(await policy.onPreStep(agent, new AbortController().signal)).toMatchObject({ kind: 'reject' })
+    expect(engine.calls).toEqual(['context-overflow', 'context-overflow'])
   })
 
   it('a hard-limit compaction that throws fails closed with a recoverable diagnostic', async () => {
