@@ -6,6 +6,8 @@ import { describe, expect, it } from 'vitest'
 import { applyEntryPatches } from '@deepseek-ai/cordis-plugin-include'
 import { loadOverlayPatches } from '@deepseek-ai/dsh-app-boot'
 import { HUMAN_PROFILE_SETTINGS_NAMESPACE, HUMAN_PROFILE_SETTINGS_SCHEMA } from '../src/human-profile.ts'
+// @ts-expect-error untyped shared resolution module
+import { dshPeerRanges } from '../../../scripts/dsh-peers.mjs'
 
 const root = resolve(import.meta.dirname, '../../../')
 
@@ -176,18 +178,15 @@ describe('Agent Team shipping contract', () => {
       exports: Record<string, { default?: string }>
       dsh: { client: { platform: string; inject: string[] } }
     }
-    expect(bundleManifest.peerDependencies['@deepseek-ai/dsh-tool-web']).toBe('>=0.1.7-rc.1 <0.1.8')
-    expect(bundleManifest.peerDependencies['@deepseek-ai/dsh-command-compact']).toBe('>=0.1.7-rc.1 <0.1.8')
-    expect(bundleManifest.peerDependencies['@deepseek-ai/dsh-agent-preset']).toBe('>=0.1.7-rc.1 <0.1.8')
-    expect(bundleManifest.peerDependencies['@deepseek-ai/dsh-agent-preset-registry']).toBe('>=0.1.7-rc.1 <0.1.8')
+    expect(bundleManifest.peerDependencies['@deepseek-ai/dsh-tool-web']).toBe('>=0.2.0-rc.2 <0.2.1')
+    expect(bundleManifest.peerDependencies['@deepseek-ai/dsh-command-compact']).toBe('>=0.2.0-rc.2 <0.2.1')
+    expect(bundleManifest.peerDependencies['@deepseek-ai/dsh-agent-preset']).toBe('>=0.2.0-rc.2 <0.2.1')
+    expect(bundleManifest.peerDependencies['@deepseek-ai/dsh-agent-preset-registry']).toBe('>=0.2.0-rc.2 <0.2.1')
     expect(bundleManifest.peerDependencies['@deepseek-ai/dsh-agent-presets']).toBeUndefined()
     // The certified baseline moves as one cut: every DSH peer carries the same
     // range, or an install resolves two DSH generations at once. No host-scope
     // package may sit in `dependencies` (see the host-scope gate below).
-    const dshPeerRanges = new Set(Object.entries(bundleManifest.peerDependencies)
-      .filter(([name]) => name.startsWith('@deepseek-ai/dsh-'))
-      .map(([, range]) => range))
-    expect([...dshPeerRanges]).toEqual(['>=0.1.7-rc.1 <0.1.8'])
+    expect([...dshPeerRanges(bundleManifest)]).toEqual(['>=0.2.0-rc.2 <0.2.1'])
     expect(preset).toContain('compaction: true')
     expect(preset).toContain('toolResultPruner: true')
     expect(preset).toContain('team_inbox, team_thread, team_message, team_claim, and team_view')
@@ -264,7 +263,7 @@ describe('Agent Team shipping contract', () => {
     // peer: profiles set autoInstallPeers: false, so a peer nothing else
     // provides resolves for nobody — the external-layout e2e crashed exactly
     // there before this was fixed (0.1.14 gate, 2026-09-22).
-    expect(manifest.dependencies).toEqual({ '@wowyuarm/dsh-context-continuity': '^0.1.4', yaml: '^2.9.1', zod: '^4.4.3' })
+    expect(manifest.dependencies).toEqual({ '@wowyuarm/dsh-context-continuity': '^0.1.6', yaml: '^2.9.1', zod: '^4.4.3' })
     expect(bundleManifest.dsh.client).toEqual({
       platform: 'web',
       // The Client half classifies a stream end with the Gateway's carrier-error

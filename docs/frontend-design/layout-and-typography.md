@@ -15,7 +15,7 @@ It sits beside the attach control as the labeled mode chip of the language table
 | Element | Specification |
 | --- | --- |
 | Page h1 | 20px/28px, weight 600 |
-| Sender | 13px/20px, weight 600, primary; time metadata follows on the same line |
+| Sender | 13px/20px, weight 600, primary — the secondary grade of the content axis (`--dsh-content-font-size-secondary` with its own line-height delta), so a raised Settings size grows the author with the message; time metadata follows on the same line |
 | Message time | 11px/20px, tertiary; local HH:mm today, MM-DD HH:mm this year, full date across years |
 | Inbox row time | 11px/18px, tertiary, `tabular-nums`; a bare `HH:mm` today, 「昨天 HH:mm」 on the previous local calendar day, the Message form for anything older, and the precise local `YYYY-MM-DD HH:mm` on the element's `title`. The Thread entry borrows this label for its follow-up time while its work is unfinished. An Inbox identity line too narrow for the count and the instant together does not draw it at all (see Inbox below) |
 | Human body | 14px/22px at the default content size, pre-wrap and break-word; both body grids ride the Settings content-font axis (`--dsh-content-font-size` plus its px delta), so a raised content size grows message text with the rest of DSH |

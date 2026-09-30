@@ -32,7 +32,7 @@
 
 ## 成员花名册（member rosters）
 - `TeamMemberRow.tsx` 是「画一个人」的唯一实现：`TeamMemberIdentity`（带 presence 角标的 `TeamMemberAvatar` + handle 与 description）加一个可选的 membership 动作。Channel 的「管理成员」弹层、编辑频道里的成员区、底栏只读成员列表都渲染它；侧栏 Agents 则把同一个 `TeamMemberIdentity` 放进自己的选择按钮里——所以同一批成员在不同面之间不会出现身份、字号或截断口径的漂移。
-- 行是三轨网格：24px 头像、`minmax(0, 1fr)` 文案、`auto` 动作；8px 圆角、8px/10px 内边距、最小高度 40px，hover 用 `--dsw-alias-interactive-bg-hover`。handle 为 12px/18px、weight 500、主色；description 为 11px/16px、tertiary，且在文案轨内省略号截断，不去顶宽网格。
+- 行是三轨网格：24px 头像、`minmax(0, 1fr)` 文案、`auto` 动作；圆角取 shipped 圆角刻度的 md 档（12px）、8px/10px 内边距、最小高度 40px，hover 用 `--dsw-alias-interactive-bg-hover`。handle 为 12px/18px、weight 500、主色；description 为 11px/16px、tertiary，且在文案轨内省略号截断，不去顶宽网格。
 - 只读花名册不渲染动作，第三轨随之塌缩，把宽度还给 description，而不是留一个空洞。membership 动作是整行唯一的控件：一个 `Button size="sm" variant="outline"`，至少 64×28，标签在 添加/移除/更新中… 之间变化而外形不变；行自身的失败信息作为 `role="alert"` 渲染在行内文案轨下方。窄于 600px 时动作落到身份下方并与文案左对齐——被压窄的弹层放不下第三列。
 - membership 语义跟随 Host：加入要求 `availability === 'active'`（Host 会拒绝其他 availability），退出只要求 membership 事实本身，所以已经加入但暂时不可用的成员仍然保留可用的 移除。
 - 只有侧栏 Agents 在写法上不同：它像目录那样直呼 `builder`，其余花名册按 composer 的称呼写 `@builder`。
@@ -42,6 +42,23 @@
 - 名字行是一个 form：36×200px 输入框，主色「保存」按钮持有 submit——脏字段里按 Enter 即保存，Tab 的下一站就是它。头像行画 40px 身份圆（`border-radius: 50%` 配 `corner-shape: round`）呈现图片或首字母，一个「更换头像」按钮驱动视觉隐藏的 `input[type="file"] accept="image/*"`（上限 10MB），只有在存有 `avatarRef` 时才多出「移除头像」。两处头像座位只在**这些字节真的能解码**时才画图——Host 按声明的 media type 收头像、不解码内容，所以手机拍的 HEIC 或传入途中损坏的字节会被存下来、再以画不出任何东西的 data URL 交回——`useAvatarImage` 把这个判断按 URL 记住：画不出就与「已移除」一样显示首字母，而新上传的字节因为是另一个 URL 会自动重试。
 - `human-identity.ts` 是这份资料的唯一读取方：`TeamHumanIdentity` 在多个订阅者之间共用一次在途读取、引用未变时复用已经解码好的头像、后续读取失败时保留上一次已接受的值（只有从未加载成功才是 unavailable，此时整面 `role="alert"` 并自带重试），并在每次写入被接受后刷新。写入走 settings 命名空间：`remote.settings.update(namespace, patch, expectedRevision)` 与 `mutate(…, [{ op: 'unset', path: ['avatarRef'] }])`，经由一个可选的 `ctx.inject(['remote.settings'])` 绑定取得——未声明就读 `ctx.remote.settings` 会抛错，而硬性激活依赖会在 settings 服务缺席时把整个 Client 拖下水，所以服务缺席只报不可用。写入被拒绝时在该段内显示 Host 的 message，而不是让「正在保存…」一直挂着。Client 侧的 namespace 常量由测试钉在 Host 自己的常量上，两半不会静默漂移。
 - 390×844 下 shipped 面板保留它 188px 的导航轨（没有 media query），内容列只剩约 106px；所以本段自带 `@container (max-width: 420px)`：每行文案叠在控件上方、去掉宽版为控件预留的 48px 右内边距、输入框与按钮占满整列；浏览器验收在该宽度断言无横向溢出。
+
+## 环境检查（environment check）
+版本脚注之上，页面陈述的是关于这次安装、而不是关于 Human 的一个事实：这个 bundle 正跑在哪条 DSH 线上，以及那条线是否落在 bundle 自己声明的支持范围内。它是第二个投影（`environment-check.ts`、`TeamEnvironmentCheck`），**刻意不放进身份 store**——它只读一次、从不写回，唯一的渲染方就是设置页。
+
+判定只有三档，不新增第四档，也从不猜测。Host 建立不起来的事实就是 `undetermined`，这是一个落定的回答、而不是一次失败的请求：本块没有重试；Host 联系不上时整块什么都不渲染，而不是借用这个词。
+
+**判定的先后顺序就是契约**：运行版本读不到 → `undetermined`；运行版本违反任何一条已声明的 `@deepseek-ai/dsh-*` peer → `out-of-range`，而且真实的违反**不会**因为此刻已没有一条能对外陈述的区间就被降级成 `undetermined`；只有在什么都没违反之后，问题才变成「已声明的区间是否收下这个版本」。
+
+对外只陈述一条区间，因此要求每个 DSH peer 声明同一条：前缀是 `@deepseek-ai/dsh-`（`@deepseek-ai/cordis` 同 scope，但不在 DSH 版本线上），声明漂移或集合为空时整行不显示，而不是挑一个 peer 代表其余。
+
+只有 `out-of-range` 这一档取面——`--dsw-alias-state-warn-tertiary` 底配 `--dsw-alias-state-warn-label`，半径取行级表面的 12px——因为它是读者可能需要据以行动的那一档；另外两档保持为行。每一档都用「文本 + 图标」表态，因此读者分不清颜色时状态依然成立。
+
+区间用人话写，不打裸 semver range：range 字符串是读者无法核对的东西，一句话才是。实测认证组合（`Agent Team <bundle> × DSH <certified>`）只在两个版本都**推导得出**时才打印：一个是已装 manifest 自己的版本，一个是区间下界——也就是本仓门禁钉住的认证基线。读不到的版本会让整行不显示，而不是请一个手写版本上页面。
+
+因此读者容易混淆的两个版本被分开放置：**运行中的 DSH 版本是环境，认证版本是声明的那条线**；只有安装正好落在基线上时，两者才是同一个字符串。
+
+本块用 `data-environment` 携带自己的判定，验收 journey 因此等待的是一个状态而不是一段文案。
 
 ## 失败态呈现（failure surfaces）
 - 投影失败的呈现只有两种，选哪一种等于声明「屏幕上还剩什么」。**整面失败**（从未加载出投影）用 `errorState`：与它所替代的 loading / empty 面共用同一份空白区居中（`margin: auto`、`padding: 32px 0`），保持在 880px 阅读列内，取 12px/18px 的 error 字号与 `--dsw-alias-state-error-primary`，内容是 Host message 加一个重新发起读取的 `重试`——message 与按钮同在一个 `role="alert"` 里。**行旁失败**（行还在）用内联 `error`：在内容列内 `margin: 0`，读作所属列表的最后一行，而不是让已有内容的面重新居中。

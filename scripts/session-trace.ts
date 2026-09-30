@@ -84,7 +84,8 @@ common options:
   --type T[,T...]      timeline: event type filter (e.g. tool/call)
   --tool NAME          timeline: derived toolName filter (team_ prefix allowed)
   --before N/--after N read window sizes (default 3, max ${MAX_WINDOW})
-  --json               structured output (default; text rendering is planned)
+  --json               emit structured JSON (default is a human-readable table;
+                       read/event always emit JSON — they are raw payloads)
   --home PATH          DSH home (default ~/.dsh)`)
   process.exit(1)
 }
@@ -237,6 +238,14 @@ function deriveFields(event: SessionEventView): DerivedFields {
   return derived
 }
 
+// ---------- rendering (text is the default; --json opts back into structured) ----------
+
+/** Minute-precision UTC stamp for scannable columns; the exact ms stays in --json. */
+function fmtTime(ms: number | null): string {
+  if (ms === null) return '—'
+  return new Date(ms).toISOString().slice(0, 16).replace('T', ' ') + 'Z'
+}
+
 // ---------- commands ----------
 
 interface ListRow {
@@ -252,7 +261,7 @@ interface ListRow {
   activeWithinDays: boolean
 }
 
-async function cmdList(comp: Composition, dshHome: string, includeAll: boolean): Promise<void> {
+async function cmdList(comp: Composition, dshHome: string, includeAll: boolean, asJson: boolean): Promise<void> {
   const addresses = readMemberAddresses(dshHome)
   const sessions = await comp.query.listSessions()
   const byId = new Map(sessions.map(s => [s.header.id, s]))
@@ -294,16 +303,30 @@ async function cmdList(comp: Composition, dshHome: string, includeAll: boolean):
   const visible = includeAll
     ? rows
     : rows.filter(r => r.archived || (r.inTeamWorkspaces && r.activeWithinDays))
-  console.log(JSON.stringify({
-    command: 'list',
-    scope: 'team members',
-    dshHome,
-    count: visible.length,
-    filters: includeAll
-      ? 'none (--all)'
-      : `cwd in team workspaces AND last activity within ${RECENT_ACTIVITY_MS / (24 * 60 * 60 * 1000)} days`,
-    members: visible,
-  }, null, 2))
+  const filters = includeAll
+    ? 'none (--all)'
+    : `cwd in team workspaces AND last activity within ${RECENT_ACTIVITY_MS / (24 * 60 * 60 * 1000)} days`
+  if (asJson) {
+    console.log(JSON.stringify({
+      command: 'list',
+      scope: 'team members',
+      dshHome,
+      count: visible.length,
+      filters,
+      members: visible,
+    }, null, 2))
+    return
+  }
+  const handleW = Math.max(6, ...visible.map(r => r.handle.length))
+  const line = (h: string, ev: string, last: string, preset: string, note: string) =>
+    `  ${h.padEnd(handleW)}  ${ev.padStart(6)}  ${last.padEnd(16)}  ${preset.padEnd(12)}  ${note}`
+  console.log(`team member sessions — ${visible.length} shown (${filters})`)
+  console.log(line('MEMBER', 'EVENTS', 'LAST ACTIVITY', 'PRESET', ''))
+  for (const r of visible) {
+    const note = r.archived ? 'archived (current-gen log absent)' : r.inTeamWorkspaces ? '' : 'other cwd'
+    console.log(line(r.handle, String(r.eventCount), fmtTime(r.lastEventTime), r.agentPreset ?? '—', note))
+  }
+  console.log('\nnext: session-trace.ts timeline <MEMBER>   (add --json for full fields incl. sessionId/cwd)')
 }
 
 async function cmdTimeline(comp: Composition, dshHome: string, member: string, opts: {
@@ -312,6 +335,7 @@ async function cmdTimeline(comp: Composition, dshHome: string, member: string, o
   toSeq?: number
   types?: string[]
   toolPrefix?: string
+  json: boolean
 }): Promise<void> {
   const address = resolveMember(dshHome, member)
   const records = await comp.query.listEvents(address.sessionId)
@@ -321,50 +345,76 @@ async function cmdTimeline(comp: Composition, dshHome: string, member: string, o
     if (opts.types !== undefined && !opts.types.includes(r.type)) return false
     return true
   })
-  // The tool filter matches raw `tool/call.data.name`, so it also constrains
-  // the type — apply it before paging to avoid missing rows past the page.
+
+  type Row = { sessionId: string; seq: number; type: string; time: number; surface: string; derived: DerivedFields }
   const toolPrefix = opts.toolPrefix
-  const typed = toolPrefix === undefined
-    ? filtered
-    : filtered.filter(r => r.type === 'tool/call' || r.type === 'tool/result')
-  const start = Math.max(0, typed.length - opts.limit)
-  const page = typed.slice(start)
-  // Derived navigation fields need raw payloads; pull bounded windows only for
-  // the rows we will show, keeping default output body-free.
-  let rows = page.map(r => ({
-    sessionId: address.sessionId,
-    seq: r.seq,
-    type: r.type,
-    time: r.time,
-    surface: r.surface,
-    derived: {} as DerivedFields,
-  }))
-  if (page.length > 0) {
-    const window = await rawWindow(comp, address.sessionId, page[0]!.seq, page.at(-1)!.seq)
+  let matched: Row[]
+  if (toolPrefix === undefined) {
+    // No name filter: page by seq first, then hydrate derived fields only for
+    // the shown page — keeps the default output body-free and cheap.
+    matched = filtered.map(r => ({ ...r, sessionId: address.sessionId, derived: {} as DerivedFields }))
+  } else {
+    // The name lives only in raw `tool/call.data.name` (tool/result carries
+    // none), so the toolName decision requires reading payloads. Resolve it
+    // across the WHOLE candidate set — not just the page — so the match count
+    // is limit-independent. `tool/result` is excluded outright: it can never
+    // match a name filter, and including it only wasted page budget before.
+    const calls = filtered.filter(r => r.type === 'tool/call')
+    const hydrated: Row[] = []
+    if (calls.length > 0) {
+      const window = await rawWindow(comp, address.sessionId, calls[0]!.seq, calls.at(-1)!.seq)
+      const bySeq = new Map(window.map(e => [e.seq, e]))
+      for (const r of calls) {
+        const derived = deriveFields(bySeq.get(r.seq) ?? { seq: r.seq, type: r.type, time: r.time })
+        if (typeof derived.toolName === 'string' && derived.toolName.startsWith(toolPrefix)) {
+          hydrated.push({ ...r, sessionId: address.sessionId, derived })
+        }
+      }
+    }
+    matched = hydrated
+  }
+
+  // Page the fully-resolved match set: newest `limit` rows.
+  const start = Math.max(0, matched.length - opts.limit)
+  let rows = matched.slice(start)
+  if (toolPrefix === undefined && rows.length > 0) {
+    // Hydrate derived fields for just this page (bounded read).
+    const window = await rawWindow(comp, address.sessionId, rows[0]!.seq, rows.at(-1)!.seq)
     const bySeq = new Map(window.map(e => [e.seq, e]))
     rows = rows.map(r => ({ ...r, derived: deriveFields(bySeq.get(r.seq) ?? { seq: r.seq, type: r.type, time: r.time }) }))
-    if (toolPrefix !== undefined) {
-      rows = rows.filter(r => typeof r.derived.toolName === 'string' && r.derived.toolName.startsWith(toolPrefix))
-    }
   }
-  // The tool filter drops page rows that are not matching tool/call events;
-  // report exactly what survives so `matched`/`returned` never overstate.
-  const matched = toolPrefix === undefined ? filtered.length : rows.length + (start > 0 ? typed.length - start - rows.length : 0)
-  console.log(JSON.stringify({
-    command: 'timeline',
-    member: address.handle,
-    sessionId: address.sessionId,
-    totalEvents: records.length,
-    matchedEvents: matched,
-    returned: rows.length,
-    truncated: start > 0,
-    truncatedNote: toolPrefix === undefined
-      ? 'older events exist beyond the returned page'
-      : 'older events exist beyond the scanned window; use --from-seq/--to-seq to scan earlier ranges',
-    seqRange: { from: rows[0]?.seq ?? null, to: rows.at(-1)?.seq ?? null },
-    derivedFieldsNote: 'turn/step/callId/toolName are derived from canonical event data',
-    events: rows,
-  }, null, 2))
+
+  const truncated = start > 0
+  if (opts.json) {
+    console.log(JSON.stringify({
+      command: 'timeline',
+      member: address.handle,
+      sessionId: address.sessionId,
+      totalEvents: records.length,
+      matchedEvents: matched.length,
+      returned: rows.length,
+      truncated,
+      truncatedNote: truncated ? `${matched.length - rows.length} older matching event(s) exist; raise --limit or use --from-seq/--to-seq` : null,
+      seqRange: { from: rows[0]?.seq ?? null, to: rows.at(-1)?.seq ?? null },
+      derivedFieldsNote: 'turn/step/callId/toolName are derived from canonical event data',
+      events: rows,
+    }, null, 2))
+    return
+  }
+  const filterDesc = [
+    opts.types ? `type in {${opts.types.join(',')}}` : null,
+    toolPrefix ? `tool starts with "${toolPrefix}"` : null,
+    opts.fromSeq !== undefined ? `seq>=${opts.fromSeq}` : null,
+    opts.toSeq !== undefined ? `seq<=${opts.toSeq}` : null,
+  ].filter(Boolean).join(', ') || 'none'
+  console.log(`${address.handle} timeline — ${matched.length} matched, showing ${rows.length}${truncated ? ` (newest; ${matched.length - rows.length} older hidden)` : ''}  [filter: ${filterDesc}]`)
+  const seqW = Math.max(4, ...rows.map(r => String(r.seq).length))
+  for (const r of rows) {
+    const ts = r.derived.turn !== undefined ? `t${r.derived.turn}${r.derived.step !== undefined ? `/s${r.derived.step}` : ''}` : ''
+    const tool = r.derived.toolName ? ` ${r.derived.toolName}` : ''
+    console.log(`  ${String(r.seq).padStart(seqW)}  ${fmtTime(r.time)}  ${r.type.padEnd(18)} ${ts.padEnd(8)}${tool}`)
+  }
+  console.log(`\nnext: session-trace.ts read ${address.handle} <SEQ>   (add --json for structured rows)`)
 }
 
 
@@ -433,12 +483,13 @@ function fail(message: string): never {
 
 const args = parseArgs(process.argv.slice(2))
 const dshHome = args.values.get('home') ?? `${process.env.HOME ?? fail('HOME is unset')}/.dsh`
+const wantJson = args.flags.has('json')
 
 switch (args.command) {
   case 'list': {
     const comp = await mount(dshHome)
     try {
-      await cmdList(comp, dshHome, args.flags.has('all'))
+      await cmdList(comp, dshHome, args.flags.has('all'), wantJson)
     } finally {
       await comp.dispose()
     }
@@ -454,6 +505,7 @@ switch (args.command) {
       const tool = args.values.get('tool')
       await cmdTimeline(comp, dshHome, member, {
         limit: Number(args.values.get('limit') ?? DEFAULT_TIMELINE_LIMIT),
+        json: wantJson,
         ...(fromSeq === undefined ? {} : { fromSeq: Number(fromSeq) }),
         ...(toSeq === undefined ? {} : { toSeq: Number(toSeq) }),
         ...(types === undefined ? {} : { types }),

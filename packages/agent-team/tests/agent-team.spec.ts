@@ -787,6 +787,75 @@ describe('AgentTeam durable Thread Attention ledger', () => {
     expect(inbox.recent.some(item => item.previewText === 'Thread 0')).toBe(false)
   })
 
+  it('lists every active Task Thread in the view radar for an Agent reader, whoever took part', async () => {
+    const test = await harness()
+    const channel = await test.ctx.agentTeam.createChannel({ requestId: requestId('channel'), workspaceId: alpha, name: 'engineering', description: 'Engineering work' })
+    const ledger = replayLedger(test)
+    const { member, actor } = await addLedgerMember(ledger, channel.channel.channelRef)
+    const { actor: bystander } = await addLedgerMember(ledger, channel.channel.channelRef, 'member:bystander', 'Bystander', 'Bystander')
+    // A claimed Task (in_progress), a done Task still in review, and an untouched
+    // Task with no Claim. The radar should carry the first two and drop the third.
+    const claimed = withTask(committed((await ledger.sendMessage({ asTask: true, requestId: requestId('claimed'), workspaceId: alpha, channelRef: channel.channel.channelRef, body: 'Claimed work', actor: agentTeamHumanActor() })).value))
+    committed((await ledger.changeClaim({ requestId: requestId('claim'), workspaceId: alpha, taskRef: claimed.task.taskRef, action: 'claim', direction: 'building it', baseRevision: claimed.thread.revision, actor })).value)
+    const reviewed = withTask(committed((await ledger.sendMessage({ asTask: true, requestId: requestId('reviewed'), workspaceId: alpha, channelRef: channel.channel.channelRef, body: 'Reviewed work', actor: agentTeamHumanActor() })).value))
+    const reviewClaim = committed((await ledger.changeClaim({ requestId: requestId('review-claim'), workspaceId: alpha, taskRef: reviewed.task.taskRef, action: 'claim', direction: 'reviewing it', baseRevision: reviewed.thread.revision, actor })).value)
+    committed((await ledger.changeClaim({ requestId: requestId('review-done'), workspaceId: alpha, taskRef: reviewed.task.taskRef, action: 'done', claimRef: reviewClaim.claim.claimRef, baseRevision: reviewClaim.thread.revision, actor })).value)
+    withTask(committed((await ledger.sendMessage({ asTask: true, requestId: requestId('idle'), workspaceId: alpha, channelRef: channel.channel.channelRef, body: 'Idle work', actor: agentTeamHumanActor() })).value))
+    // The bystander never wrote in either active Thread, yet the radar surfaces
+    // both to them: admission is the Task being active, not participation.
+    const radar = ledger.view({ workspaceId: alpha, topLevelOnly: true, includeActivities: false, direction: 'before' }, bystander.memberId).activeTaskThreads
+    expect(radar.map(row => row.threadRef).sort()).toEqual([claimed.task.threadRef, reviewed.task.threadRef].sort())
+    const claimedRow = radar.find(row => row.threadRef === claimed.task.threadRef)!
+    expect(claimedRow).toMatchObject({ status: 'in_progress', subject: 'Claimed work', taskNumber: 1 })
+    expect(claimedRow.members.map(m => m.memberId)).toEqual([member.memberId])
+    expect(radar.find(row => row.threadRef === reviewed.task.threadRef)).toMatchObject({ status: 'in_review', subject: 'Reviewed work' })
+  })
+
+  it('keeps an active Task Thread in the radar even while the reader has it unread', async () => {
+    const test = await harness()
+    const channel = await test.ctx.agentTeam.createChannel({ requestId: requestId('channel'), workspaceId: alpha, name: 'engineering', description: 'Engineering work' })
+    const ledger = replayLedger(test)
+    const { actor } = await addLedgerMember(ledger, channel.channel.channelRef)
+    const { actor: reader } = await addLedgerMember(ledger, channel.channel.channelRef, 'member:reader', 'Reader', 'Reader')
+    const started = withTask(committed((await ledger.sendMessage({ asTask: true, requestId: requestId('start'), workspaceId: alpha, channelRef: channel.channel.channelRef, body: 'Active task', recipients: [reader.memberId], actor })).value))
+    committed((await ledger.changeClaim({ requestId: requestId('claim'), workspaceId: alpha, taskRef: started.task.taskRef, action: 'claim', direction: 'on it', baseRevision: started.thread.revision, actor })).value)
+    // The reader was mentioned and has an unread on this Thread — the unread
+    // queue carries it, and so does the radar, independently.
+    const inbox = ledger.inbox(reader, { workspaceId: alpha })
+    expect(inbox.items.some(item => item.thread.threadRef === started.task.threadRef)).toBe(true)
+    const radar = ledger.view({ workspaceId: alpha, topLevelOnly: true, includeActivities: false, direction: 'before' }, reader.memberId).activeTaskThreads
+    expect(radar.map(row => row.threadRef)).toEqual([started.task.threadRef])
+  })
+
+  it('excludes archived-Channel Tasks and isolates Workspaces in the view radar', async () => {
+    const test = await harness(new MemoryMediaPool(), [alpha, beta])
+    const ledger = replayLedger(test)
+    const { member, actor } = await addLedgerMember(ledger, undefined)
+    await ledger.joinWorkspace({ requestId: requestId('join-beta'), workspaceId: beta, memberId: member.memberId, actor: agentTeamHumanActor() })
+    const alphaChannel = (await ledger.createChannel({ requestId: requestId('alpha-ch'), workspaceId: alpha, name: 'alpha', description: '', memberIds: [member.memberId], actor: agentTeamHumanActor() })).value.channel
+    const betaChannel = (await ledger.createChannel({ requestId: requestId('beta-ch'), workspaceId: beta, name: 'beta', description: '', memberIds: [member.memberId], actor: agentTeamHumanActor() })).value.channel
+    const betaTask = withTask(committed((await ledger.sendMessage({ asTask: true, requestId: requestId('beta-task'), workspaceId: beta, channelRef: betaChannel.channelRef, body: 'Beta work', actor })).value))
+    committed((await ledger.changeClaim({ requestId: requestId('beta-claim'), workspaceId: beta, taskRef: betaTask.task.taskRef, action: 'claim', direction: 'beta angle', baseRevision: betaTask.thread.revision, actor })).value)
+    // Beta's active Task does not leak into the alpha radar.
+    expect(ledger.view({ workspaceId: alpha, topLevelOnly: true, direction: 'before' }, member.memberId).activeTaskThreads).toEqual([])
+    // An active Task whose Channel is then archived leaves the radar.
+    const alphaTask = withTask(committed((await ledger.sendMessage({ asTask: true, requestId: requestId('alpha-task'), workspaceId: alpha, channelRef: alphaChannel.channelRef, body: 'Alpha work', actor })).value))
+    committed((await ledger.changeClaim({ requestId: requestId('alpha-claim'), workspaceId: alpha, taskRef: alphaTask.task.taskRef, action: 'claim', direction: 'alpha angle', baseRevision: alphaTask.thread.revision, actor })).value)
+    expect(ledger.view({ workspaceId: alpha, topLevelOnly: true, direction: 'before' }, member.memberId).activeTaskThreads.map(row => row.threadRef)).toEqual([alphaTask.task.threadRef])
+    await ledger.archiveChannel({ requestId: requestId('alpha-arch'), workspaceId: alpha, channelRef: alphaChannel.channelRef, actor: agentTeamHumanActor() })
+    expect(ledger.view({ workspaceId: alpha, topLevelOnly: true, direction: 'before' }, member.memberId).activeTaskThreads).toEqual([])
+  })
+
+  it('leaves the view radar empty when no Task has an active Claim', async () => {
+    const test = await harness()
+    const channel = await test.ctx.agentTeam.createChannel({ requestId: requestId('channel'), workspaceId: alpha, name: 'engineering', description: 'Engineering work' })
+    const ledger = replayLedger(test)
+    const { actor } = await addLedgerMember(ledger, channel.channel.channelRef)
+    // A taskful Thread with no Claim stays at todo and never enters the radar.
+    withTask(committed((await ledger.sendMessage({ asTask: true, requestId: requestId('todo'), workspaceId: alpha, channelRef: channel.channel.channelRef, body: 'Unclaimed task', actor })).value))
+    expect(ledger.view({ workspaceId: alpha, topLevelOnly: true, direction: 'before' }, actor.memberId).activeTaskThreads).toEqual([])
+  })
+
   it('does not duplicate a direct marker when follow starts after the marker', async () => {
     const test = await harness()
     const channel = await test.ctx.agentTeam.createChannel({ requestId: requestId('channel'), workspaceId: alpha, name: 'engineering', description: 'Engineering work' })

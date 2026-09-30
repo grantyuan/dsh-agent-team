@@ -68,6 +68,18 @@
       "@deepseek-ai/dsh-skill-filesystem": [
         "../deepseek-harness/packages/skill/skill-filesystem/src"
       ],
+      "@deepseek-ai/dsh-client-product-analytics": [
+        "../deepseek-harness/packages/client/product-analytics/src/index.ts"
+      ],
+      "@deepseek-ai/dsh-client-product-analytics/types": [
+        "../deepseek-harness/packages/client/product-analytics/src/events.ts"
+      ],
+      "@deepseek-ai/dsh-client-product-analytics/client": [
+        "../deepseek-harness/packages/client/product-analytics/src/client/index.ts"
+      ],
+      "@deepseek-ai/dsh-otel": [
+        "../deepseek-harness/packages/telemetry/otel/src"
+      ],
       "@deepseek-ai/dsh-client-ui-settings-account": [
         "../deepseek-harness/packages/client/ui-settings-account/src/index.ts"
       ],
@@ -124,6 +136,9 @@
       ],
       "@deepseek-ai/dsh/profile-boot": [
         "../deepseek-harness/apps/cli/src/profile-boot.ts"
+      ],
+      "@deepseek-ai/dsh/lib/bin.js": [
+        "../deepseek-harness/apps/cli/src/bin.ts"
       ],
       "@deepseek-ai/dsh-browser-use": [
         "../deepseek-harness/packages/browser-use/browser-use/src/index.ts"
@@ -280,6 +295,9 @@
       ],
       "@deepseek-ai/dsh-api-workspace-controller/client": [
         "../deepseek-harness/packages/api/workspace-controller/src/client/index.ts"
+      ],
+      "@deepseek-ai/dsh-api-workspace-controller/default-workspace": [
+        "../deepseek-harness/packages/api/workspace-controller/src/default-workspace.ts"
       ],
       "@deepseek-ai/dsh-api-workspace-controller/types": [
         "../deepseek-harness/packages/api/workspace-controller/src/types.ts"
@@ -686,6 +704,15 @@
       "@deepseek-ai/dsh-client-test-runtime": [
         "../deepseek-harness/packages/test-support/client-runtime/src"
       ],
+      "@deepseek-ai/dsh-client-shortcuts/protocol": [
+        "../deepseek-harness/packages/client/shortcuts/src/protocol.ts"
+      ],
+      "@deepseek-ai/dsh-client-shortcuts": [
+        "../deepseek-harness/packages/client/shortcuts/src"
+      ],
+      "@deepseek-ai/dsh-client-ui-shortcuts": [
+        "../deepseek-harness/packages/client/ui-shortcuts/src"
+      ],
       "@deepseek-ai/dsh-client-ui-layout": [
         "../deepseek-harness/packages/client/ui-layout/src"
       ],
@@ -770,6 +797,9 @@
       "@deepseek-ai/dsh-client-ui-settings-agent-loop": [
         "../deepseek-harness/packages/client/ui-settings-agent-loop/src"
       ],
+      "@deepseek-ai/dsh-client-ui-settings-session-log": [
+        "../deepseek-harness/packages/client/ui-settings-session-log/src"
+      ],
       "@deepseek-ai/dsh-client-ui-settings-subagent": [
         "../deepseek-harness/packages/client/ui-settings-subagent/src"
       ],
@@ -805,6 +835,9 @@
       ],
       "@deepseek-ai/dsh-client-ui-theme": [
         "../deepseek-harness/packages/client/ui-theme/src"
+      ],
+      "@deepseek-ai/dsh-client-ui-theme/brand-font.css": [
+        "../deepseek-harness/packages/client/ui-theme/src/styles/brand-font.css"
       ],
       "@deepseek-ai/dsh-client-ui-settings": [
         "../deepseek-harness/packages/client/ui-settings/src"
@@ -881,11 +914,17 @@
       "@deepseek-ai/dsh-experimental-ptc-runtime-python": [
         "../deepseek-harness/packages/experimental/ptc-runtime-python/src"
       ],
+      "@deepseek-ai/dsh-experimental-schedule-bundle": [
+        "../deepseek-harness/packages/experimental/schedule-bundle/src/index.ts"
+      ],
       "@deepseek-ai/dsh-util-crypto": [
         "../deepseek-harness/packages/util/crypto/src"
       ],
       "@deepseek-ai/dsh-util-values": [
         "../deepseek-harness/packages/util/values/src"
+      ],
+      "@deepseek-ai/dsh-util-code-language": [
+        "../deepseek-harness/packages/util/code-language/src"
       ],
       "@deepseek-ai/dsh-util-time": [
         "../deepseek-harness/packages/util/time/src"
@@ -1102,6 +1141,12 @@
       ],
       "@deepseek-ai/dsh-llm-deepseek": [
         "../deepseek-harness/packages/llm/llm-deepseek/src"
+      ],
+      "@deepseek-ai/dsh-llm-deepseek-account": [
+        "../deepseek-harness/packages/llm/llm-deepseek-account/src"
+      ],
+      "@deepseek-ai/dsh-llm-deepseek-api-key": [
+        "../deepseek-harness/packages/llm/llm-deepseek-api-key/src"
       ],
       "@deepseek-ai/dsh-llm-mock-server": [
         "../deepseek-harness/packages/test-support/llm-mock-server/src"

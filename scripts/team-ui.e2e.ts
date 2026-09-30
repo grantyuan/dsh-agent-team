@@ -4,6 +4,11 @@ import { afterEach, expect, it } from 'vitest'
 import { chromium, type Browser, type Locator, type Page } from 'playwright'
 import { launchWebScaffold, acknowledgeReloadConnectionLoss, watchConsole, type WebScaffold } from './scaffold.ts'
 import { connectFreshWorkspaceZh } from './support.ts'
+// This file is rendered into the adjacent harness checkout and runs from there,
+// where bare workspace imports resolve to harness source by the lane's own
+// tsconfig paths facade — so the version the page must state is read through the
+// same call the running Host makes, not from a copy of its path.
+import { getDshRuntimeVersion } from '@deepseek-ai/dsh-app-boot'
 
 const TEAM_ROOT = '__TEAM_ROOT__'
 const HOME = '__HOME__'
@@ -561,6 +566,11 @@ it('drives the complete opt-in Agent Team journey in real Web', async () => {
   const modelMenu = page.locator('[role="menu"]').filter({ hasText: '跟随全局默认' })
   await modelMenu.waitFor()
   expect(await modelMenu.getByRole('menuitem').count()).toBeGreaterThanOrEqual(2)
+  // The radius the shared Menu primitive gives its own rows, measured live: the
+  // Team composer's mention popover is held to this same value below, so the two
+  // cannot drift into separate menu languages on any DSH line.
+  const shippedRowRadius = await modelMenu.getByRole('menuitem').first()
+    .evaluate(row => getComputedStyle(row).borderTopLeftRadius)
   await page.screenshot({ path: join(UI04_SHOTS, 'agent-model-menu.png'), fullPage: true })
   await modelMenu.getByRole('menuitem', { name: '跟随全局默认' }).click()
   await expect.poll(() => page.locator('[role="menu"]').count()).toBe(0)
@@ -702,8 +712,11 @@ it('drives the complete opt-in Agent Team journey in real Web', async () => {
   // DSH 0.1.7's menu surface token is translucent, so the popup must frost what
   // is behind it — the blur plus that translucent fill is what keeps the roster
   // legible over the conversation, which is the state this pins. Its shape is
-  // the shipped menu's too: a 16px surface over 8px rows, the geometry of the
-  // Menu primitive that draws this app's other popovers.
+  // the shipped menu's too: the surface rides the tier the shared radius scale
+  // names, and the rows land on the row radius measured off the Menu primitive
+  // above. rc.2 moved that scale onto `--dsw-radius-*` (lg surface, md rows)
+  // where rc.1 hard-coded the pixels, so both expectations are read from the
+  // running line instead of frozen to one cut of it.
   const menuSurface = await page.getByRole('listbox', { name: '提及成员建议' }).evaluate(element => {
     const style = getComputedStyle(element)
     const firstRow = element.querySelector('[role="option"]')
@@ -712,12 +725,13 @@ it('drives the complete opt-in Agent Team journey in real Web', async () => {
       fill: style.backgroundColor,
       radius: style.borderTopLeftRadius,
       rowRadius: firstRow === null ? '' : getComputedStyle(firstRow).borderTopLeftRadius,
+      surfaceTier: getComputedStyle(document.documentElement).getPropertyValue('--dsw-radius-lg').trim() || '16px',
     }
   })
   expect(menuSurface.blur).toContain('blur')
   expect(menuSurface.fill).toContain('rgba(')
-  expect(menuSurface.radius).toBe('16px')
-  expect(menuSurface.rowRadius).toBe('8px')
+  expect(menuSurface.radius).toBe(menuSurface.surfaceTier)
+  expect(menuSurface.rowRadius).toBe(shippedRowRadius)
   await page.getByRole('option', { name: /@builder/ }).click()
   await page.screenshot({ path: join(UI04_SHOTS, 'mention-menu-selected.png'), fullPage: true })
   const asTaskToggle = page.getByRole('button', { name: '作为任务' })
@@ -1112,6 +1126,28 @@ it('drives the complete opt-in Agent Team journey in real Web', async () => {
   await page.screenshot({ path: join(UI04_SHOTS, 'message-clamp-markdown-expanded.png'), fullPage: true })
   await longMarkdownRow.getByRole('button', { name: '收起' }).click()
   await expect.poll(async () => await longMarkdownRow.locator('[class*="messageClamp"]').count()).toBe(1)
+
+  // The sender line is the secondary grade of the content axis: 13px/20px at
+  // the default Settings size, and it grows with the body once that size is
+  // raised, while the 11px time stays the fixed small grade. The axis is the
+  // one variable the theme bootstrap publishes on body, so overriding it here
+  // walks the same path a raised Settings size takes.
+  const senderName = page.locator('[data-team-thread] article [class*="nameRow"] strong').first()
+  await senderName.waitFor()
+  const senderMetrics = async (): Promise<string> => await senderName.evaluate(node => {
+    const { fontSize, lineHeight } = getComputedStyle(node)
+    return `${fontSize}/${lineHeight}`
+  })
+  await expect.poll(senderMetrics).toBe('13px/20px')
+  const axisBefore = await page.evaluate(() => document.body.style.getPropertyValue('--dsh-content-font-size'))
+  await page.evaluate(() => { document.body.style.setProperty('--dsh-content-font-size', '17px') })
+  await expect.poll(senderMetrics).toBe('15px/22px')
+  await page.screenshot({ path: join(UI04_SHOTS, 'content-axis-17px.png') })
+  await page.evaluate(value => {
+    if (value === '') document.body.style.removeProperty('--dsh-content-font-size')
+    else document.body.style.setProperty('--dsh-content-font-size', value)
+  }, axisBefore)
+  await expect.poll(senderMetrics).toBe('13px/20px')
 
   await agentRefLinks.first().click()
   await page.getByRole('heading', { name: /Task #1/ }).waitFor()
@@ -2537,5 +2573,67 @@ it('configures the Human profile from Settings in real Web', async () => {
   })
   expect(identityGeometry).toEqual({ width: 18, height: 18, radius: '50%' })
   await page.screenshot({ path: join(UI09_SHOTS, 'human-identity-in-inbox-stack.png'), fullPage: true })
+  expect(consoleWatch).toEqual({ warnings: [], pageErrors: [] })
+}, 180_000)
+
+/**
+ * The environment check above the version footnote. The versions it prints are
+ * the whole point: `0.1.15` comes from the installed manifest and the DSH
+ * version from the running Host's own reader, so this journey proves the Host
+ * resolved its real manifests rather than a fixture. Only the `ok` tier is
+ * reachable in a browser — the other two describe an environment this run does
+ * not have (a different DSH cut, or unreadable facts) and are pinned by the Host
+ * and component suites. The `ok` line names the **running** version, never the
+ * declared range's lower bound: that bound belongs to the out-of-range tier,
+ * which is why this case also pins its absence. The expectation therefore comes
+ * from `getDshRuntimeVersion()` — the call the Host itself makes — so the
+ * journey states the fact on rc.1, rc.2, and whatever cut the adjacent checkout
+ * carries instead of naming one cut once.
+ */
+it('states the local environment check on the Human profile page', async () => {
+  await installLocalBundle(false)
+  scaffold = await launchWebScaffold({ harnessHome: HOME, profile: { packages: [{ dir: STAGED_BUNDLE, enabled: true }] } })
+  browser = await chromium.launch({ headless: true, executablePath: CHROME })
+  const page = await browser.newPage({ viewport: { width: 1440, height: 960 }, locale: 'zh-CN' })
+  const consoleWatch = watchConsole(page)
+  await page.goto(scaffold.authenticatedUrl)
+  await connectFreshWorkspaceZh(page, scaffold.workspaceCwd, 'team-workspace')
+
+  await page.getByRole('button', { name: '设置', exact: true }).click()
+  const panel = page.getByRole('dialog')
+  await panel.getByRole('button', { name: '我的资料' }).click()
+  const block = panel.locator('[data-environment]')
+  await block.waitFor()
+  await expect.poll(async () => await block.getAttribute('data-environment')).toBe('ok')
+  // The running version is stated as a fact and in words: no raw semver range
+  // appears anywhere, and the certified line stays out of the `ok` tier.
+  expect(await block.textContent()).toContain('在支持范围内')
+  expect(await block.textContent()).toContain(`正在运行的 DSH ${getDshRuntimeVersion()} 在我们声明的支持范围内。`)
+  expect(await block.textContent()).not.toContain('>=0.1.7-rc.1')
+  expect(await block.textContent()).not.toContain('我们实测认证的组合')
+  expect(await block.locator('a').count()).toBe(0)
+  // Reading both versions is what proves the Host reached its own manifests:
+  // the bundle version resolves from the staged install, and the DSH version
+  // from the app-boot package the running host ships.
+  expect(await block.textContent()).not.toContain('unknown')
+  await page.screenshot({ path: join(UI09_SHOTS, 'environment-check-ok.png'), fullPage: true })
+
+  // 390×844: the shipped panel keeps its 188px nav rail, so the block has to
+  // survive a column far narrower than its sentence. It must stay inside the
+  // panel and add no horizontal overflow of its own.
+  await page.setViewportSize({ width: 390, height: 844 })
+  await settleLayout(page)
+  await page.screenshot({ path: join(UI09_SHOTS, 'environment-check-narrow.png'), fullPage: true })
+  const narrow = await page.evaluate(() => ({
+    scrollWidth: document.documentElement.scrollWidth,
+    clientWidth: document.documentElement.clientWidth,
+  }))
+  expect(narrow.scrollWidth).toBeLessThanOrEqual(narrow.clientWidth)
+  const blockBox = (await block.boundingBox())!
+  const panelBox = (await panel.boundingBox())!
+  expect(blockBox.x + blockBox.width).toBeLessThanOrEqual(panelBox.x + panelBox.width + 1)
+  await page.setViewportSize({ width: 1440, height: 960 })
+  await settleLayout(page)
+
   expect(consoleWatch).toEqual({ warnings: [], pageErrors: [] })
 }, 180_000)

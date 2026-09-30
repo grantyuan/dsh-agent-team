@@ -37,6 +37,7 @@ import type {
   AgentTeamCreateChannelResult,
   AgentTeamDirectMarker,
   AgentTeamDmRequest,
+  AgentTeamActiveTaskThread,
   AgentTeamDmResult,
   AgentTeamDmSentOperation,
   AgentTeamHumanActor,
@@ -1954,6 +1955,7 @@ export class AgentTeamLedger {
       })),
       taskNumbers: Object.freeze(visibleTasks.map(task => Object.freeze({ taskRef: task.taskRef, taskNumber: taskNumbers.get(task.taskRef) ?? 0 }))),
       items: Object.freeze(items),
+      activeTaskThreads: this.activeTaskThreads(visibleTasks, taskNumbers),
       claims: this.claimsForVisibleTasks(visibleTasks),
       activities: Object.freeze(selected.filter((fact): fact is Extract<AgentTeamThreadFact, { kind: 'activity' }> => fact.kind === 'activity').map(fact => fact.activity)),
       cursor: nextCursor,
@@ -3600,6 +3602,39 @@ export class AgentTeamLedger {
   private claimsForVisibleTasks(tasks: readonly AgentTeamTask[]): readonly AgentTeamClaim[] {
     const refs = new Set(tasks.map(task => task.taskRef))
     return Object.freeze([...this.state.claims.values()].filter(claim => refs.has(claim.taskRef)))
+  }
+
+  /**
+   * The team_view「活跃 task thread」radar for a Workspace: every visible Task
+   * still in flight — in_progress or in_review, the two states a live Claim
+   * keeps a Task in — newest activity first. Unlike `recentInboxItems`, this is
+   * not a participation slice: admission is the Task being active in a Channel
+   * the reader can see, whether or not the reader wrote in it, and a Thread
+   * still holding the reader's unread is not excluded. Rows carry the same
+   * `liveClaimOwners`口径 the Inbox and Channel feed already use, so 「谁在这个
+   * Task 上」 never gains a second definition. Archived Channels are already
+   * absent from `visibleTasks`, so their Tasks never reach here.
+   */
+  private activeTaskThreads(visibleTasks: readonly AgentTeamTask[],
+    taskNumbers: ReadonlyMap<AgentTeamTaskRef, number>): readonly AgentTeamActiveTaskThread[] {
+    const rows: { row: AgentTeamActiveTaskThread; sequence: number }[] = []
+    for (const task of visibleTasks) {
+      if (task.status !== 'in_progress' && task.status !== 'in_review') continue
+      const thread = this.state.threads.get(task.threadRef)
+      if (thread === undefined) continue
+      const newest = (this.state.factsByThread.get(thread.threadRef) ?? []).at(-1)
+      if (newest === undefined) continue
+      const taskNumber = taskNumbers.get(task.taskRef)
+      rows.push({
+        row: Object.freeze({ taskRef: task.taskRef, threadRef: thread.threadRef, channelRef: task.channelRef,
+          ...(taskNumber === undefined ? {} : { taskNumber }), status: task.status,
+          subject: boundedInboxPreview(this.threadAnchor(thread.threadRef).body),
+          members: this.liveClaimOwners(task), lastActivityAt: newest.occurredAt }),
+        sequence: newest.sequence,
+      })
+    }
+    rows.sort((left, right) => right.sequence - left.sequence || left.row.threadRef.localeCompare(right.row.threadRef))
+    return Object.freeze(rows.map(entry => entry.row))
   }
 
   private tasksForClaims(claims: readonly AgentTeamClaim[], projected: ReadonlyMap<AgentTeamClaimRef, AgentTeamClaim>): readonly AgentTeamTask[] {

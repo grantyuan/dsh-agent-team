@@ -64,6 +64,15 @@ const spots = [
   { file: 'docs/development/environments-and-install.zh.md', pattern: /最低兼容版本是 DSH `([^`]+)`/u },
   { file: 'README.md', pattern: /certified against DSH `([^`]+)`/u },
   { file: 'README.zh.md', pattern: /针对 DSH `([^`]+)` 完成认证/u },
+  // Quick start starts the host itself, and must start the certified line: an
+  // unversioned `npx @deepseek-ai/dsh web` resolves `latest`, which would hand
+  // the reader a host this bundle's peers refuse.
+  { file: 'README.md', pattern: /npx @deepseek-ai\/dsh@([0-9][^ ]*) web/u },
+  { file: 'README.zh.md', pattern: /npx @deepseek-ai\/dsh@([0-9][^ ]*) web/u },
+  // The global install named right after it is a second way to get the same
+  // host line, and `extract` reads one match per spot, so it needs its own.
+  { file: 'README.md', pattern: /npm i -g @deepseek-ai\/dsh@([0-9][^` ]*)/u },
+  { file: 'README.zh.md', pattern: /npm i -g @deepseek-ai\/dsh@([0-9][^` ]*)/u },
   { file: 'docs/architecture/host-authority.md', pattern: /targets DSH `([^`]+)`/u },
   { file: 'docs/architecture/host-authority.zh.md', pattern: /目标为 DSH `([^`]+)`/u },
   { file: 'docs/dsh-release-compatibility.md', pattern: /current certified baseline is DSH `([^`]+)`/u },
@@ -128,6 +137,23 @@ for (const [name, range] of peerRanges) {
   }
 }
 
+// (c) Both READMEs name the released version in the install command. The pin is
+// deliberate — pnpm skips releases younger than a day, so an unpinned `@latest`
+// resolves to the previous release on release day — which means the line moves
+// with every release. This gate is what makes forgetting it fail loudly.
+const installSpots = [
+  { file: 'README.md', pattern: /dsh plugin --profile web add @wowyuarm\/dsh-agent-team@(\d+\.\d+\.\d+)/u },
+  { file: 'README.zh.md', pattern: /dsh plugin --profile web add @wowyuarm\/dsh-agent-team@(\d+\.\d+\.\d+)/u },
+]
+for (const { file, pattern } of installSpots) {
+  const installVersion = extract(file, pattern)
+  if (installVersion === undefined) {
+    failures.push(`${file}: install command names no version (the pinned release must stay visible — update the pattern with the command)`)
+  } else if (installVersion !== manifest.version) {
+    failures.push(`${file} installs ${installVersion} but package.json publishes ${manifest.version}`)
+  }
+}
+
 if (failures.length > 0) {
   console.error(`Version consistency check failed (${failures.length}):`)
   for (const failure of failures) console.error(`- ${failure}`)
@@ -135,5 +161,6 @@ if (failures.length > 0) {
 }
 console.log(
   `Version consistency check OK: ${stated.length + 1} version spots agree on ${reference}, `
-    + `${peerRanges.length} DSH ranges admit from it, plugin ${manifest.version}.`,
+    + `${peerRanges.length} DSH ranges admit from it, plugin ${manifest.version} `
+    + `(named by ${installSpots.length} install commands).`,
 )

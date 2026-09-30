@@ -1,5 +1,6 @@
 // UI parity audit: mechanical consistency checks between the Team Client's
-// own CSS/TSX and the DSH 0.1.7 design language documented in
+// own CSS/TSX and the DSH 0.1.7 design language — the rc.2 baseline, re-verified
+// on the 0.2.0-rc.1 and 0.2.0-rc.2 lines — documented in
 // docs/frontend-design/principles-and-language.md §Design language alignment.
 // This is the repeatable
 // form of the manual audit that produced commit bb1ebba — run it after any
@@ -11,6 +12,9 @@
 // sources and the harness checkout (through the shared harness-dir.mjs
 // pointer), applies the documented language rules, and prints a report.
 // Design judgment stays in docs; the script only reports mechanical drift.
+// It must stay green on the checkout the peers are certified against
+// (DSH_HARNESS_DIR points it at one): since the 0.2.0 peer move the shipped
+// theme defines every --dsw-* token the Team Client references.
 
 import { readdirSync, readFileSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
@@ -31,13 +35,27 @@ const note = (severity, where, what) => findings.push({ severity, where, what })
 // mirror).
 // ---------------------------------------------------------------------------
 
+// The colour half of the focus ring. The platform sets `--dsw-focus-ring-color`
+// to transparent for pointer input on non-editable controls, so a ring must read
+// the variable and fall back to the one business colour — a literal colour would
+// both ignore that suppression and stop tracking the theme. Both ring forms
+// (outline below, and the box-shadow a control uses when an outline would
+// collide with its own geometry — shipped `ModelSelect.module.css .trigger`)
+// carry this same chain.
+const RING_COLOR = 'var(--dsw-focus-ring-color, var(--dsw-alias-state-business-primary))'
+
 const LANGUAGE = {
   iconButtonDiameter: 28,
   sendButtonDiameter: 34,
   rowRadius: 8,
   chipRadius: 6,
   controlGap: 12,
-  focusRing: '2px solid var(--dsw-alias-label-primary)',
+  // 0.1.7-rc.2 tokenized the ring. The fallback names the colour and the standard
+  // width. The language is this one string: a ring that reaches for another
+  // colour, or nests a second fallback under the business token, is the drift
+  // §2b catches — so the comparison is equality (whitespace normalized, so a
+  // wrapped declaration still passes), not a prefix match.
+  focusRing: `var(--dsw-focus-ring-width, 2px) solid ${RING_COLOR}`,
   // A focus ring must be visible: an `outline: none` with no paired visible
   // replacement (background, box-shadow, color, underline) is a violation.
   // listbox/aria-activedescendant option rows are exempt (focus stays on the
@@ -144,6 +162,37 @@ for (const file of readdirSync(clientDir).filter(name => name.endsWith('.module.
 }
 
 // ---------------------------------------------------------------------------
+// 2b. Focus ring form: every ring the Team Client paints takes the shipped
+//     token form, so it inherits the platform's width and colour — including
+//     the pointer-modality suppression, which works by setting the colour
+//     variable (a literal colour would paint a ring over a mouse click that
+//     shipped suppresses). Offsets stay per component, as shipped declares
+//     them. Both forms are checked: the canonical `outline`, and the
+//     `box-shadow: 0 0 0 2px …` ring a control uses when an outline would
+//     collide with its own geometry — its colour must be the same chain, or the
+//     ring silently becomes two different rings (`--dsw-alias-border-l3` was
+//     one such drift). `outline: none` is section 2's business, not this one.
+// ---------------------------------------------------------------------------
+
+for (const file of readdirSync(clientDir).filter(name => name.endsWith('.module.css'))) {
+  const css = readFileSync(join(clientDir, file), 'utf8')
+  for (const rule of collectRules(css)) {
+    if (!/:focus-visible/.test(rule.selector)) continue
+    const outline = rule.body.match(/outline\s*:\s*([^;]+)/)?.[1]?.trim().replace(/\s+/g, ' ')
+    if (outline !== undefined && !/^(?:none|0)$/.test(outline) && outline !== LANGUAGE.focusRing) {
+      note('error', `${file} ${rule.selector}`, `focus ring is written as 'outline: ${outline}'; the language is the one form 'outline: ${LANGUAGE.focusRing}' so every ring follows the shipped width, the single business colour and the pointer suppression`)
+    }
+    // Elevation shadows (`0 4px 12px …`) on a focused element are not rings and
+    // do not match the ring shape.
+    const shadow = rule.body.match(/box-shadow\s*:\s*([^;]+)/)?.[1]?.trim().replace(/\s+/g, ' ')
+    const ringColor = shadow?.match(/^0 0 0 [\d.]+px (.+)$/)?.[1]
+    if (ringColor !== undefined && ringColor !== RING_COLOR) {
+      note('error', `${file} ${rule.selector}`, `box-shadow focus ring paints '${ringColor}'; the ring is one colour in both forms — write 'box-shadow: 0 0 0 2px ${RING_COLOR}'`)
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
 // 3. Hardcoded colors: the Team Client uses --dsw-alias-* tokens; hardcoded
 //    hex/rgb values are allowed only in the documented exceptions (static
 //    white on colored fills, avatar hue).
@@ -214,7 +263,15 @@ for (const [label, file, needles] of [
   // it (`IconPlusOutlineMedium`, `size` prop) — and dropped the composer's own
   // attach control, so the paperclip no longer appears in the shipped composer.
   ['shipped composer icon language', shippedInputBar, ['IconPlusOutlineMedium', "t('input.commands')", 'aria-haspopup="listbox"']],
-  ['shipped sidebar focus ring', shippedSidebarCss, ['panelRow:focus-visible', 'outline: 2px solid var(--dsw-alias-label-primary)']],
+  // 0.1.7-rc.2 tokenized the ring: the sidebar row writes
+  // `outline: var(--dsw-focus-ring-width) solid var(--dsw-focus-ring-color, …)`
+  // where 0.1.7-rc.1 wrote the `--dsw-alias-label-primary` literal. Either
+  // writing proves the reference is still the shipped row ring, so the daily
+  // checkout (rc.1) and an rc.2 certification checkout both pass.
+  ['shipped sidebar focus ring', shippedSidebarCss, ['panelRow:focus-visible', [
+    'outline: 2px solid var(--dsw-alias-label-primary)',
+    'outline: var(--dsw-focus-ring-width)',
+  ]]],
   // The labeled permission chip (`PermissionSelect.module.css`) and its 460px
   // label cut were deleted in 0.1.7: mode chrome is the 8px `select`, and the
   // composer narrows its control gaps at 560px instead of hiding a label.
@@ -228,8 +285,11 @@ for (const [label, file, needles] of [
     continue
   }
   for (const needle of needles) {
-    if (!text.includes(needle)) {
-      note('warn', label, `shipped reference no longer contains '${needle}' — a DSH upgrade may have changed the language; re-verify docs`)
+    // A needle may be a list of alternatives: the writing moved between DSH
+    // releases and either form still proves the same reference.
+    const alternatives = Array.isArray(needle) ? needle : [needle]
+    if (!alternatives.some(candidate => text.includes(candidate))) {
+      note('warn', label, `shipped reference no longer contains ${alternatives.map(a => `'${a}'`).join(' or ')} — a DSH upgrade may have changed the language; re-verify docs`)
     }
   }
 }
@@ -307,24 +367,26 @@ if (shippedPrimitives.size === 0) {
 
 const GEOMETRY = [
   ['composer.module.css', '.attachButton', [['height', '28px'], ['width', '28px'], ['border-radius', '999px']], 'icon-only control is 28×28, radius 999px'],
-  ['composer.module.css', '.asTaskPill', [['height', '28px'], ['border-radius', '8px']], 'the mode chip keeps the shipped 0.1.7 mode-chrome radius'],
+  ['composer.module.css', '.card', [['border-radius', 'var(--dsw-radius-panel, 22px)']], 'the composer card is the panel tier of the shipped scale: 0.1.7-rc.2 re-rounded the shipped composer card from 22px to `--dsw-radius-panel`, and the 22px fallback keeps the rc.1 checkout rendering what it renders today'],
+  ['composer.module.css', '.asTaskPill', [['height', '28px'], ['border-radius', 'var(--dsw-radius-sm, 8px)']], 'the mode chip keeps the shipped mode-chrome radius — the small tier, unchanged by 0.1.7-rc.2'],
   ['composer.module.css', '.sendButton', [['height', '34px'], ['width', '34px'], ['border-radius', '999px'], ['transform', 'translateY(-2px)']], 'primary round action is 34×34 with the -2px seat compensation'],
-  ['sidebar.module.css', '.channelRow', [['border-radius', '12px']], 'list row radius is 12px; the shipped rail put .panelRow on its .newSession bar\'s 12px in the 0.1.6 line (harness c6b81a75, 2026-09-15), which our 0.1.5-anchored docs only met at the 0.1.7 upgrade'],
-  ['sidebar.module.css', '.agentRow', [['border-radius', '12px']], 'list row radius is 12px, the same tier as .channelRow above'],
-  ['sidebar.module.css', '.workspaceTrigger', [['border-radius', '12px'], ['min-height', '34px'], ['border', '1px solid var(--dsw-alias-border-l2)']], 'the Workspace selector keeps the sidebar row geometry: 12px radius, 34px line, and its neutral separator written as 1px because that is what shipped\'s 0.5px declaration actually renders as'],
-  ['sidebar.module.css', '.inboxCard', [['border-radius', '12px'], ['height', '34px']], 'the Inbox entry is a sidebar row: 12px radius, 34px height'],
-  ['member-row.module.css', '.row', [['border-radius', '12px']], 'the shared roster row is a list row wherever it renders: 12px, the rail/settings row tier'],
-  ['composer.module.css', '.mentionMenu', [['border-radius', '16px']], 'the mention popover is the shipped menu surface: 16px, so it matches the Menu primitive this app already renders elsewhere'],
-  ['composer.module.css', '.mentionOption', [['border-radius', '8px']], 'a row inside a menu surface carries the shipped .item radius of 8px'],
+  ['sidebar.module.css', '.channelRow', [['border-radius', 'var(--dsw-radius-md, 12px)']], 'list row radius is the md tier; the shipped rail put .panelRow on its .newSession bar\'s 12px in the 0.1.6 line (harness c6b81a75, 2026-09-15), and 0.1.7-rc.2 kept that tier while moving it onto `--dsw-radius-md`'],
+  ['sidebar.module.css', '.agentRow', [['border-radius', 'var(--dsw-radius-md, 12px)']], 'list row radius is the md tier, the same tier as .channelRow above'],
+  ['sidebar.module.css', '.workspaceTrigger', [['border-radius', 'var(--dsw-radius-md, 12px)'], ['min-height', '34px'], ['border', '1px solid var(--dsw-alias-border-l2)']], 'the Workspace selector keeps the sidebar row geometry: the md tier, 34px line, and its neutral separator written as 1px because that is what shipped\'s 0.5px declaration actually renders as'],
+  ['sidebar.module.css', '.inboxCard', [['border-radius', 'var(--dsw-radius-md, 12px)'], ['height', '34px']], 'the Inbox entry is a sidebar row: the md tier, 34px height'],
+  ['member-row.module.css', '.row', [['border-radius', 'var(--dsw-radius-md, 12px)']], 'the shared roster row is a list row wherever it renders: the md tier, the rail/settings row tier'],
+  ['composer.module.css', '.mentionMenu', [['border-radius', 'var(--dsw-radius-lg, 16px)']], 'the mention popover is the shipped menu surface: the lg tier, so it matches the Menu primitive this app already renders elsewhere'],
+  ['composer.module.css', '.mentionOption', [['border-radius', 'var(--dsw-radius-md, 8px)']], 'a row inside a menu surface carries the shipped .item radius — 0.1.7-rc.2 moved that row up to the md tier (12px), and the 8px fallback keeps the rc.1 checkout on its own value'],
   ['countBadge.module.css', '.badge', [['height', '18px'], ['min-width', '18px'], ['border-radius', '999px'], ['box-sizing', 'border-box'], ['line-height', '18px'], ['flex', 'none']], 'every count is one 18px capsule in one place; border-box keeps one digit a circle instead of a padded oval, the line box is the capsule\'s own height so a surface inheriting `normal` cannot move the digit, and `flex: none` keeps a squeezed row from shrinking it'],
-  ['inbox.module.css', '.row', [['border-radius', '8px']], 'the Inbox queue row is the two-line result-row dimension, not the list-row one: shipped .searchResultRow stays at 8px in 0.1.7'],
-  ['inbox.module.css', '.rowTask', [['border-radius', '6px']], 'the Task marker on a queue row is a 6px chip'],
-  ['composer.module.css', '.fileChip', [['border-radius', '6px']], 'chip radius is 6px'],
-  ['conversation.module.css', '.attachmentChip', [['border-radius', '6px']], 'chip radius is 6px'],
-  ['conversation.module.css', '.mention', [['border-radius', '6px']], 'inline mention chip radius is 6px'],
+  ['inbox.module.css', '.row', [['border-radius', 'var(--dsw-radius-lg, 8px)']], 'the Inbox queue row is the two-line result-row dimension, not the list-row one: it follows shipped .searchResultRow, which 0.1.7-rc.2 moved from 8px to the lg tier'],
+  ['inbox.module.css', '.rowTask', [['border-radius', 'var(--dsw-radius-sm, 6px)']], 'the Task marker on a queue row is the chip tier; 0.1.7-rc.2 retired the 6px chip (the shipped crumb, reference and retry all moved to the small tier)'],
+  ['composer.module.css', '.fileChip', [['border-radius', 'var(--dsw-radius-sm, 6px)']], 'chip radius is the small tier; the 6px fallback is what the rc.1 checkout renders'],
+  ['conversation.module.css', '.attachmentChip', [['border-radius', 'var(--dsw-radius-sm, 6px)']], 'chip radius is the small tier; the 6px fallback is what the rc.1 checkout renders'],
+  ['conversation.module.css', '.mention', [['border-radius', 'var(--dsw-radius-sm, 6px)']], 'inline mention chip radius follows the shipped editor `.reference` chip, which moved to the small tier in 0.1.7-rc.2'],
   ['conversation.module.css', '.messageText', [['font-size', 'var(--dsh-content-font-size, 14px)'], ['line-height', 'calc(22px + var(--dsh-content-font-delta, 0px))']], 'literal body rides the content-font axis on the 14/22 chat grid'],
   ['conversation.module.css', '.messageClamp', [['max-height', 'calc(176px + 8 * var(--dsh-content-font-delta, 0px))']], 'the fold preview stays eight lines of the body grid at any content size'],
   ['conversation.module.css', '.messageBody .messageMarkdown', [['font-size', 'var(--dsh-content-font-size, 14px)'], ['line-height', 'calc(22px + var(--dsh-content-font-delta, 0px))']], 'markdown body rides the content-font axis on the 14/22 chat grid'],
+  ['conversation.module.css', '.nameRow strong', [['font-size', 'var(--dsh-content-font-size-secondary, 13px)'], ['line-height', 'calc(20px + var(--dsh-content-font-delta-secondary, 0px))']], 'the sender line is the secondary grade of the content axis (13px over 20px at the default content size), so a raised Settings size grows the author with the body; shipped puts a label next to content on this same grade and pins only its smallest time grade'],
   ['conversation.module.css', '.messageBody [data-document] .messageMarkdown', [['line-height', 'calc(24px + var(--dsh-content-font-delta, 0px))']], 'a folded long body reads on the 24px document grid'],
   ['conversation.module.css', '.messageBody [data-document] .messageMarkdown p', [['margin', '16px 0']], 'document block gap'],
   ['conversation.module.css', '.messageBody [data-document] .messageMarkdown li + li', [['margin-top', '6px']], 'document list-item gap'],

@@ -28,6 +28,6 @@ For a focused run: `npm run test:browser -- -t "four same-origin"`. Run the comp
 - Remote changes were regenerated; no artifacts were hand-edited.
 - Client changes have real composition or browser evidence, not only component tests.
 - Reports contain only checks that actually ran.
-- `git diff --check` passes.
+- `git diff --check <base>..HEAD` passes on the delivered range.
 - Live preview, UI preview, and browser replay do not switch modes implicitly.
 - No API keys, profile credentials, temporary overlays/tests, or browser artifacts are committed.

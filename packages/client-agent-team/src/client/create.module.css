@@ -42,7 +42,7 @@
   align-items: center;
   background: var(--dsw-alias-bg-layer-1);
   border: 1px solid var(--dsw-alias-border-l2);
-  border-radius: 8px;
+  border-radius: var(--dsw-radius-sm, 8px);
   box-sizing: border-box;
   color: var(--dsw-alias-label-primary);
   cursor: pointer;
@@ -102,7 +102,7 @@
 
 .memberOption {
   align-items: center;
-  border-radius: 6px;
+  border-radius: var(--dsw-radius-sm, 6px);
   color: var(--dsw-alias-label-primary);
   display: grid;
   gap: 0 7px;

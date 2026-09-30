@@ -40,6 +40,6 @@ JSON 整文件重写的单次写成本随历史线性增长（1k→10k 涨了约
 - Remote 变更已经重新生成，不存在手写 artifact。
 - Client 改动有真实 composition 或 browser 证据，而不只有组件单测。
 - 测试和 lint 命令实际执行过，汇报时只写真实结果。
-- `git diff --check` 通过。
+- `git diff --check <base>..HEAD` 在交付区间上通过。
 - Live preview、UI preview 与 browser replay 没有隐式模式切换；需要模型的检查明确选择 live 或 replay。
 - 没有 API key、profile 凭据、临时 overlay、临时 Harness 测试或浏览器产物被提交。

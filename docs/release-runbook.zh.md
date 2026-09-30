@@ -29,14 +29,14 @@
 | 命令 | 它拦下什么 |
 | --- | --- |
 | `npm run typecheck` | 针对已认证 harness checkout 的类型错误。 |
-| `npm test` | 测试失败，以及它捆绑的四道机械门：`check:docs`、`check:core-skills`、`check:boundaries`、`check:versions`。 |
+| `npm test` | 测试失败，以及它捆绑的五道机械门：`check:facades`、`check:docs`、`check:core-skills`、`check:boundaries`、`check:versions`。 |
 | `npm run build` | 构建错误；这也是发布时 `prepack` 会跑的东西。 |
 | `npm run lint` | lint 发现的问题。 |
 | `npm run test:browser` | 组合、Remote 挂载、slot 接管或普通 DSH 恢复被破坏。需要相邻的 `../deepseek-harness` checkout；浏览器验收是本地步骤，从不在 CI 运行。 |
 | `npm pack --dry-run` | 本身不拦什么——把文件数记进发布报告。 |
 | `npm run check:artifact` | 会以破损形态发布的产物：混入的 `.ts`/`.tsx`、缺失的 `cordis.patch.yml`，或目标不在 tarball 里的运行时相对导入。要在 `npm run build` **之后**跑。 |
 | `npm run check:public-baseline` | 与 manifest 的已认证基线发生漂移的公开面（两个 README 与置顶的兼容性讨论）。需要 `gh`；`--offline` 会跳过讨论读取，仅用于本地迭代。 |
-| `git diff --check` | 改动里的空白符损坏。 |
+| `git diff --check v<previous>..HEAD` | 发布改动集里任意位置的空白符损坏。裸 `git diff --check` 只看**未暂存**的改动，所以发布提交一旦落地它就静默通过——而梯子正是在那时跑的。 |
 
 ## 4. 发布材料
 
@@ -63,15 +63,22 @@
 ```sh
 git add package.json CHANGELOG.md
 git commit -m "chore: release X.Y.Z"
+git push --dry-run origin master            # 栅栏：这里必须只列 master
+git push origin master
+```
+
+等这一次运行在两条 lane 上都绿（§2.6）之后再打 tag：
+
+```sh
 git tag vX.Y.Z
-git push --dry-run origin master vX.Y.Z   # 栅栏：这里必须恰好只列这两个 ref
-git push origin master vX.Y.Z
+git push --dry-run origin vX.Y.Z            # 栅栏：这里必须只列这个 tag
+git push origin vX.Y.Z
 npm publish --access public
 ```
 
-显式 refspec 与它的 dry-run 栅栏是承重的，不是仪式。本地克隆可能带着改写前的备份分支与仅本地 tag，其提交是刻意不进远端的，而 `--all` / `--tags` 会把它们静默推上去。本仓库是公开的：推错的 ref 无法收回。如果 dry run 列出了第三个 ref，停下来查清那是谁的。
+显式 refspec 与它们的 dry-run 栅栏是承重的，不是仪式。本地克隆可能带着改写前的备份分支与仅本地 tag，其提交是刻意不进远端的，而 `--all` / `--tags` 会把它们静默推上去。本仓库是公开的：推错的 ref 无法收回。如果某次 dry run 列出了第三个 ref，停下来查清那是谁的。
 
-发布提交自身那一次 CI 在两条 lane 都绿之后再打 tag。只有当还没有任何东西引用这个 tag 时才允许重新指向它——没有 GitHub Release、没有 npm 版本、没有消费方。
+先推 master 再打 tag 不花任何代价，却让 tag 的证据是诚实的：认证一个 tag 的那次运行，就是该 tag 所指提交自己的那次运行。只有当还没有任何东西引用这个 tag 时才允许重新指向它——没有 GitHub Release、没有 npm 版本、没有消费方。
 
 ## 6. 发布后核验
 

@@ -16,7 +16,7 @@
   align-items: center;
   background: transparent;
   border: 0;
-  border-radius: 12px;
+  border-radius: var(--dsw-radius-md, 12px);
   box-sizing: border-box;
   color: var(--dsw-alias-label-primary);
   cursor: pointer;
@@ -47,7 +47,7 @@
 }
 .footerAction:focus-visible,
 .settingsAction:focus-visible {
-  outline: 2px solid var(--dsw-alias-label-primary);
+  outline: var(--dsw-focus-ring-width, 2px) solid var(--dsw-focus-ring-color, var(--dsw-alias-state-business-primary));
   outline-offset: -2px;
 }
 

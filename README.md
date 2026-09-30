@@ -41,17 +41,21 @@ If this looks useful, a star on [GitHub](https://github.com/wowyuarm/dsh-agent-t
 
 ### 1. Check DSH
 
-This release is certified against DSH `0.1.7-rc.1`. If `dsh` is not installed yet, start DSH with the official package:
+This release is certified against DSH `0.2.0-rc.2`. Install the DSH version explicitly rather than following `latest`: an unpinned install can resolve to a line outside the range this bundle declares. On DSH `0.1.7-rc.2`, stay on `@wowyuarm/dsh-agent-team` `0.1.15`.
 
 ```sh
-npx @deepseek-ai/dsh web
+npx @deepseek-ai/dsh@0.2.0-rc.2 web
 ```
+
+Install it globally if you want the `dsh` command for the steps below: `npm i -g @deepseek-ai/dsh@0.2.0-rc.2`.
 
 Stop it, then install Agent Team into the `web` profile:
 
 ```sh
-dsh plugin --profile web add @wowyuarm/dsh-agent-team
+dsh plugin --profile web add @wowyuarm/dsh-agent-team@0.2.0
 ```
+
+The version is pinned deliberately: pnpm skips releases published less than 24 hours ago, so an unpinned `@latest` install resolves to the previous release on release day.
 
 ### 2. Start the Web UI
 

@@ -19,7 +19,7 @@
 | 元素 | 规格 |
 | --- | --- |
 | 页头 h1 | 20px/28px, weight 600 |
-| 发送者名 | 13px/20px, weight 600, primary；右侧同行跟随时间元信息 |
+| 发送者名 | 13px/20px, weight 600, primary——字号走内容轴的次级档（默认字号下即 13px/20px），设置调大时作者名与正文一同变大；右侧同行跟随时间元信息 |
 | 消息时间 | 11px/20px, tertiary；当天 HH:mm，同年 MM-DD HH:mm，跨年完整日期（`formatMessageTime`，本地时区） |
 | Inbox 行时间 | 11px/18px, tertiary, `tabular-nums`；今天只显示 `HH:mm`，上一个本地日历日显示「昨天 HH:mm」，更早回落消息时间形态，精确本地时刻挂在元素的 `title` 上。Thread 入口行在工作尚未走完时借用同一个标签表示后续动态时间。Inbox 身份行窄到装不下计数与时刻两者时，它整个不绘制（见下文「收件箱」） |
 | Human 正文 | 14px/22px（默认字号；两种正文都跟 Settings 正文字号轴——`--dsh-content-font-size` + 其 px delta 加到每个字号与行高，表中为默认值。`.messageText` 容器统一 pre-wrap/break-word，正文由 `TeamMessage` 自行渲染） |

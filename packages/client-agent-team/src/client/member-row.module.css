@@ -10,7 +10,7 @@
 
 .row {
   align-items: center;
-  border-radius: 12px;
+  border-radius: var(--dsw-radius-md, 12px);
   display: grid;
   gap: 0 10px;
   /* The action track is declared only when one is rendered: a read-only roster

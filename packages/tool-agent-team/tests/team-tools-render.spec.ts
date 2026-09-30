@@ -27,6 +27,7 @@ describe('team_view renders one address book', () => {
         { threadRef: 'thread:aaaa1111-0000-4000-8000-000000000001', channelRef: CHANNEL, revision: 100, messageCount: 3, subject: 'Should Member descriptions change after the rename?' },
       ],
       tasks: [{ taskRef: TASK, threadRef: THREAD, channelRef: CHANNEL, status: 'in_progress', revision: 8394 }],
+      activeTaskThreads: [{ taskRef: TASK, threadRef: THREAD, channelRef: CHANNEL, status: 'in_progress', subject: 'Review the render contract', taskNumber: 7, lastActivityAt: '2026-09-27T10:00:00.000Z', members: [{ memberId: 'member:6e8a5b10-df16-4ec0-943a-63738010953f', name: 'Tars' }] }],
       cursor: 8394, hasMore: true,
     })
     expect(text).toContain('Team directory')
@@ -38,8 +39,11 @@ describe('team_view renders one address book', () => {
     // Each Thread row carries its bounded subject and inline Task standing.
     expect(text).toContain(`${THREAD} · ${CHANNEL} · ${TASK} (#7), in_progress — Review the render contract`)
     expect(text).toContain('thread:aaaa1111-0000-4000-8000-000000000001 · channel:046dd831-c679-4279-b6aa-7813476cf12e · taskless — Should Member descriptions change after the rename?')
-    // No second Task index: the taskful Thread appears once.
-    expect(occurrences(text, THREAD)).toBe(1)
+    // The active-task-threads radar follows Members, carrying status, claim owner, and subject.
+    expect(text.indexOf('Members — current')).toBeLessThan(text.indexOf('Active task threads'))
+    expect(text).toContain(`${THREAD} · ${CHANNEL} · in_progress · #7 · @Tars — Review the render contract`)
+    // No second Task index: the taskful Thread appears once in the Threads section (and once in the radar).
+    expect(occurrences(text, THREAD)).toBe(2)
     // No revision-labelled field, no message count, no write token.
     expect(text).not.toContain('revision')
     expect(text).not.toContain('message')
@@ -48,11 +52,11 @@ describe('team_view renders one address book', () => {
 
   it('the footer names the Thread cursor and whether older anchors remain', () => {
     const text = renderText(teamTools().get('team_view')!, {}, {
-      workspaces: WORKSPACES, channels: [], members: [], threads: [], tasks: [], cursor: 0, hasMore: false,
+      workspaces: WORKSPACES, channels: [], members: [], threads: [], tasks: [], activeTaskThreads: [], cursor: 0, hasMore: false,
     })
     expect(text).toContain('Thread cursor 0; hasMore=false — no older Threads remain.')
     const more = renderText(teamTools().get('team_view')!, {}, {
-      workspaces: WORKSPACES, channels: [], members: [], threads: [], tasks: [], cursor: 8394, hasMore: true,
+      workspaces: WORKSPACES, channels: [], members: [], threads: [], tasks: [], activeTaskThreads: [], cursor: 8394, hasMore: true,
     })
     expect(more).toContain('Thread cursor 8394; hasMore=true — older Thread anchors exist; page again with this cursor.')
   })
@@ -63,11 +67,12 @@ describe('team_view renders one address book', () => {
       channels: [{ channelRef: CHANNEL, name: 'general' }],
       members: [{ memberId: 'member:6e8a5b10-df16-4ec0-943a-63738010953f', kind: 'agent', handle: 'Tars', description: 'builder', presence: 'available' }],
       threads: [{ threadRef: THREAD, channelRef: CHANNEL, revision: 8394, messageCount: 120, subject: 'Review the render contract' }],
-      tasks: [], cursor: 100, hasMore: false, page: 'threads',
+      tasks: [], activeTaskThreads: [], cursor: 100, hasMore: false, page: 'threads',
     })
     expect(text).toContain('Threads')
     expect(text).not.toContain('Channels — current')
     expect(text).not.toContain('Members — current')
+    expect(text).not.toContain('Active task threads')
     expect(text).toContain('Thread cursor 100; hasMore=false')
   })
 
@@ -75,7 +80,7 @@ describe('team_view renders one address book', () => {
     const text = renderText(teamTools().get('team_view')!, {}, {
       workspaces: WORKSPACES, channels: [], members: [],
       threads: [{ threadRef: THREAD, channelRef: CHANNEL, revision: 1, messageCount: 1, subject: 'One deterministic bounded subject line' }],
-      tasks: [], cursor: 0, hasMore: false,
+      tasks: [], activeTaskThreads: [], cursor: 0, hasMore: false,
     })
     expect(text).toContain('— One deterministic bounded subject line')
   })
@@ -587,7 +592,7 @@ describe('team tools render absolute event instants in UTC+8', () => {
     const view = renderText(teamTools().get('team_view')!, {}, {
       workspaces: WORKSPACES, channels: [], members: [],
       threads: [{ threadRef: THREAD, channelRef: CHANNEL, revision: 1, messageCount: 3, subject: 'Investigate startup failure', lastActivityAt: '2026-08-21T01:30:44.000Z' }],
-      tasks: [], cursor: 0, hasMore: false,
+      tasks: [], activeTaskThreads: [], cursor: 0, hasMore: false,
     })
     expect(view).toContain('— Investigate startup failure · last activity 2026-08-21T09:30:44+08:00')
   })

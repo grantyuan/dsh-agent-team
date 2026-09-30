@@ -13,6 +13,15 @@ All notable changes to this project are documented in this file. The format foll
 - A replacement's handover notice now goes to every Channel it inherited and directly notifies all live fellow Members — not just `@human` — so the whole team learns who took over and that the replacement carries the predecessor's settings and memory.
 - Resetting a Member's context (重置) now broadcasts a context-reset notice to every Channel the Member belongs to, telling the team its session restarted empty while its handle, settings, and private memory are unchanged.
 - Fixed runaway context compaction at the hard limit: a forced compaction must now prove the measured context dropped below the hard limit before the step goes out — otherwise the step fails closed — and at most one forced compaction is spent per recovery chain, ending the loop of repeated compress-rewrite steps that busted the provider prompt cache and burned tokens without shrinking the context.
+- The sender name follows the content-size setting: at a raised size the author grows with the message instead of staying at its default size, while the message body keeps the grid it already had.
+- The certified DSH baseline moves to `0.2.0-rc.2`: every `@deepseek-ai/dsh-*` peer advances to `>=0.2.0-rc.2 <0.2.1`, so a host still on `0.2.0-rc.1` falls outside the declared range.
+
+## [0.2.0] - 2026-09-29
+
+- `team_view` lists the Task Threads in flight: every in-progress or in-review Task in your Channels, with the members already on it and the latest activity, independent of your own unread queue.
+- Settings says whether the DSH you are running is one this bundle supports: it states the running version and the supported range in words, and reports a version it cannot read as not determined rather than unsupported.
+- Interface details follow DSH 0.1.7-rc.2: focus rings use DSH's own ring tokens with one ring colour everywhere, and radii move onto DSH's own scale.
+- Certified against DSH `0.2.0-rc.1`: every `@deepseek-ai/dsh-*` peer moves together to `>=0.2.0-rc.1 <0.2.1`, and the context-continuity engine floor moves to `^0.1.6`.
 
 ## [0.1.15] - 2026-09-24
 

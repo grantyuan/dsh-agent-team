@@ -29,7 +29,8 @@ import type { SettingsPathOp } from '@deepseek-ai/dsh-settings'
 import type { Domain } from '@deepseek-ai/dsh-storage-domain'
 import type { WorkspaceId } from '@deepseek-ai/dsh-workspace'
 import { ATTACHMENT_MAX_BYTES, attachmentPayloadPath, attachmentsRoot, copyPathAttachment, newAttachmentId, readAttachment, sanitizeMediaType, sweepAttachmentCache, validatePathAttachment, writeAttachment } from './attachments.ts'
-import { HUMAN_PROFILE_DEFAULT_NAME, HUMAN_PROFILE_REPO_URL, HUMAN_PROFILE_SETTINGS_NAMESPACE, HUMAN_PROFILE_SETTINGS_SCHEMA, HUMAN_PROFILE_VERSION, assertValidHumanName, normalizeHumanName, parseLegacyHumanProfile, planLegacyAdoption, type HumanProfileSettings, type LegacyHumanProfileFields } from './human-profile.ts'
+import { reportEnvironment } from './environment-check.ts'
+import { HUMAN_PROFILE_DEFAULT_NAME, HUMAN_PROFILE_REPO_URL, HUMAN_PROFILE_SETTINGS_NAMESPACE, HUMAN_PROFILE_SETTINGS_SCHEMA, HUMAN_PROFILE_VERSION, assertValidHumanName, normalizeHumanName, parseLegacyHumanProfile, planLegacyAdoption, type LegacyHumanProfileFields } from './human-profile.ts'
 import { humanAvatarsRoot, readHumanAvatar, removeHumanAvatar, writeHumanAvatar } from './human-avatar.ts'
 import { createHumanUpdateChecker } from './human-update-check.ts'
 import { PressurePolicyCoordinator } from './pressure-policy.ts'
@@ -72,6 +73,8 @@ import type {
   AgentTeamCreateChannelResult,
   AgentTeamDiagnoseMemberRequest,
   AgentTeamDiagnoseMemberResult,
+  AgentTeamEnvironmentRequest,
+  AgentTeamEnvironmentResult,
   AgentTeamResetMemberRequest,
   AgentTeamResetMemberResult,
   AgentTeamSupervisionStatus,
@@ -207,7 +210,8 @@ class PresetCompositionError extends Error {
 const MAX_CHECKPOINT_NAME_CHARS = 120
 /** Default and maximum number of timeline items one query returns. */
 const DEFAULT_TIMELINE_LIMIT = 12
-const MAX_TIMELINE_LIMIT = 24
+/** The widest timeline window there is; the ref gate reads at this width so no printed ref is unreachable. */
+export const MAX_TIMELINE_LIMIT = 24
 /**
  * Archived generations the timeline and seed resolution walk: the timeline
  * reads this many ancestors behind the current generation, and the seed guard
@@ -663,9 +667,10 @@ export default class AgentTeam extends TypertRemoteService {
    * The two judgements the Config schema cannot make about a Human name: the
    * same non-empty floor as Member handles, plus global uniqueness against live
    * Members. `setHumanProfile` runs it before the write, so a colliding rename
-   * rejects instead of persisting.
+   * rejects instead of persisting. It reads the one field it judges, so the
+   * caller passes the name alone rather than a whole profile shape.
    */
-  private validateHumanProfile(value: HumanProfileSettings): void {
+  private validateHumanProfile(value: { readonly name: string }): void {
     const name = assertValidHumanName(value.name)
     const ledger = this.ledger
     if (ledger === undefined) return
@@ -2227,6 +2232,28 @@ export default class AgentTeam extends TypertRemoteService {
    * `updateAvailable` is false until a background refresh actually observes a
    * newer published release.
    */
+  /**
+   * Local environment check for the settings page: which DSH line this Host
+   * runs against, and whether that line is inside the range this bundle
+   * declares. Human-scoped and read-only — the Client renders the verdict and
+   * states the range in words, and nothing here is written back.
+   *
+   * Synchronous like `humanProfile`: both read the installed manifest once and
+   * settle immediately, and the verdict comes from the Harness's own
+   * compatibility evaluator rather than a second version comparison written
+   * here.
+   *
+   * The wire type and `EnvironmentReport` keep separate top-level field lists on
+   * purpose: the contract states every fact as optional because a Transport may
+   * withhold any of them, while the report is the stricter thing the checker
+   * guarantees. This assignment is where the compiler holds the two together,
+   * and a new required contract field fails it here.
+   */
+  @Remote('environment')
+  environmentForClient(_request: AgentTeamEnvironmentRequest): AgentTeamEnvironmentResult {
+    return Object.freeze(reportEnvironment())
+  }
+
   @Remote('humanProfile')
   humanProfileForClient(_request: AgentTeamHumanProfileRequest): AgentTeamHumanProfileResult {
     const profile = this.humanProfile()

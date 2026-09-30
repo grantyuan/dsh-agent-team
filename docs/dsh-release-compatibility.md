@@ -59,6 +59,10 @@ Temporary certification
 
 Build the certified Harness checkout first so Team TypeScript facades point at its declarations. Do not reuse old `lib/` or `node_modules`; that can conceal declaration or runtime incompatibility.
 
+In that checkout run `pnpm install --frozen-lockfile` and build it: `pnpm run build:lib`, `pnpm run build:native-system` for the native system addon the tests load, and `pnpm run build:web` for the browser lane's `apps/web/dist`.
+
+Mirror the daily repository's `node_modules/@deepseek-ai/*` link farm onto the candidate checkout, and point the bundle self-link at the copy: typecheck resolves through the facades, while the test suite and the browser lane resolve through those links.
+
 Then run in the isolated Team copy:
 
 ```sh
@@ -74,8 +78,8 @@ Typert output must be stable. Review generator output and the Remote contract be
 Run the narrow tests for the changed surface, then at least:
 
 ```sh
+npm run build        # the suite's preset rows load each package's lib/, not src/
 npm test
-npm run build
 npm pack --dry-run
 git diff --check
 ```
@@ -163,9 +167,9 @@ Record candidate tag, symptom, affected interface, reproduction command, and nex
 
 ## 6. Current baseline
 
-The current certified baseline is DSH `0.1.7-rc.1`; the paragraphs below preserve the `0.1.5` history that produced the preceding baselines.
+The current certified baseline is DSH `0.2.0-rc.2`; the paragraphs below preserve the history that produced the preceding baselines.
 
-The DSH peers state exactly that certified line, `>=0.1.7-rc.1 <0.1.8`, so a line this repository has not verified falls outside the declared range instead of installing under an unverified compatibility claim.
+The DSH peers state exactly that certified line, `>=0.2.0-rc.2 <0.2.1`, so a line this repository has not verified falls outside the declared range instead of installing under an unverified compatibility claim.
 
 The routed sqlite backend is a vendored fork, not a dependency at all (GitHub issue #28): the upstream package stays a devDependency pinned at the fork source, 0.1.5-rc.2, as the byte-compatibility fixture reference, and every compat round diffs the fork against that version's file before anything else.
 
@@ -206,3 +210,95 @@ Two upstream contract changes drove the round, and both required source adaptati
 The startup repair pass (`session-remediation.ts`) was removed in the same change, with Human approval: what it published was precisely the wrapper V4 refuses at write time, so keeping it would manufacture unreadable files, and the pre-0.1.5 kinds it targeted are refused by the released v2→v3 chain before the read-time conversion runs. A deterministic `session-refused` activation now reports the same failure on every restart instead of healing it.
 
 One further change stopped at the test fixtures: rc.1 redrew `IconUserOutlineArtwork` onto a half-pixel grid without renaming the symbol or changing its wrapper, so the `settingsAction` icon's `data-content` fingerprint moved `612cfab9` → `68b4b343` and one committed snapshot line was refreshed. No bundle source changed.
+
+### DSH 0.1.7-rc.2
+
+DSH `0.1.7-rc.2` is certified on the same peers with no manifest change. The candidate falls inside `>=0.1.7-rc.1 <0.1.8`, so section 4 records a baseline instead of a peer move, and every version spot keeps naming the range's lower bound. Tag `477b4f42` (2026-09-24) was certified before npm carried it: at certification time `next` still pointed at `0.1.7-rc.1`.
+
+No symbol this bundle imports was removed or renamed. Inside the peered packages the delta is 213 non-documentation files, concentrated in the shipped Client surface the bundle composes into (`ui-primitives` 55, `ui-conversation` 22, `ui-workspace` 15); `session-format-catalog`, `session-persistence`, and the Typert protocol changed only their manifests, so section 3.6 is not re-triggered.
+
+Two upstream changes stopped at the test fixtures, and neither moved bundle source. The shipped layout and sidebar now inject a `shortcuts` service, so the takeover bench provides the empty catalog and no-op registrer both parents require.
+
+The sidebar's own markup also moved: `data-window-drag` on the logo row, and the new-session icon and label rewrapped in a mask/content pair. The container snapshot folds those two details onto one shape, because a committed snapshot must hold on every cut inside the certified range, not on the newest one alone.
+
+Evidence on the certified tree: `npm run typecheck`, `npm test` (741 passed, 1 skipped), `npm run lint`, `npm run build`, `npm pack --dry-run` (251 files), and `npm run test:browser` (4 journeys).
+
+### DSH master 21638c5631 (0.2.0 pre-release sync)
+
+This is a pre-certification, not a baseline. Upstream merged its unreleased plugin-ecosystem line into `master` without a tag: at the frozen commit `21638c5631` (2026-09-27, `Merge PR #5282`, 155 commits after `dsh-v0.1.7-rc.2`) `apps/cli` still declares `0.1.7-rc.2`, and no `dsh-v*` tag exists after rc.2.
+
+Section 2.2's basis is an immutable tag together with the npm packages it published, and this candidate has neither, so nothing moved: the baseline stays `0.1.7-rc.1`, every version spot keeps naming its lower bound, the CI harness tag is unchanged, and the peer move waits for a tagged `0.2.0`.
+
+Certification ran anyway, to learn early whether that line breaks the bundle. It does not: no imported symbol was removed or renamed, and no bundle source changed. The one required change is generated — `node scripts/sync-paths.mjs` against the candidate absorbs 13 new upstream path aliases (507 Harness mappings) — and it stays uncommitted, because the committed facades must keep matching the baseline tag that CI regenerates them from.
+
+Confirmed ignorable:
+
+- `SessionRow.displayTitle` semantics (the bundle renders no session row), and the optional `onCreated` on fork.
+- Optional `focusDelayMs` and the new `pointerModality` export in `ui-primitives`; `submit(mode, source?)` in the input contract, which `TeamComposer` does not consume.
+- The `productAnalytics` service, left disabled in the web composition.
+- The `otel` row in `bundle/base` and the desktop-only telemetry rows in `bundle/web-app` that replace the disabled `time-context`/`schedule`/`ui-schedule` rows; the bundle mounts its own member time context instead.
+- `ui-sidebar/SidebarRoot.tsx` is untouched, so the panelList anchor the bundle's pinning test holds on still exists.
+
+Section 3.6 is not re-triggered: `session-persistence` and `session-format-catalog` source is unchanged (only `session-telemetry*` moved), no source-kind or write-path rule changed, and every shipped preset row the bundle mounts has zero source changes.
+
+Evidence on the frozen tree: `npm run typecheck`, `npm test` (778 passed, 1 skipped), `npm run lint`, `npm run build`, `npm pack --dry-run` (260 files), `git diff --check`, and `npm run test:browser` (5 journeys).
+
+At certification time npm `latest` and `next` both pointed at `0.1.7-rc.2`, and `alpha` at `0.1.7-alpha.2`.
+
+### DSH 0.2.0-rc.1
+
+DSH `0.2.0-rc.1` is certified and moves the baseline; it is the tagged release the pre-certification above was waiting for. Tag `4878cdab` (2026-09-28) sits 261 commits after `dsh-v0.1.7-rc.2` and carries `21638c5631` in its history, and the root and `apps/cli` manifests declare `0.2.0-rc.1`.
+
+At certification time npm `next` already pointed at it while `latest` still pointed at `0.1.7-rc.2`, so the round was not release-blocking.
+
+The candidate falls outside `>=0.1.7-rc.1 <0.1.8` — a comparator enables prereleases only on its own base tuple, so that range reaches no `0.2.0` cut — and section 4 therefore requires the atomic move: all 45 DSH peers to `>=0.2.0-rc.1 <0.2.1`, the CI harness tag to `dsh-v0.2.0-rc.1`, the Hoplite tag, and every wording spot that names the range.
+
+The declared range decides whether the bundle mounts at all. `loadProfileDirectory` evaluates each bundle manifest through `evaluatePluginCompatibility`, and a bundle whose peers do not admit the running Host goes into `skippedBundles`.
+
+Nothing is printed: the warning text surfaces only in the plugin manager and through `dsh plugin allow-version`. Under the old range the candidate mounted nothing — all five browser journeys failed on an absent Host service and an absent Client module — which is the range gate, not a source incompatibility.
+
+No imported symbol was removed or renamed, and no bundle source changed. Inside the peered packages the delta is 680 non-documentation files, concentrated in the shipped Client surface this bundle composes into (`ui-chat` 34, `ui-primitives` 22, `ui-settings-account` 20, `ui-workspace` 17).
+
+Section 3.6 is not re-triggered: `session-persistence` and `session-format-catalog` changed only their manifests, the Session-side source changes are `session-telemetry*` and `session-log-deepseek`, and every shipped preset row this bundle mounts has zero source changes.
+
+The five slot seats the Client mounts (`sidebar.workspaces`, `main`, `sidebar.settings`, `sidebar.footer.action`, `settings.section`) appear in no changed line, and `ui-sidebar/SidebarRoot.tsx` is untouched, so the panelList anchor the pinning test holds on still exists.
+
+One peer-move trap sits outside the version gate: `packages/agent-team/tests/shipping.spec.ts` pins the range literal five times and `check:versions` does not read it, so the first `npm test` on the moved tree failed exactly there while every version spot already agreed. A peer move updates that spec in the same commit.
+
+Evidence on the certified tree: `npm run typecheck` (508 Harness mappings), `npm test` (778 passed, 1 skipped), `npm run lint`, `npm run build`, `npm pack --dry-run` (260 files), `git diff --check`, and `npm run test:browser` (5 journeys).
+
+Section 3.5 resolves a single DSH generation: 278 `@deepseek-ai/dsh-*` copies, every one at `0.2.0-rc.1`, with no second set behind anything the bundle loads at runtime.
+
+The trailing declared range is closed: `@wowyuarm/dsh-context-continuity@0.1.6` declares its seven `@deepseek-ai/dsh-*` peers as `>=0.2.0-rc.1 <0.2.1`, and this bundle requires `^0.1.6`, so a tree that resolves this manifest installs one DSH generation.
+
+`0.1.5` still declared `>=0.1.7-rc.1 <0.1.8`, so npm satisfied that unsatisfiable declared peer by nesting `@deepseek-ai/dsh-session-projection@0.1.7-rc.2` (120 KB) under the bundle and printing `ERESOLVE overriding peer dependency`; the install still exited 0.
+
+Nothing loaded that copy: the engine's only reference to the package is a type-only import, this bundle never names it, and the engine is a library rather than a profile bundle, so its peers never reach `evaluatePluginCompatibility`.
+
+The dependency floor moves with the engine so a lockfile still holding `0.1.5` cannot keep the older declaration alive, and the engine's own range now admits the `0.2.0` line, so installing it at the root of a `0.2.0-rc.1` profile no longer meets a range that excludes the host. The engine's move ships in the same window as this line, because an engine naming `0.2.0-rc.1` puts a stray copy of that generation into trees still on `0.1.7-rc.2`.
+
+### DSH 0.2.0-rc.2
+
+DSH `0.2.0-rc.2` is certified on the same peers with no manifest change. The candidate falls inside `>=0.2.0-rc.1 <0.2.1`, so section 4 records a baseline instead of a peer move, and every version spot keeps naming the range's lower bound.
+
+Tag `639ed01` (2026-09-29) sits 187 commits after `dsh-v0.2.0-rc.1`. At certification time npm `next` already pointed at it while `latest` still pointed at `0.1.7-rc.2`, so the round was not release-blocking.
+
+No symbol this bundle imports was removed or renamed. Inside the 45 peered packages 86 files changed, 45 of them `package.json`: nine peers changed real source, and the other 35 changed nothing but their manifest.
+
+Those nine are the shipped Client surface this bundle composes into — `ui-primitives` 9, `ui-conversation` 3, `ui-settings-general` 3, `ui-workspace` 2, `ui-sidebar`, `ui-renderer`, `api-remotes` — plus `tool-bash` and `tool-pwsh`, one file each.
+
+Its two widest Client changes are additive. `ui-primitives` exports `MenuGroup` and `observeStickyMenuGroups` on top of its existing surface, and `api-remotes` adds a `@deepseek-ai/dsh-user-questions/remote` import to its Client entry.
+
+Section 3.6 is not re-triggered: `session-format-catalog`, `session-persistence`, `session-telemetry`, and `agent-preset-registry` changed only their manifests, and `agent-preset`'s only non-manifest change is a shipped skill reference document.
+
+`ui-sidebar/SidebarRoot.tsx` is touched — the non-darwin new-session button loses its `Tooltip` wrapper — but the `panelList` anchor the bundle's pinning test holds on still exists at line 280.
+
+Evidence on the certified tree: `npm run typecheck` (509 Harness mappings), `npm test` (776 passed, 1 skipped), `npm run lint`, `npm run build`, `npm pack --dry-run` (263 files), `check:artifact`, `git diff --check`, and `npm run test:browser` (5 journeys).
+
+Section 3.5 resolves a single DSH generation: 278 `@deepseek-ai/dsh-*` copies, every one at `0.2.0-rc.2`, with no nested copy and no peer-conflict warning.
+
+The published `0.2.0` bundle was installed against the candidate and booted from a real profile: 278 DSH copies all at the candidate, 188 composed rows, no skipped bundle, and its Client module served at 654,554 bytes.
+
+The certified baseline advanced to this candidate on 2026-09-29, after the certification rather than as part of it: the operator moved all 45 DSH peers to `>=0.2.0-rc.2 <0.2.1`, with the CI harness tag and the Hoplite tag to `dsh-v0.2.0-rc.2` and every wording spot that names the range.
+
+The move narrows the declared line to `0.2.0-rc.2` and later. The published `0.2.0` tarball keeps its wider `>=0.2.0-rc.1 <0.2.1` declaration, so only a later release refuses a host still on `0.2.0-rc.1`.

@@ -6,11 +6,17 @@
 
 ## `team_view`
 
-`team_view` 是 address book：有界的获授权 Channel、顶层 Thread 与 Member 摘要——是当前的地址簿，不是工作队列；unread work 归 `team_inbox`。Threads 是唯一分页目录：行按 newest-first 排列，携带 threadRef、Channel ref、bounded anchor subject，taskful Threads 在行内呈现 Task standing（Task ref、编号、status/resolution）——绝无第二个 Task 索引，也不渲染 revision 或消息数，因为二者都不改变下一个合法动作。cursor 只延续 Thread 行；continuation 页只渲染 Threads，翻页可达全部获授权的顶层 Threads（含 taskless 与不在首页的 taskful）。页脚将该值称为 Thread cursor，并说明是否还有更旧的 Thread anchors。
+`team_view` 是 address book：有界的获授权 Channel、顶层 Thread 与 Member 摘要——是当前的地址簿，不是工作队列；unread work 归 `team_inbox`。Threads 是唯一分页目录：行按 newest-first 排列，携带 threadRef、Channel ref、bounded anchor subject，taskful Threads 在行内呈现 Task standing（Task ref、编号、status/resolution）——绝无第二个 Task 索引，也不渲染 revision 或消息数，因为二者都不改变下一个合法动作。
+
+首页 Members 之后跟一个 `active task threads` 段：本 Workspace 内读者获授权 Channel 中所有 in_progress / in_review 的 Task Thread，按最新活动排序，每行携带 threadRef、Channel ref、status、Task 编号、其 live Claims 上的 Members、bounded anchor subject 与最新活动时刻。
+
+它的纳入条件是 Task 处于活跃，而非读者是否参与，且不排除仍有读者未读的 Thread——它独立于 unread 队列回答「谁已经在做什么」。工具引导在读者遇到 Workspace 意外改动、或准备 claim/commit 之前指向此段，让在途工作被识别为在途而非冲突；它不是 unread 队列，未读工作仍归 `team_inbox`。
+
+cursor 只延续 Thread 行；continuation 页只渲染 Threads，翻页可达全部获授权的顶层 Threads（含 taskless 与不在首页的 taskful）。页脚将该值称为 Thread cursor，并说明是否还有更旧的 Thread anchors。
 
 ## `team_inbox`
 
-`team_inbox` 返回有 unread work 的 Threads 的有界、无正文 summaries。Direct requests 排在 ordinary unread work 之前，之后按最新相关 sequence 排序；列出结果不改变 read state。header 给出 unread/direct 总数与展示的 Threads 数，有界列表之外仍有未读时给出截断结论；每个条目显示精确的 unread/direct 计数、Channel ref 与 taskful 时的 Task standing。页脚把正文阅读与确认指向 `team_thread read`；渲染不携带 revision 与写令牌——当前 read 才是必需的变更基础，并由它提供令牌。
+`team_inbox` 返回有 unread work 的 Threads 的有界、无正文 summaries。Direct requests 排在 ordinary unread work 之前，之后按最新相关 sequence 排序；列出结果不改变 read state。header 给出 unread/direct 总数与展示的 Threads 数，有界列表之外仍有未读时给出截断结论；每个条目显示精确的 unread/direct 计数、Channel ref 与 taskful 时的 Task standing。这是读者自己的 unread 队列；要看他人在途的工作（无论是否有未读），用 `team_view` 的 active-task-threads 段。页脚把正文阅读与确认指向 `team_thread read`；渲染不携带 revision 与写令牌——当前 read 才是必需的变更基础，并由它提供令牌。
 
 ## `team_thread`
 

@@ -420,6 +420,45 @@ export interface AgentTeamHumanProfileResult {
   readonly latestVersion?: string | undefined
 }
 
+/** Local environment read: how the running DSH compares to the declared support line. */
+export interface AgentTeamEnvironmentRequest {
+}
+
+/**
+ * The one of three shapes the page renders. `undetermined` is the answer for
+ * every fact this Host cannot establish — an unreadable runtime version, a
+ * support range the manifest does not state — and never a guessed verdict; its
+ * two causes are not distinguished to the reader, only recorded in `reason`.
+ */
+export type AgentTeamEnvironmentVerdict = 'ok' | 'out-of-range' | 'undetermined'
+
+/** Declared DSH support line, stated in words by the page rather than as a range string. */
+export interface AgentTeamEnvironmentSupportRange {
+  /** Lower bound of the declared range, which is also the certified baseline. */
+  readonly lower: string
+  /** Exclusive upper bound of the declared range. */
+  readonly upper: string
+}
+
+export interface AgentTeamEnvironmentResult {
+  readonly verdict: AgentTeamEnvironmentVerdict
+  /** Host-side diagnostic behind an `undetermined` verdict; not rendered as user copy. */
+  readonly reason?: string | undefined
+  // Every fact below is optional by contract: a missing one is never a
+  // mismatch, it only withholds the line that would have stated it.
+  /** Version of the bundle this Host runs from. */
+  readonly bundleVersion?: string | undefined
+  /**
+   * The running DSH version, which is what the page states it is running.
+   * Distinct from `certifiedDshVersion`: one is the environment, the other is
+   * the line this bundle declares support for.
+   */
+  readonly dshVersion?: string | undefined
+  /** Lower bound of the declared range: the certified, actually-tested DSH line. */
+  readonly certifiedDshVersion?: string | undefined
+  readonly supportRange?: AgentTeamEnvironmentSupportRange | undefined
+}
+
 /**
  * Human profile write: the fields the Client supplies, each one optional and
  * independent of the others.
@@ -907,6 +946,32 @@ export interface AgentTeamViewItem {
   readonly lastActivityAt: string
 }
 
+/**
+ * One in-flight Task Thread for the team_view「活跃 task thread」radar: work a
+ * reader can see is already claimed and moving, so an unexpected Workspace edit
+ * or a Task they were about to pick up resolves to "someone is on this" instead
+ * of a mystery. Unlike the Human Inbox's 「最近活跃」 slice, admission is not
+ * participation — every active Task Thread in the reader's authorized Channels
+ * appears, whether or not they took part — and a Thread still holding unread is
+ * not excluded, because this radar answers "who is on what" independently of
+ * the reader's own unread queue.
+ */
+export interface AgentTeamActiveTaskThread {
+  readonly taskRef: AgentTeamTaskRef
+  readonly threadRef: AgentTeamThreadRef
+  readonly channelRef: AgentTeamChannelRef
+  /** The Task's ordinal inside its home Channel. */
+  readonly taskNumber?: number
+  /** Always `in_progress` or `in_review` — the two states a live Claim keeps a Task in. */
+  readonly status: AgentTeamTask['status']
+  /** The Thread's opening line, trimmed and capped at 120 characters — the same bound the Inbox row uses. */
+  readonly subject: string
+  /** Owners of the Task's live Claims, in claim order, deduped — the same rule the Inbox row and Channel feed use. */
+  readonly members: readonly AgentTeamInboxActor[]
+  /** Instant of the newest fact on this Thread. */
+  readonly lastActivityAt: string
+}
+
 export interface AgentTeamViewRequest {
   readonly workspaceId: WorkspaceId
   readonly channelRef?: AgentTeamChannelRef
@@ -932,6 +997,14 @@ export interface AgentTeamView {
   readonly threads: readonly AgentTeamThread[]
   readonly taskNumbers: readonly { readonly taskRef: AgentTeamTaskRef; readonly taskNumber: number }[]
   readonly items: readonly AgentTeamViewItem[]
+  /**
+   * The「活跃 task thread」radar: every in_progress / in_review Task Thread in
+   * the reader's authorized Channels of this Workspace, newest activity first.
+   * Independent of the reader's participation and unread state — its job is to
+   * surface who is already on what, so re-entry and pre-claim/pre-commit checks
+   * do not mistake in-flight work for a conflict.
+   */
+  readonly activeTaskThreads: readonly AgentTeamActiveTaskThread[]
   readonly claims: readonly AgentTeamClaim[]
   readonly activities: readonly AgentTeamActivity[]
   readonly cursor: number

@@ -29,14 +29,14 @@ Run in this order; a failure stops the release, and a fix re-runs from the faile
 | Command | It refuses |
 | --- | --- |
 | `npm run typecheck` | Type errors against the certified harness checkout. |
-| `npm test` | Test failures, and the four mechanical gates it bundles: `check:docs`, `check:core-skills`, `check:boundaries`, `check:versions`. |
+| `npm test` | Test failures, and the five mechanical gates it bundles: `check:facades`, `check:docs`, `check:core-skills`, `check:boundaries`, `check:versions`. |
 | `npm run build` | Build errors; also what `prepack` will run at publish time. |
 | `npm run lint` | Lint findings. |
 | `npm run test:browser` | Broken composition, Remote mounting, slot takeover, or ordinary-DSH restoration. Needs the adjacent `../deepseek-harness` checkout; browser acceptance is a local step and never runs in CI. |
 | `npm pack --dry-run` | Nothing by itself — record the file count for the release report. |
 | `npm run check:artifact` | An artifact that would ship broken: stray `.ts`/`.tsx`, a missing `cordis.patch.yml`, or a runtime relative import whose target is not in the tarball. Run it *after* `npm run build`. |
 | `npm run check:public-baseline` | A public surface that drifted from the manifest's certified baseline (both READMEs and the pinned compatibility discussion). Needs `gh`; `--offline` skips the discussion read and is for local iteration only. |
-| `git diff --check` | Whitespace damage in the staged change. |
+| `git diff --check v<previous>..HEAD` | Whitespace damage anywhere in the release's change set. The bare `git diff --check` inspects only *unstaged* work, so it passes silently once the release is committed — which is when the ladder runs. |
 
 ## 4. Release material
 
@@ -63,15 +63,22 @@ Assert all four release-semantics facts **before** pushing or publishing:
 ```sh
 git add package.json CHANGELOG.md
 git commit -m "chore: release X.Y.Z"
+git push --dry-run origin master            # fence: this must list exactly master
+git push origin master
+```
+
+Wait for this run to be green on both lanes (§2.6) before tagging:
+
+```sh
 git tag vX.Y.Z
-git push --dry-run origin master vX.Y.Z   # fence: this must list exactly these two refs
-git push origin master vX.Y.Z
+git push --dry-run origin vX.Y.Z            # fence: this must list exactly the tag
+git push origin vX.Y.Z
 npm publish --access public
 ```
 
-The explicit refspec and its dry-run fence are load-bearing, not ceremony. A clone can carry pre-rewrite backup branches and local-only tags whose commits are deliberately absent from the remote, and `--all` / `--tags` publish them silently. This repository is public: a stray ref cannot be withdrawn. If the dry run lists a third ref, stop and find out whose it is.
+The explicit refspecs and their dry-run fences are load-bearing, not ceremony. A clone can carry pre-rewrite backup branches and local-only tags whose commits are deliberately absent from the remote, and `--all` / `--tags` publish them silently. This repository is public: a stray ref cannot be withdrawn. If a dry run lists a third ref, stop and find out whose it is.
 
-Tag after the release commit's own CI run is green on both lanes. A tag may be re-pointed only while nothing references it yet — no GitHub Release, no npm version, no consumer.
+Pushing master before the tag costs nothing and keeps the tag's evidence honest: the run that certifies a tag is the run of the commit the tag names. A tag may be re-pointed only while nothing references it yet — no GitHub Release, no npm version, no consumer.
 
 ## 6. Post-publish verification
 

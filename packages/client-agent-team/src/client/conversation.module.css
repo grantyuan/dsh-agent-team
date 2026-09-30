@@ -120,11 +120,17 @@
   flex-wrap: wrap;
   gap: 8px;
 }
+/* The sender is the secondary grade of the content axis — one step under the
+ * body, 13px/20px at the default content size — so a raised Settings size
+ * grows the author with the message instead of leaving the seat header behind.
+ * Shipped keeps a label that sits next to content on this same grade
+ * (`.hint`, `openError`, a compaction title) and pins only its smallest time
+ * grade at a fixed size, which is why the 11px time below stays put. */
 .nameRow strong {
   color: var(--dsw-alias-label-primary);
-  font-size: 13px;
+  font-size: var(--dsh-content-font-size-secondary, 13px);
   font-weight: 600;
-  line-height: 20px;
+  line-height: calc(20px + var(--dsh-content-font-delta-secondary, 0px));
 }
 .messageTime {
   color: var(--dsw-alias-label-tertiary);
@@ -177,7 +183,7 @@
 .entryRow:hover,
 .entryRow:focus-visible { color: var(--dsw-alias-label-primary); }
 .entryRow:focus-visible {
-  outline: 2px solid var(--dsw-alias-state-business-primary);
+  outline: var(--dsw-focus-ring-width, 2px) solid var(--dsw-focus-ring-color, var(--dsw-alias-state-business-primary));
   outline-offset: 2px;
 }
 .entryArrow {
@@ -432,7 +438,7 @@
    structured mention fallback row present on every message kind. */
 .mention {
   background: color-mix(in srgb, var(--dsw-alias-state-business-primary) 12%, transparent);
-  border-radius: 6px;
+  border-radius: var(--dsw-radius-sm, 6px);
   box-shadow: 0 1px 2px rgb(0 0 0 / 0.08);
   color: var(--dsw-alias-state-business-primary);
   font-weight: 500;
@@ -460,19 +466,19 @@
 
 .attachmentThumb {
   border: 0;
-  border-radius: 8px;
+  border-radius: var(--dsw-radius-sm, 8px);
   cursor: zoom-in;
   padding: 0;
 }
 .attachmentThumb img {
-  border-radius: 8px;
+  border-radius: var(--dsw-radius-sm, 8px);
   display: block;
   height: 96px;
   object-fit: cover;
   width: 128px;
 }
 .attachmentThumb:focus-visible {
-  outline: 2px solid var(--dsw-alias-state-business-primary, currentColor);
+  outline: var(--dsw-focus-ring-width, 2px) solid var(--dsw-focus-ring-color, var(--dsw-alias-state-business-primary));
   outline-offset: 1px;
 }
 
@@ -490,7 +496,7 @@
 .refLink {
   background: none;
   border: none;
-  border-radius: 4px;
+  border-radius: var(--dsw-radius-xs, 4px);
   color: var(--dsw-alias-state-business-primary);
   cursor: pointer;
   font: inherit;
@@ -505,7 +511,7 @@
 }
 
 .refLink:focus-visible {
-  outline: 2px solid var(--dsw-alias-state-business-primary);
+  outline: var(--dsw-focus-ring-width, 2px) solid var(--dsw-focus-ring-color, var(--dsw-alias-state-business-primary));
   outline-offset: 1px;
 }
 
@@ -521,13 +527,13 @@
   max-height: 78vh;
   max-width: 100%;
   object-fit: contain;
-  border-radius: 12px;
+  border-radius: var(--dsw-radius-md, 12px);
 }
 
 .attachmentChip {
   align-items: baseline;
   background: var(--dsw-alias-interactive-bg-hover);
-  border-radius: 6px;
+  border-radius: var(--dsw-radius-sm, 6px);
   display: inline-flex;
   gap: 6px;
   max-width: 100%;

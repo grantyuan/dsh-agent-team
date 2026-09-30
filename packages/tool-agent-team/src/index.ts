@@ -188,7 +188,7 @@ function rejectionLines(
 
 const teamInbox = defineTool({
   name: 'team_inbox',
-  description: 'List your bounded Team Inbox across all joined Workspaces for triage: unread Thread summaries with counts, without message bodies and without marking anything read. Read a selected Thread with team_thread read; the inbox itself authorizes no mutation.',
+  description: 'List your bounded Team Inbox across all joined Workspaces for triage: unread Thread summaries with counts, without message bodies and without marking anything read. Read a selected Thread with team_thread read; the inbox itself authorizes no mutation. This is your own unread queue; to see work others have in flight (whether or not you have unread on it), use the active-task-threads section of team_view.',
   parameters: { limit: { type: 'number' }, workspace: { type: 'string', description: 'Optional Workspace id filter. Omit to triage all your participations together.' } },
   output: {
     schema: { type: 'object', additionalProperties: false, properties: {
@@ -611,7 +611,7 @@ const teamClaim = defineTool({
 
 const teamView = defineTool({
   name: 'team_view',
-  description: 'Discover your authorized Team addresses: current Channels, a newest-first page of top-level Threads (each with its bounded anchor subject; Task standing inline on taskful rows), and current Members. This is an address book, not a work queue — unread work lives in team_inbox, and a Thread is read with team_thread read. The cursor pages Thread rows only.',
+  description: 'Discover your authorized Team addresses: current Channels, a newest-first page of top-level Threads (each with its bounded anchor subject; Task standing inline on taskful rows), current Members, and an「active task threads」section listing the work in flight right now — every in_progress / in_review Task Thread in your Channels, with its subject and the Members already on it. This is an address book, not a work queue: unread work lives in team_inbox, and a Thread is read with team_thread read. Consult the active-task-threads section when a Workspace change surprises you, or before you claim or commit, to tell in-flight work from a real conflict and avoid riding onto someone else\'s unpushed work — it is independent of your own unread. The cursor pages Thread rows only.',
   parameters: {
     channelRef: { type: 'string', description: "Full branded Channel ref exactly as returned by Team tools, including the 'channel:' prefix. An unambiguous abbreviation of the first 6+ UUID hex characters also resolves." },
     limit: { type: 'number' }, cursor: { type: 'number' }, workspace: workspaceParam,
@@ -627,6 +627,11 @@ const teamView = defineTool({
       threads: { type: 'array', required: true, items: { type: 'object', additionalProperties: false, properties: {
         threadRef: { type: 'string', required: true }, channelRef: { type: 'string', required: true }, revision: { type: 'number', required: true }, messageCount: { type: 'number', required: true }, subject: { type: 'string', required: true },
         taskRef: { type: 'string' }, status: { type: 'string' }, taskNumber: { type: 'number' }, lastActivityAt: { type: 'string' },
+      } } },
+      activeTaskThreads: { type: 'array', required: true, items: { type: 'object', additionalProperties: false, properties: {
+        taskRef: { type: 'string', required: true }, threadRef: { type: 'string', required: true }, channelRef: { type: 'string', required: true }, status: { type: 'string', required: true }, subject: { type: 'string', required: true },
+        taskNumber: { type: 'number' }, lastActivityAt: { type: 'string', required: true },
+        members: { type: 'array', required: true, items: { type: 'object', additionalProperties: false, properties: { memberId: { type: 'string', required: true }, name: { type: 'string', required: true } } } },
       } } },
       tasks: { type: 'array', required: true, items: { type: 'object', additionalProperties: false, properties: { taskRef: { type: 'string', required: true }, threadRef: { type: 'string', required: true }, channelRef: { type: 'string', required: true }, status: { type: 'string', required: true }, revision: { type: 'number' } } } },
       cursor: { type: 'number', required: true }, hasMore: { type: 'boolean', required: true }, page: { type: 'string' },
@@ -659,6 +664,10 @@ const teamView = defineTool({
         lines.push('', 'Members — current')
         if (value.members.length === 0) lines.push('No visible Members.')
         else lines.push(...value.members.map(m => `${m.memberId} · @${m.handle} (${m.kind}, ${m.presence})${m.description === '' ? '' : ` — ${m.description}`}`))
+        lines.push('', 'Active task threads — work in flight right now')
+        if (value.activeTaskThreads.length === 0) lines.push('No task thread is in flight in this Workspace.')
+        else lines.push(...value.activeTaskThreads.map(t => `${t.threadRef} · ${t.channelRef} · ${t.status}${t.taskNumber === undefined ? '' : ` · #${t.taskNumber}`}${t.members.length === 0 ? '' : ` · ${t.members.map(m => `@${m.name}`).join(', ')}`} — ${t.subject} · last activity ${formatTeamTimestamp(t.lastActivityAt)}`))
+        lines.push('Use this when a Workspace change surprises you, or before you claim or commit — to see who is already on a Task rather than riding onto their in-flight work. It is not the unread queue; unread work still lives in team_inbox.')
       }
       return [{ type: 'text', text: lines.join('\n') }]
     },
@@ -695,6 +704,10 @@ const teamView = defineTool({
         return { taskRef: task.taskRef, threadRef: task.threadRef, channelRef: task.channelRef, status: task.status,
           ...(revision === undefined ? {} : { revision }) }
       }),
+      activeTaskThreads: view.activeTaskThreads.map(t => ({ taskRef: t.taskRef, threadRef: t.threadRef, channelRef: t.channelRef,
+        status: t.status, subject: t.subject, lastActivityAt: t.lastActivityAt,
+        ...(t.taskNumber === undefined ? {} : { taskNumber: t.taskNumber }),
+        members: t.members.map(m => ({ memberId: m.memberId, name: m.name })) })),
       cursor: view.cursor, hasMore: view.hasMore,
       ...(args.cursor === undefined ? {} : { page: 'threads' as const }),
     }
