@@ -65,6 +65,8 @@ export interface ResponseGuardOptions {
   readonly nudge: (memberId: AgentTeamMemberId, diagnostic: string) => void
   /** Called once when an episode reaches the faulty-response limit and the nudge stands down. */
   readonly onStandDown?: (memberId: AgentTeamMemberId, consecutiveFaults: number) => void
+  /** Called when the nudge delivery itself threw; the episode is forgotten. */
+  readonly onNudgeFailed?: (memberId: AgentTeamMemberId, error: unknown) => void
   /** Consecutive faulty responses allowed before the nudge stands down. */
   readonly maxConsecutive?: number
 }
@@ -80,11 +82,13 @@ export class ResponseGuardCoordinator {
   private readonly consecutiveFaults = new Map<AgentTeamMemberId, number>()
   private readonly nudge: ResponseGuardOptions['nudge']
   private readonly onStandDown: ResponseGuardOptions['onStandDown']
+  private readonly onNudgeFailed: ResponseGuardOptions['onNudgeFailed']
   private readonly maxConsecutive: number
 
   constructor(options: ResponseGuardOptions) {
     this.nudge = options.nudge
     this.onStandDown = options.onStandDown
+    this.onNudgeFailed = options.onNudgeFailed
     this.maxConsecutive = options.maxConsecutive ?? RESPONSE_GUARD_MAX_CONSECUTIVE
   }
 
@@ -110,7 +114,8 @@ export class ResponseGuardCoordinator {
     }
     try {
       this.nudge(memberId, diagnostic)
-    } catch {
+    } catch (error) {
+      this.onNudgeFailed?.(memberId, error)
       this.consecutiveFaults.delete(memberId)
     }
   }

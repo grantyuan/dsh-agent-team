@@ -31,6 +31,7 @@ import SessionProjectionRegistry from '@deepseek-ai/dsh-session-projection'
 import ToolRuntime from '@deepseek-ai/dsh-tools'
 import { WorkspaceId } from '@deepseek-ai/dsh-workspace'
 import AgentTeam, { AGENT_TEAM_TOOL_NAMES } from '../src/index.ts'
+import { COMPLETION_MARKER } from '../src/response-guard.ts'
 import type { AgentTeamMemberCapabilities, AgentTeamMemberId, AgentTeamRequestId } from '../src/types.ts'
 // @ts-expect-error untyped shared resolution module
 import { harnessDir } from '../../../scripts/harness-dir.mjs'
@@ -325,10 +326,12 @@ describe('Agent Team member tool policy', () => {
     // The next model turn sees the widened surface in its request tools and
     // can call the newly visible tool.
     adapter.enqueue(toolCallResponse('call-1', 'spare_tool', {}))
+    // The closing reply carries the completion marker: a text-only round
+    // without it reads as a guard fault and would open a continue turn.
     adapter.enqueue([
       { type: 'block-start', index: 0, blockType: 'text' },
-      { type: 'text-delta', index: 0, text: 'done' },
-      { type: 'block-end', index: 0, block: { type: 'text', text: 'done' } },
+      { type: 'text-delta', index: 0, text: `done${COMPLETION_MARKER}` },
+      { type: 'block-end', index: 0, block: { type: 'text', text: `done${COMPLETION_MARKER}` } },
       { type: 'usage', usage: { inputTokens: 10, outputTokens: 4 } },
       { type: 'finish', reason: { kind: 'stop' } },
     ])

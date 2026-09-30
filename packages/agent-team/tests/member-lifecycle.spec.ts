@@ -34,6 +34,7 @@ import AgentTeam, { AGENT_TEAM_HUMAN_MEMBER_ID, AGENT_TEAM_TOOL_NAMES, isTsxDevM
 import { checkpointRefFor, foldTeamContextProjection } from '../src/context-projection.ts'
 import { AGENT_TEAM_PLUGIN_ID, continuationCheckpointRefOf, handoffOf, isCheckpointContinuationMessage, isHandoffMessage } from '../src/context-source.ts'
 import { RECOVERY_DELAY_MS } from '../src/recovery.ts'
+import { COMPLETION_MARKER } from '../src/response-guard.ts'
 import type { AgentTeamChannelRef, AgentTeamClaimRef, AgentTeamMemberId, AgentTeamRequestId } from '../src/types.ts'
 import { MemoryStorageBackend } from './helpers/memory-backend.ts'
 
@@ -55,7 +56,10 @@ class EmptyAdapter extends LlmAdapter {
   // the LLM service; the mock route reports a large window so ordinary turns
   // stay below every budget.
   override resolveModel(provider: string, model: string) { return Promise.resolve({ provider, id: model, name: model, context: { contextWindow: 320_000 } }) }
-  async * stream(_options: GenerateOptions): AsyncIterable<StreamChunk> { yield* [] }
+  // Scripted turns must honor the Member loop-discipline contract: a text-only
+  // round without the closing marker reads as a guard fault and would open a
+  // continue turn no test budgets for.
+  async * stream(_options: GenerateOptions): AsyncIterable<StreamChunk> { yield* textResponse('Done.') }
 }
 
 class ScriptedAdapter extends EmptyAdapter {
@@ -117,10 +121,14 @@ function toolCallResponse(rawCallId: string, name: string, args: object): Stream
 }
 
 function textResponse(text: string): StreamChunk[] {
+  // Scripted replies close with the completion marker so the response guard
+  // reads them as healthy rounds; the token accounting stays on the scripted
+  // body so pressure-budget tuning is untouched.
+  const body = `${text}${COMPLETION_MARKER}`
   return [
     { type: 'block-start', index: 0, blockType: 'text' },
-    { type: 'text-delta', index: 0, text },
-    { type: 'block-end', index: 0, block: { type: 'text', text } },
+    { type: 'text-delta', index: 0, text: body },
+    { type: 'block-end', index: 0, block: { type: 'text', text: body } },
     { type: 'usage', usage: { inputTokens: 10, outputTokens: text.length } },
     { type: 'finish', reason: { kind: 'stop' } },
   ]
@@ -690,6 +698,54 @@ describe('Agent Team Member lifecycle', () => {
     const first = await ctx.agentTeam.addMember({ requestId: requestId('first'), workspaceId, handle: 'first', description: 'First', presetId: 'team-member', channelRefs: [channel.channel.channelRef] })
     await expect(ctx.agentTeam.addMember({ requestId: requestId('duplicate'), workspaceId, handle: 'FIRST', description: 'Duplicate', presetId: 'team-member', channelRefs: [channel.channel.channelRef] })).rejects.toThrow(/already active/)
     expect(first.status.member.state).toBe('enabled')
+  })
+
+  it('dispatches the doctor with the failed Member\'s Channel reach so the diagnosis can be traced there', async () => {
+    const adapter = new ScriptedAdapter()
+    const { ctx, workspaceId } = await realHarness(adapter)
+    const channel = await ctx.agentTeam.createChannel({ requestId: requestId('doctor-channel'), workspaceId, name: 'engineering', description: 'Engineering work' })
+    const added = await ctx.agentTeam.addMember({ requestId: requestId('doctor-builder'), workspaceId, handle: 'builder', description: 'Builds the implementation', presetId: 'team-member', channelRefs: [channel.channel.channelRef] })
+    const builderId = added.status.member.memberId
+
+    // First dispatch: a fresh doctor is created, lands in the failed Member's
+    // Channel, and its steer carries the Channel trace contract.
+    adapter.enqueue(textResponse('Root cause identified.'))
+    const dispatched = await ctx.agentTeam.diagnoseMember({ requestId: requestId('diagnose-1'), workspaceId, memberId: builderId })
+    expect(dispatched.status.member.handle).toBe('doctor')
+    const doctorId = dispatched.status.member.memberId
+    const doctorAgent = ctx.agents.get(dispatched.status.member.sessionId)!
+    expect(doctorAgent).toBeDefined()
+    await doctorAgent.whenIdle()
+    const steer = JSON.stringify(adapter.requests[0]!.messages)
+    expect(steer).toContain('You are the Team\'s doctor')
+    expect(steer).toContain('Another Member, `builder`')
+    expect(steer).toContain(channel.channel.channelRef)
+    expect(ctx.agentTeam.view({ workspaceId }).members).toContainEqual({ channelRef: channel.channel.channelRef, memberId: doctorId })
+    // The granted membership is live sending authority: the doctor commits a
+    // trace Thread without a Human invitation.
+    const traced = await ctx.tools.execute({ signal: new AbortController().signal, callId: ToolCallId('doctor-trace'),
+      name: 'team_message', arguments: { action: 'start', workspace: workspaceId, channelRef: channel.channel.channelRef, body: 'Diagnosis: root cause identified' }, agent: doctorAgent })
+    expect(traced.isError, traced.isError ? traced.error.message : '').toBe(false)
+
+    // Reuse path: a second dispatch renews the doctor's context, backfills the
+    // Channel it could not know about, and posts no context-reset notice.
+    const secondChannel = await ctx.agentTeam.createChannel({ requestId: requestId('doctor-channel-2'), workspaceId, name: 'ops', description: 'Ops work' })
+    const peer = await ctx.agentTeam.addMember({ requestId: requestId('doctor-peer'), workspaceId, handle: 'watcher', description: 'Watches the ops work', presetId: 'team-member', channelRefs: [secondChannel.channel.channelRef] })
+    adapter.enqueue(textResponse('Second diagnosis done.'))
+    const redispatched = await ctx.agentTeam.diagnoseMember({ requestId: requestId('diagnose-2'), workspaceId, memberId: peer.status.member.memberId })
+    expect(redispatched.status.member.memberId).toBe(doctorId)
+    expect(redispatched.status.member.sessionId).not.toBe(dispatched.status.member.sessionId)
+    const renewedAgent = ctx.agents.get(redispatched.status.member.sessionId)!
+    await renewedAgent.whenIdle()
+    expect(ctx.agentTeam.view({ workspaceId }).members.filter(fact => fact.memberId === doctorId)).toEqual([
+      { channelRef: channel.channel.channelRef, memberId: doctorId },
+      { channelRef: secondChannel.channel.channelRef, memberId: doctorId },
+    ])
+    const tracedAgain = await ctx.tools.execute({ signal: new AbortController().signal, callId: ToolCallId('doctor-trace-2'),
+      name: 'team_message', arguments: { action: 'start', workspace: workspaceId, channelRef: secondChannel.channel.channelRef, body: 'Ops diagnosis recorded' }, agent: renewedAgent })
+    expect(tracedAgain.isError, tracedAgain.isError ? tracedAgain.error.message : '').toBe(false)
+    expect(ctx.agentTeam.view({ workspaceId }).items.some(item => item.message.body.includes('Context reset notice'))).toBe(false)
+    ctx.agentTeam.validateLedger()
   })
 
   it('runs the five-tool pull protocol through one live Team Member', async () => {

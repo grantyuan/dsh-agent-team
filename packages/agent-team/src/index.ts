@@ -181,13 +181,14 @@ const MAX_COMPACTION_FALLBACK_ATTEMPTS = 3
 
 /**
  * The persistent diagnostic Member: a same-preset teammate whose only job is
- * analyzing a failed Member's session transcript on the Human's ask. It joins
- * no Channel (its report goes out as a Human direct message) and is reset to
- * an empty context at the start of every dispatch.
+ * analyzing a failed Member's session transcript on the Human's ask. It holds
+ * exactly the failed Member's Channel memberships (the report goes out as a
+ * Human direct message plus a trace Thread there) and is reset to an empty
+ * context at the start of every dispatch.
  */
 const DOCTOR_HANDLE = 'doctor'
 const DOCTOR_PRESET_ID = 'team-member'
-const DOCTOR_DESCRIPTION = 'Team doctor: diagnoses a failed Member on the Human\'s ask and reports the root cause by direct message.'
+const DOCTOR_DESCRIPTION = 'Team doctor: diagnoses a failed Member on the Human\'s ask and reports the root cause by direct message and a Thread in the failed Member\'s Channel.'
 const DOCTOR_DIAGNOSTIC_SUMMARY = 'Doctor dispatch: analyze a failed Member'
 
 /**
@@ -501,11 +502,33 @@ export default class AgentTeam extends TypertRemoteService {
     nudge: (memberId, diagnostic) => {
       const handle = this.handles.get(memberId)
       if (handle === undefined) throw new Error(`member '${memberId}' has no active session`)
-      handle.agent.steer(createUserMessage({
-        content: [{ type: 'text', text: 'continue' }],
-        source: { kind: AGENT_TEAM_PLUGIN_ID, form: 'notice', summary: RESPONSE_GUARD_NOTICE_SUMMARY },
-      }))
-      this.ctx.logger.warn(`agent-team: response guard nudged member '${this.memberLabel(memberId)}' to continue (${diagnostic})`)
+      // The guard observes the assistant message inside its append publish;
+      // any inbox mutation here would re-enter that append and be rejected,
+      // so the delivery waits for the next tick — by then the model loop has
+      // finalized the faulting turn and the continue opens the next one.
+      setImmediate(() => {
+        const agent = this.handles.get(memberId)?.agent
+        if (agent === undefined) return
+        const message = createUserMessage({
+          content: [{ type: 'text', text: 'continue' }],
+          source: { kind: AGENT_TEAM_PLUGIN_ID, form: 'notice', summary: RESPONSE_GUARD_NOTICE_SUMMARY },
+        })
+        try {
+          // The idle/carried-input split mirrors the DM relay: an idle
+          // Member gets one ordinary turn; a busy one is steered into its
+          // current turn. Queued user input also takes the followup lane so
+          // the continue never leapfrogs it.
+          if (agent.status === 'idle' || agent.inbox.nextTurn.some(queued => queued.source.kind === 'user')) agent.followup(message)
+          else agent.steer(message)
+        } catch (error) {
+          this.ctx.logger.warn(`agent-team: response-guard continue for member '${this.memberLabel(memberId)}' was not delivered: ${error instanceof Error ? error.message : String(error)}`)
+          return
+        }
+        this.ctx.logger.warn(`agent-team: response guard nudged member '${this.memberLabel(memberId)}' to continue (${diagnostic})`)
+      })
+    },
+    onNudgeFailed: (memberId, error) => {
+      this.ctx.logger.warn(`agent-team: response-guard continue for member '${this.memberLabel(memberId)}' was not delivered: ${error instanceof Error ? error.message : String(error)}`)
     },
     onStandDown: (memberId, consecutiveFaults) => {
       this.ctx.logger.warn(`agent-team: member '${this.memberLabel(memberId)}' produced ${consecutiveFaults}/${RESPONSE_GUARD_MAX_CONSECUTIVE + 1} consecutive faulty responses; standing down the continue nudge`)
@@ -784,9 +807,10 @@ export default class AgentTeam extends TypertRemoteService {
       // recovery sequence for this Member.
       if (event.type === 'assistant/message') {
         this.pressurePolicy.onAssistantMessage(handle.agent)
-        // The response-shape guard runs on every completed model round; the
-        // steer lands in the inbox before the loop's turn-end check, so the
-        // "continue" claims the same turn instead of idling the Member.
+        // The response-shape guard runs on every completed model round. The
+        // guard observes the round inside its append publish, so its delivery
+        // defers to the next tick (an inbox mutation here would re-enter the
+        // append) and then steers a still-open turn or opens the next one.
         this.responseGuard.onAssistantMessage(memberId, classifyAssistantResponse(event.data.message.content), event.data.interrupted === true)
       }
       // Context management reacts only after a successful durable tool/result;
@@ -1169,18 +1193,20 @@ export default class AgentTeam extends TypertRemoteService {
    * re-briefing is expected; identity, settings, private memory, and durable
    * Team facts (Tasks, Claims, membership) survive, and the notice says so. The
    * wording names who reset it — the Human, or team supervision after repeated
-   * failures or a hang. Failures are logged, never thrown: the reset itself is
-   * already durable and committed when this runs.
+   * failures or a hang. The doctor dispatch resets are skipped: the reset is an
+   * internal step of a one-shot diagnostic, the steer arrives immediately, and
+   * waking the whole Channel for it would buy nothing. Failures are logged,
+   * never thrown: the reset itself is already durable and committed when this
+   * runs.
    */
   private async announceContextReset(member: AgentTeamAgentMember, resetBy: 'human' | 'supervision' | 'teammate' | 'doctor'): Promise<void> {
+    if (resetBy === 'doctor') return
     const ledger = this.requireLedger()
     const resetSource = resetBy === 'human'
       ? 'the Human'
       : resetBy === 'supervision'
         ? 'team supervision after repeated failures'
-        : resetBy === 'teammate'
-          ? 'a teammate through team supervision'
-          : 'the doctor dispatch to start a fresh diagnostic task'
+        : 'a teammate through team supervision'
     const noticeBody = [
       `Context reset notice: my Session was just reset by ${resetSource}, and I am starting from an empty context.`,
       `My handle, settings, and private memory are unchanged, and durable Team facts (Tasks, Claims, Channels) are unaffected — but I remember nothing from earlier conversation, including anything we did together.`,
@@ -1393,11 +1419,12 @@ export default class AgentTeam extends TypertRemoteService {
 
   /**
    * Human-dispatched failure diagnosis. Resolves (or creates) the persistent
-   * `doctor` Member, starts it from a fresh context — the same renewal the
+   * `doctor` Member, joins it to the failed Member's Channels so the report
+   * can be traced there, starts it from a fresh context — the same renewal the
    * Human menu's reset performs — and steers the failed Member's bounded
    * session transcript into that fresh session as the research subject. The
-   * doctor reports by direct message to the Human; nothing in this remote
-   * waits for the analysis.
+   * doctor reports by direct message to the Human and as a Thread in the
+   * failed Member's Channel; nothing in this remote waits for the analysis.
    */
   @Remote('diagnoseMember')
   async diagnoseMember(request: AgentTeamDiagnoseMemberRequest): Promise<AgentTeamDiagnoseMemberResult> {
@@ -1408,38 +1435,63 @@ export default class AgentTeam extends TypertRemoteService {
       const failed = ledger.getMember(request.memberId)
       if (failed === undefined || !ledger.participatesIn(request.memberId, request.workspaceId)) throw new Error(`unknown Member '${request.memberId}' in workspace '${request.workspaceId}'`)
       if (failed.handle.normalize('NFKC').trim().toLowerCase() === DOCTOR_HANDLE) throw new Error(`the doctor member cannot diagnose itself`)
-      const { member: doctor, fresh } = await this.ensureDoctorMember(failed.workspaceId)
+      // The failed Member's Channels are the diagnosis's durable-trace surface:
+      // the doctor inherits exactly that reach so it can post the report there.
+      const homeChannels = ledger.channelsForMember(request.memberId, request.workspaceId)
+      const { member: doctor, fresh } = await this.ensureDoctorMember(failed.workspaceId, homeChannels)
       // Every dispatch starts from an empty context, so prior analyses never
       // bleed into each other; a doctor created by this call is already fresh.
+      // The renewal rebinds the Member onto a new Session, so report the
+      // post-renewal ledger record, not the pre-renewal snapshot.
       if (!fresh) await this.renewMemberContextNow(doctor.memberId, request.requestId, 'doctor')
-      const handle = this.handles.get(doctor.memberId)
-      if (handle === undefined) throw new Error(`the doctor member '${doctor.handle}' has no live session to receive the diagnosis task`)
+      const current = ledger.getMember(doctor.memberId) ?? doctor
+      const handle = this.handles.get(current.memberId)
+      if (handle === undefined) throw new Error(`the doctor member '${current.handle}' has no live session to receive the diagnosis task`)
       const { transcript, failureDiagnostic } = await this.failureTranscriptFor(request.memberId)
       handle.agent.steer(createUserMessage({
         content: [{ type: 'text', text: doctorAnalysisPrompt({
           failedHandle: failed.handle,
+          ...(homeChannels.length === 0 ? {} : { channelRefs: homeChannels }),
           ...(failureDiagnostic === undefined ? {} : { failureDiagnostic }),
           transcript,
         }) }],
         source: { kind: AGENT_TEAM_PLUGIN_ID, form: 'notice', summary: DOCTOR_DIAGNOSTIC_SUMMARY },
       }))
       this.ctx.logger.info(`agent-team: doctor dispatched to diagnose member '${failed.handle}'`)
-      return Object.freeze({ status: this.memberStatus(doctor) })
+      return Object.freeze({ status: this.memberStatus(current) })
     })
   }
 
   /**
    * Resolve the persistent doctor Member for one Workspace, creating it on
-   * first use: same Team Member preset, no Channel membership, private memory
-   * like any other Member. A disabled or archived `doctor` blocks the plain
-   * handle, so a re-creation takes the same numbered-generation path a
-   * supervision replacement does.
+   * first use: same Team Member preset, private memory like any other Member.
+   * The doctor joins the failed Member's Channels — granted atomically at
+   * creation, backfilled per dispatch for a reused doctor — so the analysis
+   * can be recorded as a Thread where the failed work happened, not only as a
+   * direct message. A disabled or archived `doctor` blocks the plain handle,
+   * so a re-creation takes the same numbered-generation path a supervision
+   * replacement does.
    */
-  private async ensureDoctorMember(workspaceId: WorkspaceId): Promise<{ readonly member: AgentTeamAgentMember; readonly fresh: boolean }> {
+  private async ensureDoctorMember(workspaceId: WorkspaceId, homeChannels: readonly AgentTeamChannelRef[]): Promise<{ readonly member: AgentTeamAgentMember; readonly fresh: boolean }> {
     const ledger = this.requireLedger()
+    // The doctor is workspace-scoped: a handle match from another Workspace
+    // cannot receive this dispatch's steer or Channel grants, so only a doctor
+    // that participates here is reused.
     const existing = ledger.listMembers().find(member => member.state === 'enabled'
+      && ledger.workspacesOf(member.memberId).includes(workspaceId)
       && member.handle.normalize('NFKC').trim().toLowerCase() === DOCTOR_HANDLE)
-    if (existing !== undefined) return { member: existing, fresh: false }
+    if (existing !== undefined) {
+      // A doctor reused across dispatches may lack Channels the failed Member
+      // gained later; joinChannel itself refuses an existing membership, so
+      // only the gap is committed.
+      const joined = new Set(ledger.channelsForMember(existing.memberId, workspaceId))
+      for (const channelRef of homeChannels) {
+        if (joined.has(channelRef)) continue
+        const channelJoin = await ledger.joinChannel({ requestId: randomUUID() as AgentTeamRequestId, workspaceId, channelRef, memberId: existing.memberId, actor: agentTeamHumanActor() })
+        this.emitCommitted(channelJoin.value.receipt)
+      }
+      return { member: existing, fresh: false }
+    }
     const taken = new Set(ledger.listMembers().map(member => member.handle.normalize('NFKC').trim().toLowerCase()))
     const handle = taken.has(DOCTOR_HANDLE) ? nextReplacementHandle(DOCTOR_HANDLE, ledger.listMembers().map(member => member.handle)) : DOCTOR_HANDLE
     const memberId = `member:${randomUUID()}` as AgentTeamMemberId
@@ -1459,7 +1511,7 @@ export default class AgentTeam extends TypertRemoteService {
       handle,
       description: DOCTOR_DESCRIPTION,
       presetId: DOCTOR_PRESET_ID,
-      channelRefs: [],
+      channelRefs: [...homeChannels],
       member,
       actor: agentTeamHumanActor(),
     })

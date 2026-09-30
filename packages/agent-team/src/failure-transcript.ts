@@ -109,11 +109,16 @@ export function renderFailureTranscript(
 export function doctorAnalysisPrompt(input: {
   readonly failedHandle: string
   readonly failureDiagnostic?: string
+  readonly channelRefs?: readonly string[]
   readonly transcript: string
 }): string {
   const diagnostic = input.failureDiagnostic === undefined
     ? 'No structured failure diagnostic was recorded for this Member; the transcript itself is the evidence.'
     : `The Host recorded this failure diagnostic for the Member: ${clamp(input.failureDiagnostic, 500)}`
+  const channelTrace = input.channelRefs === undefined ? undefined : [
+    `The failed Member belonged to these Channels: ${input.channelRefs.join(', ')}. You are a Member there too, so keep the trace off a private DM:`,
+    'After the direct message, post the same report as a top-level `team_message` start in the Channel most relevant to what the Member was doing (pick one; do not spam several), mentioning `@human` so the diagnosis is durably recorded in the Team ledger.',
+  ]
   return [
     `You are the Team's doctor. Another Member, \`${input.failedHandle}\`, stopped or wedged during its work, and the Human asked for a diagnosis.`,
     `${diagnostic}`,
@@ -128,5 +133,6 @@ export function doctorAnalysisPrompt(input: {
     '1. What the Member was trying to do when it stopped.',
     '2. The most likely root cause of the failure, with the transcript lines that support it.',
     '3. A concrete recommendation: what to change, retry, or reset before giving this Member work again.',
+    ...(channelTrace === undefined ? [] : ['', ...channelTrace]),
   ].join('\n')
 }
