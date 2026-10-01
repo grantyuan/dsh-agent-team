@@ -5,6 +5,8 @@ English | [中文](model-and-time.zh.md)
 ## Collaboration model
 A top-level Channel Message creates one Thread and anchor. New model-facing starts are taskless by default; explicit task intent creates a Task overlay atomically, while an omitted field remains taskful for released Clients. A Human can promote a taskless Thread with one atomic Task activity. Replies append immutable Messages. Public Thread chronology consists of Messages and, only with a Task overlay, Claim changes, Human resolution, and promotion.
 
+A taskful start may name a `parentTaskRef`, filing the new Task as a sub-task of an open Task in the same Channel; the ledger stays flat — the linkage is one parent ref on the Task. The Human reads progress through the `tasks` Remote: one row per Task — ordinal, derived status, subject, claim owners, parent ref — done and closed rows kept visible, archived Channels dropped. The same status rule feeds the idle continuation watcher, so list and watcher never disagree about what is still open.
+
 Agents may read or mutate only Channels in Workspaces they participate in, with Channel membership still required. Tools resolve the actor from the exact live Agent; the model cannot choose an actor. The `workspace` selector must name a participated Workspace. It can be omitted for a single participation; with multiple participations it is required on `team_view`, `team_thread`, `team_message`, and `team_claim`, and rejection lists the available Workspace ids.
 
 `team_inbox` instead merges all participations by default, with `workspace` as an optional filter applied before sorting and truncation. Inbox rows and notification details identify their source Workspace; `team_thread` renders Workspace/Channel provenance before the outcome line. Multi-Workspace guidance supplies paths, absolute-path rules and per-checkout `AGENTS.md` pointers. Joining does not change Session cwd.
@@ -28,4 +30,4 @@ Later steps of the same turn stay quiet unless the turn has run longer than the 
 
 The baseline folds from the Member Session's own events, so restart, resume, and compaction derive identical values without a second store; a rollover starts a fresh log and renders elapsed as `unavailable` rather than guessing across generations; a wall-clock rollback clamps elapsed to `0s` without rewriting history. The shipped `@deepseek-ai/dsh-time-context` stays unmounted because its browser-zone policy would ask background-woken Members to confirm dates with an absent user.
 
-Time never drives automatic behavior: no deadlines, reminders, schedulers, SLAs, or staleness-driven state changes exist.
+Time never drives Task semantics: no deadlines, SLAs, or staleness-driven state changes exist. The Host's coordination passes (supervision, idle continuation — see Host authority) watch health and idleness shape, not Task timing.

@@ -30,6 +30,8 @@ history 页渲染历史结果与 Thread 身份，首页给 full anchor、continu
 
 `team_message.start` 创建 Channel 顶层 Thread；默认 taskless，也接受明确 task intent 以原子创建 Task。 `team_message.reply` 向既有 Thread 追加明确的 reply。 二者都接受 `attachments` 中的可选 absolute file paths：Host 验证每个 path，将 bytes 复制到 attachment cache，收件人看到 thumbnails/chips 与一行 cached path；任一 path 验证失败都会拒绝整个 send。 commit 的 start/reply 渲染一个 committed-verb 结果——Thread created 或 reply added——携带 Message ref、新 Thread ref（taskful 时含 Task ref），以及恰好一个 next-write token hand-off，新建 Thread 立即可寻址、下一次变更也拿到了基础。
 
+taskful 的 start 还可传 `parentTaskRef`，把新 Task 归档为同 Channel 内一个 open Task 的 sub-task：ref 可用缩写并在结果中解析为完整 parent ref，跨 Channel 或已 closed 的 parent 会被拒绝。
+
 类型化拒绝结果（`unread_required`、`stale_revision`）以 `Not committed` 开头，保留重读与审慎重试所需的结构化 refs 与计数，不渲染数字 revision 与写令牌——拒绝不携带变化后的事实，不是安全的变更基础；恢复路径是 read-and-reconsider。 mention 一个该 Thread 从未承载过的 Member 不是拒绝：Message 照常提交，结果里报告未送达的名字。
 
 `team_message.dm` 向同一 Workspace 内一个 enabled Agent Member 发送私有 direct message。DM 是纯送达：ledger 追加一个 audit-only 的 `team/dm-sent` operation（requestId 幂等），收件人的 live session 以 relay-form 注入的 user message 收到正文——idle 收件人开新 turn，busy 收件人 steer 进当前 turn。DM 不创建 Channel、Thread、revision、Attention 或 Inbox markers，也不唤醒任何 change waiters。Human 不能被 DM。收件人无 live session 或唤醒失败时，operation 保持 durable，发送方收到结构化的 delivery error 而非静默丢失；不做自动重投。DM 只用于快速澄清与状态同步——任务工作、决策和任何需要团队可见或可追溯的内容一律走 Thread；同一对象往来超过约 3 轮应转 Thread，因为每条 DM 消耗收件人一次完整 agent turn。

@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react'
 import type { AgentTeamClientMemberStatus, AgentTeamModelSelection, AgentTeamUpdateMemberRequest } from '@wowyuarm/dsh-agent-team/types'
 import type { RemoteResult } from '@deepseek-ai/dsh-typert-protocol'
 import type { TeamModelCatalog, TeamModelEffortOption, TeamModelProviderGroup, TeamSidebarProps } from './slots.ts'
-import { Button, IconChevronDownOutlineRegular, Input, Menu, Modal } from '@deepseek-ai/dsh-client-ui-primitives'
+import { Button, Checkbox, IconChevronDownOutlineRegular, Input, Menu, Modal } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { MenuEntry } from '@deepseek-ai/dsh-client-ui-primitives'
 import { mintRequestId } from './requests.ts'
 import { useEditDialogSave } from './team-dialog-save.ts'
@@ -243,13 +243,15 @@ export function AgentEditorDialog({ status, updateMember, loadModels, onCommitte
   const [handle, setHandle] = useState(status.member.handle)
   const [description, setDescription] = useState(status.member.description)
   const [model, setModel] = useState<AgentTeamModelSelection | undefined>(status.member.model)
+  const [leader, setLeader] = useState(status.member.leader === true)
   const { saving, error, pendingRequest, save } = useEditDialogSave({
     save: updateMember,
     onCommitted,
     onClose,
   })
+  const storedLeader = status.member.leader === true
   const dirty = handle.trim() !== status.member.handle || description.trim() !== status.member.description
-    || !sameModel(model, status.member.model)
+    || !sameModel(model, status.member.model) || leader !== storedLeader
   const submit = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault()
     const normalizedHandle = handle.trim()
@@ -263,10 +265,13 @@ export function AgentEditorDialog({ status, updateMember, loadModels, onCommitte
       // The editor owns no capabilities UI, but an absent field would clear a
       // Remote-written override; echo the stored intent through the edit.
       ...(status.member.capabilities === undefined ? {} : { capabilities: status.member.capabilities }),
+      // Absent keeps the stored designation on the Host, so the edit always
+      // echoes this checkbox rather than clearing it by omission.
+      leader,
     }
     const samePending = pendingRequest.current !== undefined && pendingRequest.current.memberId === payload.memberId
       && pendingRequest.current.handle === payload.handle && pendingRequest.current.description === payload.description
-      && sameModel(pendingRequest.current.model, model)
+      && sameModel(pendingRequest.current.model, model) && (pendingRequest.current.leader ?? false) === leader
     const request: AgentTeamUpdateMemberRequest = samePending ? pendingRequest.current! : {
       requestId: mintRequestId(),
       ...payload,
@@ -294,6 +299,7 @@ export function AgentEditorDialog({ status, updateMember, loadModels, onCommitte
           <Input className={createCss.input!} value={description} placeholder={t('agentDescriptionPlaceholder')} onChange={event => { setDescription(event.target.value); pendingRequest.current = undefined }} disabled={saving} />
         </label>
         <ModelPickerField model={model} onModelChange={choice => { pendingRequest.current = undefined; setModel(choice) }} loadModels={loadModels} disabled={saving} t={t} />
+        <Checkbox checked={leader} onChange={next => { pendingRequest.current = undefined; setLeader(next) }} disabled={saving} label={t('memberLeader')} title={t('memberLeaderHint')} />
         {error !== undefined && <p className={createCss.error} role="alert">{error}</p>}
       </form>
     </Modal>

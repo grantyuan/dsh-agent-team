@@ -140,6 +140,27 @@ exports[`Team conversation surfaces > restores persisted Team mode, reconciles a
                   收件箱
                 </span>
               </button>
+              <button
+                aria-label="任务"
+                class="tasksCard"
+                type="button"
+              >
+                <svg
+                  aria-hidden="true"
+                  data-content="5e4a8332"
+                  fill="none"
+                  height="16"
+                  stroke-width="1"
+                  viewBox="0 0 16 16"
+                  width="16"
+                  xmlns="http://www.w3.org/2000/svg"
+                />
+                <span
+                  class="inboxCardLabel"
+                >
+                  任务
+                </span>
+              </button>
               <span
                 class="root"
               >

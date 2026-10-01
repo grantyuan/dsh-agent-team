@@ -5,6 +5,8 @@
 ## 协作模型
 Channel 顶层 Message 会创建一个 Thread 及其 anchor。新的 model-facing start 默认创建 taskless Thread；传入明确的 task intent 会在同一个 atomic operation 中创建 Task overlay，而省略字段则为 released Clients 保留 taskful 行为。Human 可以随后 promotion 一个 taskless Thread：一个 atomic operation 创建 Task overlay，并记录会通知当前 followers 的结构化 `promote` Task activity——promotion 不写 prose Message。Reply 会向既有 Thread 添加 immutable Messages。公开 Thread facts 包括 Messages，以及仅在存在 Task overlay 时才有的 Claim changes、Human Task resolution changes 和 promotion；它们的 global operation sequence 决定 chronology 与当前 Thread revision。
 
+taskful 的 start 可以传 `parentTaskRef`，把新 Task 归档为同 Channel 内一个 open Task 的 sub-task；ledger 保持扁平，关联只是 Task 上的一个 parent ref。Human 通过 `tasks` Remote 读取进度：Workspace 内每个 Task 一行——序号、派生 status、subject、live claim owners 与 parent ref——done 与 closed 的行保留可见，archived Channels 的行不出现。同一条派生 status 规则同时供 Host 的 idle continuation watcher 使用，因此列表与 watcher 对「什么仍算 open」永不可能分歧。
+
 Agent 只能读取或修改其已参与 Workspace 中的 Channels，且仍需是 Channel 成员。Team tools 从确切的 live Agent 解析 actor，模型不能选择 actor。`workspace` 选择器必须指向一个已参与的 Workspace：单一参与时可省略；多参与时在 `team_view`、`team_thread`、`team_message`、`team_claim` 上必填，拒绝信息列出可选 Workspace id。`team_inbox` 则默认合并全部参与，`workspace` 仅作为排序与截断前的可选过滤。Inbox 行与通知详情标注来源 Workspace；`team_thread` 在结果行前渲染 Workspace/Channel 来源。多 Workspace 引导提供路径、绝对路径规则与每个 checkout 的 `AGENTS.md` 指针。加入不改变 Session cwd。
 
 ## Member 时间感知
@@ -20,4 +22,4 @@ Agent 只能读取或修改其已参与 Workspace 中的 Channels，且仍需是
 
 除事件时刻外，每个符合条件的 Team Member turn 的首个 model step 会收到一条 durable clock snapshot（`member-time-context` preset row）：UTC+8 的当前时刻、距上一个 model-visible event 的 elapsed，以及 ordering-authority 说明。 同一 turn 的后续 step 默认保持安静，只有距上一条落盘 snapshot 已超过 refresh interval 才再注入一条——快速 step 的 tool-dense turn 恰好产出一行，超出 interval 的 turn 仍能显示真实跨度；被跳过的 step 绝不回填，其时间跨度折叠进下一条 snapshot 的 elapsed。 默认 interval 为 30 分钟，可通过 preset row 的 plugin config 覆盖，留给未来的配置层接管。 baseline 从该 Member Session 自身事件折叠而来，因此 restart、resume 和 compaction 无需第二存储即可派生出相同值；rollover 开启全新日志，elapsed 渲染为 `unavailable` 而不是跨代猜测；wall-clock 回拨将 elapsed 夹为 `0s` 而不改写历史。
 
-内置的 `@deepseek-ai/dsh-time-context` 保持不挂载，因为其 browser-zone 策略会让后台唤醒的 Member 向不存在的用户确认日期。 时间绝不驱动自动行为：不存在 deadline、reminder、scheduler、SLA 或按陈旧度的状态变更。
+内置的 `@deepseek-ai/dsh-time-context` 保持不挂载，因为其 browser-zone 策略会让后台唤醒的 Member 向不存在的用户确认日期。 时间绝不驱动 Task 语义：不存在 deadline、SLA 或按陈旧度的状态变更；Host 的协调 pass（supervision 与 idle continuation——见 Host authority）观察的是健康与空闲形态，而非 Task 时间。

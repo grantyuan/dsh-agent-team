@@ -107,6 +107,12 @@ export interface AgentTeamAgentMember {
   /** Host-internal namespace; never exposed through Client projections. */
   readonly privateMemoryPath: string
   /**
+   * Durable designation as the Team's leader — the Member the Host's idle
+   * continuation watcher nudges when every Agent is stopped with Tasks still
+   * open. Members written before the designation existed omit the field.
+   */
+  readonly leader?: boolean | undefined
+  /**
    * Durable lifecycle state. `enabled`/`suspended` are the reversible working
    * pair; `archived` hides the Member from every surface while keeping its
    * Session log and private memory recoverable (no restore entry point yet,
@@ -280,6 +286,12 @@ export interface AgentTeamTask {
   readonly threadRef: AgentTeamThreadRef
   readonly status: 'todo' | 'in_progress' | 'in_review' | 'done' | 'closed'
   readonly resolution: 'open' | 'accepted' | 'closed'
+  /**
+   * Parent Task when this Task was created as an Agent-split sub-task.
+   * Ledgers written before sub-tasks existed omit the field; the parent lives
+   * in the same Channel and is resolved at creation time only.
+   */
+  readonly parentTaskRef?: AgentTeamTaskRef | undefined
 }
 
 /** Current projection of one collaboration Thread. */

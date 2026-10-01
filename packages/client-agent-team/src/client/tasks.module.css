@@ -1,0 +1,17 @@
+/* The Tasks page rides the shared conversation seat and the Inbox row grammar;
+   this sheet adds only what the Task list itself needs. */
+
+/* A sub-task row indents one level under its parent: 26px is the row's own 8px
+   inset plus the gutter column the dot and a face draw, so a child's content
+   opens past what its parent's leading cluster can occupy. */
+.subtask {
+  margin-left: 26px;
+}
+
+/* The owner stack closes the identity line: it is fixed-width content in the
+   row's flex line, so a squeezed seat shortens the crumb, never the faces. */
+.rowOwners {
+  align-items: center;
+  display: flex;
+  flex: none;
+}

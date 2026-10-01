@@ -51,6 +51,8 @@ import type {
   AgentTeamPromoteThreadResult,
   AgentTeamTaskRequest,
   AgentTeamTaskResult,
+  AgentTeamTasks,
+  AgentTeamTasksRequest,
   AgentTeamSendMessageRequest,
   AgentTeamSendMessageResult,
   AgentTeamUpdateChannelRequest,
@@ -174,6 +176,8 @@ export type TeamConversationProps = PropsRuntime<'main'> & PropsLocale<'team'> &
   loadMembers: (request: AgentTeamMembersRequest) => Promise<RemoteResult<readonly AgentTeamClientMemberStatus[]>>
   /** Human direct-only Inbox slice; the Inbox page merges one call per visible Workspace. */
   loadInbox: (request: AgentTeamInboxRequest) => Promise<RemoteResult<AgentTeamInbox>>
+  /** Human cross-Channel Task list; the Tasks page merges one call per visible Workspace. */
+  loadTasks: (request: AgentTeamTasksRequest) => Promise<RemoteResult<AgentTeamTasks>>
   /** Human-only Thread Attention observations; the Thread composer ranks the returned followers first. */
   threadObservations: (request: AgentTeamThreadObservationsRequest) => Promise<RemoteResult<AgentTeamThreadObservations>>
   /** Agent-card session jump, shared by every slot; message member chips reuse it. */

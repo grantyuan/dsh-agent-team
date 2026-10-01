@@ -44,6 +44,7 @@ import type { MemberSkillSelectionRef } from './member-skills.ts'
 import { classifyRecoverableError, RecoveryCoordinator, RECOVERY_MAX_CONSECUTIVE_ERRORS } from './recovery.ts'
 import { classifyAssistantResponse, RESPONSE_GUARD_MAX_CONSECUTIVE, RESPONSE_GUARD_NOTICE_SUMMARY, ResponseGuardCoordinator } from './response-guard.ts'
 import { MemberSupervisor, nextReplacementHandle, supervisionAlertText, supervisionHandoffText, SUPERVISION_FAILURE_WINDOW_MS, SUPERVISION_HUNG_MS, SUPERVISION_MAX_CONSECUTIVE_FAILURES, SUPERVISION_MAX_RESTART_ATTEMPTS, SUPERVISION_WINDOW_FAILURES, type MemberSupervisionState, type SupervisionTrigger } from './supervisor.ts'
+import { TaskContinuationWatcher, continuationNudgeText, type ContinuationLeader, type ContinuationTask } from './continuation-watcher.ts'
 import { StoredSessionReadError, StoredSessionReader, sessionFailureOf } from './stored-session-reader.ts'
 import { doctorAnalysisPrompt, renderFailureTranscript, type TranscriptEvent } from './failure-transcript.ts'
 import { agentTeamDomainSpec } from './spec.ts'
@@ -139,6 +140,8 @@ import type {
   AgentTeamTask,
   AgentTeamTaskRequest,
   AgentTeamTaskResult,
+  AgentTeamTasks,
+  AgentTeamTasksRequest,
   AgentTeamThreadAttentionRequest,
   AgentTeamThreadAttentionResult,
   AgentTeamThreadAttentionStatus,
@@ -559,6 +562,39 @@ export default class AgentTeam extends TypertRemoteService {
     log: message => { this.ctx.logger.warn(`agent-team: ${message}`) },
   })
   /**
+   * The idle-continuation policy behind the Task list: when every enabled
+   * Agent sits `available`, open Tasks remain, and no ledger write landed for
+   * the quiet hold, it fires one nudge per episode at the Workspace's
+   * designated leader (`member.leader`). See `continuation-watcher.ts` for the
+   * pass policy and `announceContinuationNudge` for the delivery; the read
+   * lambdas all guard the pre-restore window where `this.ledger` is still
+   * unset, reading as "nothing to watch".
+   */
+  private readonly continuationWatcher = new TaskContinuationWatcher({
+    watchList: () => {
+      const ledger = this.ledger
+      if (ledger === undefined) return []
+      return ledger.listMembers()
+        .filter(member => member.state === 'enabled')
+        .map(member => member.memberId)
+    },
+    presenceOf: memberId => {
+      const member = this.ledger?.getMember(memberId)
+      return member === undefined ? 'unavailable' : this.memberStatus(member).presence
+    },
+    incompleteTasks: () => this.ledger?.incompleteTasksForWatch() ?? [],
+    leaderOf: workspaceId => {
+      const ledger = this.ledger
+      if (ledger === undefined) return undefined
+      const leader = ledger.listMembers().find(member =>
+        member.state === 'enabled' && member.leader === true && ledger.workspacesOf(member.memberId).includes(workspaceId))
+      return leader === undefined ? undefined : { memberId: leader.memberId, handle: leader.handle }
+    },
+    ledgerPosition: () => this.ledger?.position() ?? -1,
+    notify: async input => { await this.announceContinuationNudge(input) },
+    log: message => { this.ctx.logger.warn(`agent-team: ${message}`) },
+  })
+  /**
    * Team's domain half of the continuity projection: the durable ref naming,
    * the Team-notice rule, and the boundary judgement (committed messages,
    * claim changes, first Thread arrivals). Its claim attribution resolves the
@@ -828,6 +864,7 @@ export default class AgentTeam extends TypertRemoteService {
       this.recovery.dispose()
       this.responseGuard.dispose()
       this.supervisor.dispose()
+      this.continuationWatcher.dispose()
       this.contextManagement.dispose()
       this.pressurePolicy.dispose()
       if (this.attachmentGcTimer !== undefined) clearInterval(this.attachmentGcTimer)
@@ -864,8 +901,11 @@ export default class AgentTeam extends TypertRemoteService {
     }
     // Supervision starts only after the restore settled: a pass that ran while
     // Members were still activating would read every cold Session as an
-    // abnormal stop and start handing work over to fresh generations.
+    // abnormal stop and start handing work over to fresh generations. The
+    // continuation watcher rides the same restore gate — its pass would
+    // otherwise read the activation window as all-idle with open Tasks.
     this.supervisor.start()
+    this.continuationWatcher.start()
   }
 
   /**
@@ -1883,6 +1923,38 @@ export default class AgentTeam extends TypertRemoteService {
   }
 
   /**
+   * Delivery for the idle-continuation watcher: the nudge rides the ordinary
+   * mention path under the Human admin's voice, posted into the leader's
+   * Channel holding the most named open Tasks (ties fall back to the oldest),
+   * with the leader as the only explicit recipient. A throw is caught by the
+   * watcher and logged — the next episode retries.
+   */
+  private async announceContinuationNudge(input: { readonly workspaceId: WorkspaceId, readonly leader: ContinuationLeader, readonly tasks: readonly ContinuationTask[] }): Promise<void> {
+    const ledger = this.requireLedger()
+    const channels = ledger.channelsForMember(input.leader.memberId, input.workspaceId)
+    if (channels.length === 0) throw new Error(`leader '${input.leader.handle}' has no Channel in workspace '${input.workspaceId}'`)
+    const namedRefs = new Set(input.tasks.map(task => task.taskRef))
+    const openByChannel = new Map<AgentTeamChannelRef, number>()
+    for (const row of ledger.tasksForWorkspace({ workspaceId: input.workspaceId }).tasks) {
+      if (!namedRefs.has(row.taskRef)) continue
+      openByChannel.set(row.channelRef, (openByChannel.get(row.channelRef) ?? 0) + 1)
+    }
+    // channelsForMember is oldest-first; the stable sort keeps that order for
+    // ties, so open work that cannot be attributed to one Channel still lands
+    // on the leader's founding Channel.
+    const channelRef = [...channels].sort((a, b) => (openByChannel.get(b) ?? 0) - (openByChannel.get(a) ?? 0))[0]
+    if (channelRef === undefined) throw new Error(`leader '${input.leader.handle}' has no resolvable Channel in workspace '${input.workspaceId}'`)
+    await this.sendMessageAs(agentTeamHumanActor(), {
+      requestId: randomUUID() as AgentTeamRequestId,
+      workspaceId: input.workspaceId,
+      channelRef,
+      body: continuationNudgeText({ leaderHandle: input.leader.handle, tasks: input.tasks }),
+      recipients: [input.leader.memberId],
+      asTask: false,
+    })
+  }
+
+  /**
    * Step two: the Host performs the same context reset the Human menu performs
    * ({@link renewMemberContextNow} — durable renewal, generation retire, fresh
    * activation) on a Member nobody helped after the alert. This is the one
@@ -2355,6 +2427,13 @@ export default class AgentTeam extends TypertRemoteService {
   inbox(request: AgentTeamInboxRequest): AgentTeamInbox {
     this.requireWorkspace(request.workspaceId)
     return this.requireLedger().inbox(agentTeamHumanActor(), request)
+  }
+
+  /** Human's cross-Channel Task list: every Task with its sub-task linkage and live progress. */
+  @Remote('tasks')
+  tasks(request: AgentTeamTasksRequest): AgentTeamTasks {
+    this.requireWorkspace(request.workspaceId)
+    return this.requireLedger().tasksForWorkspace(request)
   }
 
   /** Human's durable, atomically acknowledged Thread read. */

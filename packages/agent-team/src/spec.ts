@@ -82,6 +82,8 @@ const memberSchema = z.object({
   model: modelSelectionSchema.optional(),
   // Ledgers written before member capabilities existed omit the field.
   capabilities: memberCapabilitiesSchema.optional(),
+  // Ledgers written before the leader designation existed omit the field.
+  leader: z.boolean().optional(),
   privateMemoryPath: z.string().min(1),
   state: z.union([z.literal('enabled'), z.literal('suspended'), z.literal('inactive'), z.literal('archived')]),
 }).strict()
@@ -147,7 +149,9 @@ const taskSchema = z.object({
   threadRef: threadRefSchema,
   status: z.union([z.literal('todo'), z.literal('in_progress'), z.literal('in_review'), z.literal('done'), z.literal('closed')]),
   resolution: z.union([z.literal('open'), z.literal('accepted'), z.literal('closed')]),
-}).strict()
+  // Ledgers written before Agent-split sub-tasks existed omit the field.
+  parentTaskRef: taskRefSchema.optional(),
+}).strict().transform(omitUndefined)
 
 const threadSchema = z.object({
   threadRef: threadRefSchema,

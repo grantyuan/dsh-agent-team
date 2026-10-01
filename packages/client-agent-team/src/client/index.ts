@@ -27,6 +27,7 @@ import type {
   AgentTeamResolveTaskRefsRequest,
   AgentTeamResolveThreadRefsRequest,
   AgentTeamTaskRequest,
+  AgentTeamTasksRequest,
   AgentTeamUpdateChannelRequest,
   AgentTeamUpdateMemberRequest,
   AgentTeamViewRequest,
@@ -133,6 +134,7 @@ function registerModeShadow<T extends object>(
   const sharedRemotes = {
     loadChannels: (request: AgentTeamViewRequest) => ctx.remote.agentTeam.view(request),
     loadInbox: (request: AgentTeamInboxRequest) => ctx.remote.agentTeam.inbox(request),
+    loadTasks: (request: AgentTeamTasksRequest) => ctx.remote.agentTeam.tasks(request),
     subscribeReads: (listener: () => void) => reads.subscribe(listener),
     subscribeChanges: (scope: TeamChangeScope, listener: TeamChangeListener) => changes.subscribe(scope, listener),
     drafts,

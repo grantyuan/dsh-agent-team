@@ -26,9 +26,9 @@ When a Member rolls over to a fresh context through `context_rollover`, the Agen
 
 Live Members (active availability) also get two context actions in the row menu: 重置 (reset) renews the Member Session through `clearMemberContext` behind a destructive confirm and rebinds an embedded seat to the renewed Session, and 压缩 (compact) schedules one context compaction through `compactMemberContext`, optionally pinning the summarization LLM in the same model picker the editors use — the dialog acknowledges at schedule time, because the Host runs the reduction behind the Member's current activity.
 
-The narrow rail's three icon buttons read top-down Inbox (`IconQueueOutline14` at 16px) → Channels (`IconListPenOutline16`) → Agents (`IconAgentPresetOutline16`); none reuse the checklist (Task) or member icons.
+The narrow rail's four icon buttons read top-down Inbox (`IconQueueOutline14` at 16px) → Tasks (`IconChecklistOutlineRegular`) → Channels (`IconListPenOutline16`) → Agents (`IconAgentPresetOutline16`); none reuse the checklist (Task) or member icons.
 
-The Inbox icon is a destination: clicking it opens the Inbox page and expands the sidebar; the Channels/Agents icons expand the sidebar and focus their section header. Agent creation carries no Channel page and the Agent editor carries no membership section: Channel membership is managed from the Channel side (create-dialog initial members, Channel editor member rows, and the member-management dialog); a Channel-less Member stays reachable through its DM view.
+The Inbox icon is a destination: clicking it opens the Inbox page and expands the sidebar; the Tasks icon opens the Tasks page the same way; the Channels/Agents icons expand the sidebar and focus their section header. Agent creation carries no Channel page and the Agent editor carries no membership section: Channel membership is managed from the Channel side (create-dialog initial members, Channel editor member rows, and the member-management dialog); a Channel-less Member stays reachable through its DM view.
 
 The create dialog is also the one import entry: a single disclosure button toggles between creating a new Member and bringing an existing one in from another Workspace. The import view reuses the shared `TeamMemberRow` roster and offers only Members that exist globally and do not yet participate here (suspended Members included — joining does not depend on availability); confirming routes the durable `joinWorkspace` and the row appears through the workspace refetch, with retry reusing the exact failed request.
 
@@ -59,7 +59,9 @@ The number lives in the control's accessible name on both rails (`收件箱，6 
 
 While the Inbox page stands, the card/icon carries `aria-current="page"` — and the rail icon wears the card's own current-page fill, because the icon-only rail has no label and the fill is the only thing that can say where the reader is.
 
-`TeamConversation` renders a fourth face: Thread | Channel | Inbox | welcome. Selecting Inbox clears the Channel/Thread faces; selecting a Workspace, Channel, or Thread clears the Inbox. From an Inbox row, Back lands on that row's Channel — the Inbox is never pushed onto the back path; re-enter it through the card or the rail icon.
+`TeamConversation` renders a fifth face: Thread | Channel | Inbox | Tasks | welcome. Selecting Inbox or Tasks clears the Channel/Thread faces and each other; selecting a Workspace, Channel, or Thread clears both. From an Inbox row, Back lands on that row's Channel — the Inbox is never pushed onto the back path; re-enter it through the card or the rail icon.
+
+The Tasks page keeps the same global-position discipline as the Inbox: a durable navigation face, merged across Workspaces, with a scope-less subscription; a row click lands on that Task's Thread through the same select-Thread path the Inbox row uses.
 
 ### Page frame and header
 
@@ -120,3 +122,11 @@ The empty state speaks the shared empty-state language — the same 13px `strong
 While the page is open it subscribes once without a change scope and refetches the list on every wake; closed, the fetches stop.
 
 The badge subscribes the same way for its totals and re-pulls only totals (`limit: 1`), never lists. The badge additionally refreshes from every completed durable Thread read: the Host's changes stream deliberately never wakes on reads (a read changes no shared projection), but the read consumes this reader's unread facts, markers included.
+
+## Tasks (任务)
+
+The Tasks page is the Human's cross-Workspace Task list: every Task with its sub-task linkage and live progress, readable without opening a Thread. It reuses the Inbox page frame — the same shared surface classes, the two-section rhythm (进行中 above 已完成), and the section counts — and the Inbox row geometry: a status dot in the gutter, the crumb line naming the Workspace when more than one participates, the per-Channel ordinal chip, the derived status, owners as an avatar stack, and the relative instant trailing.
+
+A parent row adds its sub-task progress (`n/m 子任务`); the subject is the preview line. Sub-tasks indent one step under their parent; a row whose parent is itself a sub-task, or whose parent row is absent from the list, flattens to top level — the list never hides a row behind a missing link. Clicking a row selects that row's Workspace and opens the Task's Thread.
+
+The empty state speaks the shared pair (「还没有任务」 plus its hint); loading, error, and retry reuse the shared conversation classes. While open, the page fetches each participated Workspace once and subscribes without a change scope, refetching on every wake; closed, the fetches stop.

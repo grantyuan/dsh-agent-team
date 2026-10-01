@@ -24,6 +24,7 @@ const UI06_SHOTS = join(BROWSER_ARTIFACTS, 'ui-06')
 const UI07_SHOTS = join(BROWSER_ARTIFACTS, 'ui-07')
 const UI08_SHOTS = join(BROWSER_ARTIFACTS, 'ui-08')
 const UI09_SHOTS = join(BROWSER_ARTIFACTS, 'ui-09')
+const UI10_SHOTS = join(BROWSER_ARTIFACTS, 'ui-10')
 let scaffold: WebScaffold | undefined
 let browser: Browser | undefined
 
@@ -261,6 +262,7 @@ async function installLocalBundle(clearArtifacts = true): Promise<void> {
   await mkdir(UI07_SHOTS, { recursive: true })
   await mkdir(UI08_SHOTS, { recursive: true })
   await mkdir(UI09_SHOTS, { recursive: true })
+  await mkdir(UI10_SHOTS, { recursive: true })
 }
 
 it('drives the complete opt-in Agent Team journey in real Web', async () => {
@@ -1701,13 +1703,14 @@ it('drives the complete opt-in Agent Team journey in real Web', async () => {
   expect(scaffold.ctx.agentTeam.inbox({ workspaceId: inboxWorkspace.id }).totalUnreadCount).toBe(baseUnread + 3)
   await expectSidebarUnread(String(baseUnread + 3))
 
-  // Narrow rail: 收件箱 → Channels → Agents, unread marked on the first icon, and
-  // the icon is a destination that opens the Inbox page and expands the sidebar.
+  // Narrow rail: 收件箱 → 任务 → Channels → Agents, unread marked on the first
+  // icon, and the icon is a destination that opens the Inbox page and expands
+  // the sidebar.
   await page.setViewportSize({ width: 390, height: 844 })
   const inboxRail = page.locator('nav[class*="railWorkspace"]')
   await inboxRail.waitFor()
   const railLabels = await inboxRail.locator('button').evaluateAll(buttons => buttons.map(button => button.getAttribute('aria-label')))
-  expect(railLabels).toEqual([`收件箱，${baseUnread + 3} 条未读`, '频道', 'Agents'])
+  expect(railLabels).toEqual([`收件箱，${baseUnread + 3} 条未读`, '任务', '频道', 'Agents'])
   await expectSidebarUnread(String(baseUnread + 3))
   // The dot replaced the number on the surface, so the rail's hover hint is where
   // a reader still meets the quantity without opening the page: the same name the
@@ -2122,6 +2125,55 @@ it('drives the complete opt-in Agent Team journey in real Web', async () => {
   expect(stackBox.width).toBe(clusterWidth(stackItem.claimOwners.length))
   expect(stackBox.inset).toBe(stackBox.width + 8)
   await page.screenshot({ path: join(UI07_SHOTS, 'inbox-row-owners-desktop.png'), fullPage: true })
+
+  // The Tasks page is the Human's whole-Team view of the same ledger the Inbox
+  // queue reads: every Task with its live standing, and the sub-tasks an Agent
+  // split underneath their parent, the parent carrying the done/total progress
+  // count. The sub-task is seeded here on a real Host fact — a taskful start
+  // naming the stack Task as its parent — because the indented child and the
+  // count beside the parent are the one shape this page exists for.
+  const subtaskStarted = await scaffold.ctx.agentTeam.sendMessageForAgent(inboxAgent, {
+    requestId: 'm2-09-stack-subtask' as never, workspaceId: inboxWorkspace.id, channelRef: deliveryChannel.channelRef,
+    asTask: true, parentTaskRef: stackTaskRef, body: '叠放校验：拆分出的第一步',
+  })
+  if (subtaskStarted.kind !== 'committed') throw new Error(`subtask fixture was rejected: ${subtaskStarted.kind}`)
+  await page.locator('button[class*="tasksCard"]').click()
+  await page.locator('[data-team-tasks]').waitFor()
+  await expect.poll(async () => await page.locator('button[class*="tasksCard"]').getAttribute('aria-current')).toBe('page')
+  // The parent leads its group: its standing word, then the progress count the
+  // page derives from the rows under it — 0 of 1 done while the split step still
+  // waits — and the child renders indented under it, one row per Task, both open.
+  const tasksParentRow = page.locator('[data-team-tasks] button').filter({ hasText: '叠放校验：谁在这个 Task 上' })
+  await expect.poll(async () => await tasksParentRow.count()).toBe(1)
+  expect(await tasksParentRow.textContent()).toContain('进行中')
+  expect(await tasksParentRow.textContent()).toContain('子任务 0/1')
+  const tasksChildRow = page.locator('[data-team-tasks] button').filter({ hasText: '叠放校验：拆分出的第一步' })
+  await expect.poll(async () => await tasksChildRow.count()).toBe(1)
+  expect(await tasksChildRow.getAttribute('class')).toContain('subtask')
+  expect(await tasksChildRow.textContent()).toContain('待处理')
+  // Finished work stands in its own section behind the open work — the journey's
+  // first Task ended closed, so the section is populated here, not assumed.
+  await page.getByRole('heading', { name: '已完成' }).waitFor()
+  expect(await page.locator('[data-team-tasks] button').filter({ hasText: '已关闭' }).count()).toBeGreaterThanOrEqual(1)
+  await settleLayout(page)
+  await page.screenshot({ path: join(UI10_SHOTS, 'tasks-page-desktop.png'), fullPage: true })
+  // Opening a row navigates to the Task's Thread; viewing acknowledges nothing.
+  await tasksParentRow.click()
+  await page.locator('[data-team-thread]').waitFor()
+  await page.getByRole('button', { name: '返回频道' }).click()
+  await page.getByRole('heading', { name: '# delivery' }).waitFor()
+  // Narrow: the Tasks entry is the second rail button, and the page it opens
+  // keeps every row inside the 390px frame.
+  await page.setViewportSize({ width: 390, height: 844 })
+  const tasksRailButton = page.getByRole('button', { name: '任务', exact: true })
+  await tasksRailButton.click()
+  await page.locator('[data-team-tasks]').waitFor()
+  // Back off the control so the settled screenshot shows the rail, not the bubble.
+  await page.mouse.move(300, 600)
+  expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(390)
+  await settleAnimations(page)
+  await page.screenshot({ path: join(UI10_SHOTS, 'tasks-page-narrow.png'), fullPage: true })
+  await page.setViewportSize({ width: 1440, height: 960 })
 
   // Losing the Host connection surfaces the failure in two places, and both
   // must read as states rather than as drift: the Channel body centers in the

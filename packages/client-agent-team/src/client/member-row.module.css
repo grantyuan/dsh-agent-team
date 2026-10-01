@@ -44,6 +44,22 @@
   white-space: nowrap;
 }
 
+/* The leader badge rides the handle line: one quiet chip, the same hairline
+   grammar the Inbox row's Task marker speaks, so the designated Member reads
+   as marked — not as decorated. */
+.leader {
+  border: 1px solid var(--dsw-alias-border-l2);
+  border-radius: var(--dsw-radius-sm, 6px);
+  color: var(--dsw-alias-label-secondary);
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 14px;
+  margin-left: 5px;
+  padding: 0 4px;
+  vertical-align: 1px;
+  white-space: nowrap;
+}
+
 /* The description annotates the handle, never competes with it: one step down
    in both size and tone. */
 .copy small {

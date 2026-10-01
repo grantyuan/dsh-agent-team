@@ -120,6 +120,12 @@ export interface AgentTeamUpdateMemberRequest {
   readonly model?: AgentTeamModelSelection
   /** Absent clears any capability override, matching `model`. */
   readonly capabilities?: AgentTeamMemberCapabilities
+  /**
+   * Designate or un-designate this Member as the Team's leader — the Member
+   * the idle continuation watcher nudges when every Agent is stopped with
+   * Tasks still open. Omitted keeps the stored designation.
+   */
+  readonly leader?: boolean
 }
 
 /** Human intent to suspend or resume one Agent Member. */
@@ -367,6 +373,13 @@ export interface AgentTeamSendMessageRequest {
    * atomic Message+Thread+Task path. New composer/tool seams pass false explicitly.
    */
   readonly asTask?: boolean
+  /**
+   * Create the Task as an Agent-split sub-task of this Task. Optional, and
+   * only meaningful with a Task creation (asTask omitted or true). Full or
+   * unambiguous abbreviated ref; the ledger resolves it inside the workspace
+   * and requires the parent to live in the same Channel.
+   */
+  readonly parentTaskRef?: AgentTeamTaskRef
 }
 
 /** Upload one composer attachment into the Team attachment cache. */
@@ -819,6 +832,41 @@ export interface AgentTeamInbox {
   readonly recent: readonly AgentTeamInboxItem[]
   readonly totalUnreadCount: number
   readonly totalDirectCount: number
+}
+
+/** Human intent to read the Workspace's whole Task list with progress facts. */
+export interface AgentTeamTasksRequest {
+  readonly workspaceId: WorkspaceId
+}
+
+/**
+ * One row of the Human Task list: a Task, its Thread identity, and the facts a
+ * row draws without a per-row Member or Thread view. Status follows the same
+ * derived rule the results and radar use, so the list never disagrees with a
+ * Thread heading about where a Task stands.
+ */
+export interface AgentTeamTaskRow {
+  readonly taskRef: AgentTeamTaskRef
+  readonly threadRef: AgentTeamThreadRef
+  readonly channelRef: AgentTeamChannelRef
+  /** The Task's ordinal inside its home Channel. */
+  readonly taskNumber: number
+  readonly status: AgentTeamTask['status']
+  readonly resolution: AgentTeamTask['resolution']
+  /** The Thread's opening line, trimmed and capped at 120 characters — the same bound the Inbox row uses. */
+  readonly subject: string
+  /** Parent Task when this Task is an Agent-split sub-task; absent on top-level Tasks. */
+  readonly parentTaskRef?: AgentTeamTaskRef
+  /** Owners of the Task's live Claims, in claim order, deduped — the same rule the Inbox row uses. */
+  readonly claimOwners: readonly AgentTeamInboxActor[]
+  /** Instant of the newest fact on this Thread. */
+  readonly lastActivityAt: string
+}
+
+/** The Human Task list projection: every Task in the Workspace, newest Channel ordinal last. */
+export interface AgentTeamTasks {
+  readonly humanMemberId: AgentTeamMemberId
+  readonly tasks: readonly AgentTeamTaskRow[]
 }
 
 /** Request to atomically receive and acknowledge one contiguous Thread batch. */

@@ -32,7 +32,7 @@ Agent 卡片会话视图：Agent 行的头像与文案整体是选择按钮（`�
 
 Member 经 `context_rollover` 换新上下文时，Agents 面板观察该 Member 的旧→新 Session 绑定，仅在嵌入页正是被观察的旧 live Session id 时恰好跟随一次，归档视图不跳转。
 
-窄屏 rail 三个图标按钮自上而下：收件箱（`IconQueueOutline14`，16px）→ 频道（`IconListPenOutline16`）→ Agents（`IconAgentPresetOutline16`）；不复用 checklist（任务）或 user（成员）图标。收件箱图标是目的地：点击打开 Inbox 页并请求展开侧栏；频道/Agents 图标点击请求展开侧栏并聚焦对应分区头部。
+窄屏 rail 四个图标按钮自上而下：收件箱（`IconQueueOutline14`，16px）→ 任务（`IconChecklistOutlineRegular`）→ 频道（`IconListPenOutline16`）→ Agents（`IconAgentPresetOutline16`）；不复用 checklist（任务）或 user（成员）图标。收件箱图标是目的地：点击打开 Inbox 页并请求展开侧栏；任务图标以同样方式打开 Tasks 页；频道/Agents 图标点击请求展开侧栏并聚焦对应分区头部。
 
 Agent 创建流程没有频道选择页，Agent 编辑器没有成员区块——频道成员只在频道侧管理（创建对话框初始成员、频道编辑器成员行、成员管理对话框）；未入频道的 Member 仍可经 DM 触达。
 
@@ -62,7 +62,9 @@ slot 选举摘不掉别的插件注册的列表行、入口文案又是本地化
 
 Inbox 页作为屏上面孔时卡片/图标携带 `aria-current='page'`，窄轨那枚图标还带上卡片同款当前页底色——rail 没有文字，底色是它唯一能说「你在这」的东西；被嵌入的成员会话覆盖期间它只是被记住的位置，不携带高亮。
 
-`TeamConversation` 第四个面：Thread | Channel | Inbox | welcome。选 Inbox 清掉 Channel/Thread 面；选 Workspace、Channel 或 Thread 清掉 Inbox。从 Inbox 行进入 Thread 后，Back 落在该行 Thread 的频道——Inbox 不进返回栈；再进 Inbox 走左侧卡片或窄轨图标。
+`TeamConversation` 第五个面：Thread | Channel | Inbox | Tasks | welcome。选 Inbox 或 Tasks 清掉 Channel/Thread 面并互斥；选 Workspace、Channel 或 Thread 清掉两者。从 Inbox 行进入 Thread 后，Back 落在该行 Thread 的频道——Inbox 不进返回栈；再进 Inbox 走左侧卡片或窄轨图标。
+
+Tasks 页保持与 Inbox 相同的全局位置纪律：持久的导航 face、跨 Workspace 合并、无 scope 订阅；行点击经与 Inbox 行相同的 select-Thread 路径落到该 Task 的 Thread。
 
 ### 页面框架与页头
 
@@ -111,3 +113,11 @@ Inbox 页作为屏上面孔时卡片/图标携带 `aria-current='page'`，窄轨
 空态讲**共享空态语言**（与 Channel/Thread 同一套 13px `strong` 标题 + 12px 提示），文案「收件箱是空的」+「你参与的 Thread 有新活动、或有人提到你时，会出现在这里」；loading/error/retry 复用共享对话类，后台刷新失败保留行并以 `role='alert'`、`--dsw-alias-state-error-primary` 报告。
 
 Inbox 页打开时订一次无 scope 的 changes，唤醒重拉列表，离开即停。徽标同法订阅，唤醒只重拉合计（`limit: 1`），绝不拉列表。徽标还会在每次 durable Thread read 完成后直接刷新——Host 的 changes 对 read 刻意不唤醒（read 不改变任何共享 projection），但该 read 消费了读者自己的未读（含 mention marker）。
+
+## 任务（Tasks）
+
+Tasks 页是 Human 的跨 Workspace 任务列表：每个 Task 连同子任务关联与实时进度尽收一页，不必点开 Thread 即可读进度。它复用 Inbox 页框架——同一套共享 surface 类、两段节奏（进行中在上、已完成在下）与段计数——以及 Inbox 行几何：gutter 里一枚状态点，crumb 行在参与 Workspace 多于一个时带 Workspace 标题、per-Channel 任务序号 chip、派生 status，owners 以头像堆叠呈现、相对时间收尾。
+
+父行另带子任务进度（`子任务 n/m`）；subject 是预览行。子任务在父行下缩进一级；父行自身也是子任务、或其父行不在列表中时，该行回退为顶层——列表绝不因缺失关联而隐藏一行。点击一行选中该行 Workspace 并打开 Task 的 Thread。
+
+空态讲共享的一对文案（「还没有任务」+ 提示）；loading/error/retry 复用共享对话类。页面打开时对每个参与的 Workspace 各拉一次列表，并订阅无 scope 的 changes、唤醒重拉；离开即停。

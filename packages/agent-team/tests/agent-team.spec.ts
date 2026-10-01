@@ -21,7 +21,7 @@ import AgentTeam, { AGENT_TEAM_HUMAN_HANDLE, AGENT_TEAM_HUMAN_MEMBER_ID, AGENT_T
 import { AgentTeamLedger, agentTeamHumanActor, isThreadReadSnapshot } from '../src/ledger.ts'
 import { agentTeamDomainSpec } from '../src/spec.ts'
 import * as agentTeamInvariant from '../src/invariant.ts'
-import type { AgentTeamAgentMember, AgentTeamMemberActor, AgentTeamOperation, AgentTeamOperationId, AgentTeamRequestId, AgentTeamTask, AgentTeamTaskRef, AgentTeamThreadReadData, AgentTeamThreadReadOperation, AgentTeamThreadReadReceipt, AgentTeamThreadReadResult, AgentTeamThreadRef } from '../src/types.ts'
+import type { AgentTeamAgentMember, AgentTeamChannelRef, AgentTeamMemberActor, AgentTeamOperation, AgentTeamOperationId, AgentTeamRequestId, AgentTeamTask, AgentTeamTaskRef, AgentTeamThreadReadData, AgentTeamThreadReadOperation, AgentTeamThreadReadReceipt, AgentTeamThreadReadResult, AgentTeamThreadRef } from '../src/types.ts'
 
 interface TeamHarness {
   readonly ctx: Context
@@ -2567,5 +2567,136 @@ describe('body-authored mentions', () => {
     ledger.setHumanDisplayHandle('YuCreate')
     await expect(enroll(ledger, channelRef, 'human')).rejects.toThrow('reserved human alias')
     await expect(enroll(ledger, channelRef, 'Human')).rejects.toThrow('reserved human alias')
+  })
+})
+
+describe('AgentTeam Task list and sub-task ledger', () => {
+  const engineeringChannel = async (test: TeamHarness): Promise<AgentTeamChannelRef> => {
+    const channel = await test.ctx.agentTeam.createChannel({ requestId: requestId(`channel:${crypto.randomUUID()}`), workspaceId: alpha, name: 'engineering', description: 'Engineering work' })
+    return channel.channel.channelRef
+  }
+
+  const startTask = async (ledger: AgentTeamLedger, channelRef: AgentTeamChannelRef, actor: AgentTeamMemberActor, id: string, body: string, parentTaskRef?: AgentTeamTaskRef) =>
+    withTask(committed((await ledger.sendMessage({ requestId: requestId(id), workspaceId: alpha, channelRef, body, asTask: true, ...(parentTaskRef === undefined ? {} : { parentTaskRef }), actor })).value))
+
+  it('files a sub-task under an open parent in the same Channel and projects both lists', async () => {
+    const test = await harness()
+    const channelRef = await engineeringChannel(test)
+    const ledger = replayLedger(test)
+    const { actor } = await addLedgerMember(ledger, channelRef)
+    const parent = await startTask(ledger, channelRef, actor, 'parent', 'Investigate the regression')
+    const child = await startTask(ledger, channelRef, actor, 'child', 'Sub: collect stack traces', parent.task.taskRef)
+    expect(child.task.parentTaskRef).toBe(parent.task.taskRef)
+    expect(parent.task.parentTaskRef).toBeUndefined()
+
+    const tasks = ledger.tasksForWorkspace({ workspaceId: alpha })
+    expect(tasks.humanMemberId).toBe(AGENT_TEAM_HUMAN_MEMBER_ID)
+    expect(tasks.tasks.map(row => [row.taskNumber, row.subject, row.parentTaskRef ?? null])).toEqual([
+      [1, 'Investigate the regression', null],
+      [2, 'Sub: collect stack traces', parent.task.taskRef],
+    ])
+    const watch = ledger.incompleteTasksForWatch()
+    expect(watch.map(row => row.taskRef).sort()).toEqual([parent.task.taskRef, child.task.taskRef].sort())
+    expect(watch.every(row => row.workspaceId === alpha)).toBe(true)
+
+    // Claiming the child moves its derived status and names its owner without
+    // touching the parent row.
+    await ledger.changeClaim({ requestId: requestId('claim'), workspaceId: alpha, taskRef: child.task.taskRef,
+      action: 'claim', direction: 'Implement', baseRevision: child.thread.revision, actor })
+    const rows = ledger.tasksForWorkspace({ workspaceId: alpha }).tasks
+    expect(rows.find(row => row.taskRef === child.task.taskRef)).toMatchObject({ status: 'in_progress', parentTaskRef: parent.task.taskRef,
+      claimOwners: [expect.objectContaining({ memberId: actor.memberId })] })
+    expect(rows.find(row => row.taskRef === parent.task.taskRef)?.status).toBe('todo')
+    expect(ledger.incompleteTasksForWatch().find(row => row.taskRef === child.task.taskRef)?.status).toBe('in_progress')
+    replayLedger(test).validate()
+  })
+
+  it('rejects a sub-task whose parent is unknown, cross-Channel, or closed', async () => {
+    const test = await harness()
+    const channelRef = await engineeringChannel(test)
+    const ledger = replayLedger(test)
+    const { actor } = await addLedgerMember(ledger, channelRef)
+    const parent = await startTask(ledger, channelRef, actor, 'parent', 'Parent')
+    await expect(ledger.sendMessage({ requestId: requestId('sub-unknown'), workspaceId: alpha, channelRef, body: 'Sub',
+      asTask: true, parentTaskRef: 'task:deadbe' as never, actor })).rejects.toThrow(/unknown Task 'task:deadbe'/)
+    await expect(ledger.sendMessage({ requestId: requestId('sub-taskless'), workspaceId: alpha, channelRef, body: 'Sub',
+      asTask: false, parentTaskRef: parent.task.taskRef, actor })).rejects.toThrow(/parentTaskRef requires a Task creation/)
+
+    const other = (await ledger.createChannel({ requestId: requestId('other'), workspaceId: alpha,
+      name: 'audit', description: '', memberIds: [actor.memberId], actor: agentTeamHumanActor() })).value.channel
+    await expect(ledger.sendMessage({ requestId: requestId('sub-cross'), workspaceId: alpha, channelRef: other.channelRef,
+      body: 'Sub', asTask: true, parentTaskRef: parent.task.taskRef, actor })).rejects.toThrow(/a sub-task must live in its parent's Channel/)
+
+    await ledger.changeTask({ requestId: requestId('close'), workspaceId: alpha, taskRef: parent.task.taskRef,
+      action: 'close', baseRevision: parent.thread.revision, actor: agentTeamHumanActor() })
+    await expect(ledger.sendMessage({ requestId: requestId('sub-closed'), workspaceId: alpha, channelRef, body: 'Sub',
+      asTask: true, parentTaskRef: parent.task.taskRef, actor })).rejects.toThrow(/is closed; reopen it before adding sub-tasks/)
+    replayLedger(test).validate()
+  })
+
+  it('resolves an abbreviated parentTaskRef and stores the full ref', async () => {
+    const test = await harness()
+    const channelRef = await engineeringChannel(test)
+    const ledger = replayLedger(test)
+    const { actor } = await addLedgerMember(ledger, channelRef)
+    const parent = await startTask(ledger, channelRef, actor, 'parent', 'Parent')
+    const prefix = `${parent.task.taskRef.slice(0, 'task:'.length + 6)}` as never
+    const child = await startTask(ledger, channelRef, actor, 'child', 'Sub', prefix)
+    expect(child.task.parentTaskRef).toBe(parent.task.taskRef)
+  })
+
+  it('replays a sub-task send idempotently and treats a different parent as a collision', async () => {
+    const test = await harness()
+    const channelRef = await engineeringChannel(test)
+    const ledger = replayLedger(test)
+    const { actor } = await addLedgerMember(ledger, channelRef)
+    const first = await startTask(ledger, channelRef, actor, 'first', 'First')
+    const second = await startTask(ledger, channelRef, actor, 'second', 'Second')
+    const send = { requestId: requestId('sub'), workspaceId: alpha, channelRef, body: 'Sub', asTask: true, parentTaskRef: first.task.taskRef, actor }
+    const child = await startTask(ledger, channelRef, actor, 'sub', 'Sub', first.task.taskRef)
+    const retry = await ledger.sendMessage(send)
+    expect(retry.committed).toBe(false)
+    expect(withTask(retry.value).task.taskRef).toBe(child.task.taskRef)
+    await expect(ledger.sendMessage({ ...send, parentTaskRef: second.task.taskRef })).rejects.toThrow(/was reused with a different operation or payload/)
+    replayLedger(test).validate()
+  })
+
+  it('keeps finished statuses off the watcher list and archived Channels off the Task list', async () => {
+    const test = await harness()
+    const channelRef = await engineeringChannel(test)
+    const ledger = replayLedger(test)
+    const { actor } = await addLedgerMember(ledger, channelRef)
+    const accepted = await startTask(ledger, channelRef, actor, 'accepted', 'Accepted')
+    const closed = await startTask(ledger, channelRef, actor, 'closed', 'Closed')
+    const archived = await startTask(ledger, channelRef, actor, 'archived', 'Archived')
+    await ledger.changeTask({ requestId: requestId('accept'), workspaceId: alpha, taskRef: accepted.task.taskRef,
+      action: 'accept', baseRevision: accepted.thread.revision, actor: agentTeamHumanActor() })
+    await ledger.changeTask({ requestId: requestId('close'), workspaceId: alpha, taskRef: closed.task.taskRef,
+      action: 'close', baseRevision: closed.thread.revision, actor: agentTeamHumanActor() })
+
+    const before = ledger.tasksForWorkspace({ workspaceId: alpha }).tasks
+    expect(before.map(row => row.status)).toEqual(['done', 'closed', 'todo'])
+    expect(ledger.incompleteTasksForWatch().map(row => row.taskRef)).toEqual([archived.task.taskRef])
+
+    await ledger.archiveChannel({ requestId: requestId('ch-arch'), workspaceId: alpha, channelRef, actor: agentTeamHumanActor() })
+    expect(ledger.tasksForWorkspace({ workspaceId: alpha }).tasks).toEqual([])
+    expect(ledger.incompleteTasksForWatch()).toEqual([])
+    replayLedger(test).validate()
+  })
+
+  it('designates the Team leader, keeps it across absent edits, and replays the designation', async () => {
+    const test = await harness()
+    const channelRef = await engineeringChannel(test)
+    const ledger = replayLedger(test)
+    const { member } = await addLedgerMember(ledger, channelRef)
+    const base = { memberId: member.memberId, handle: member.handle, description: member.description, actor: agentTeamHumanActor() }
+    expect((await ledger.updateMember({ ...base, requestId: requestId('designate'), leader: true })).value.member.leader).toBe(true)
+    // An edit that omits the flag keeps the stored designation, unlike model
+    // and capabilities whose absence clears their override.
+    expect((await ledger.updateMember({ ...base, requestId: requestId('rename'), description: 'Updated description' })).value.member.leader).toBe(true)
+    expect((await ledger.updateMember({ ...base, requestId: requestId('clear'), leader: false })).value.member.leader).toBe(false)
+    await ledger.updateMember({ ...base, requestId: requestId('redesignate'), leader: true })
+    expect(replayLedger(test).getMember(member.memberId)?.leader).toBe(true)
+    replayLedger(test).validate()
   })
 })

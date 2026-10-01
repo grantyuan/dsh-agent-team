@@ -96,6 +96,9 @@ import type {
   AgentTeamTaskRequest,
   AgentTeamTaskResult,
   AgentTeamTaskRef,
+  AgentTeamTaskRow,
+  AgentTeamTasks,
+  AgentTeamTasksRequest,
   AgentTeamThread,
   AgentTeamThreadAttention,
   AgentTeamThreadAttentionChangedOperation,
@@ -698,6 +701,7 @@ export class AgentTeamLedger {
         ...priorWithoutOverlays, handle, description,
         ...(request.model === undefined ? {} : { model: Object.freeze({ ...request.model }) }),
         ...freezeCapabilities(request.capabilities),
+        ...(request.leader === undefined ? {} : { leader: request.leader }),
       })
       const operation: AgentTeamMemberUpdatedOperation = Object.freeze({
         ...this.operationBase(request, this.nextSequence()), kind: 'team/member-updated',
@@ -873,6 +877,16 @@ export class AgentTeamLedger {
 
   listMembers(): readonly AgentTeamAgentMember[] {
     return Object.freeze([...this.state.members.values()])
+  }
+
+  /**
+   * The durable ledger position: the count of committed operations. Unlike the
+   * Client-facing projection version it moves on every commit, including
+   * private read progress — the idle-continuation watcher compares it between
+   * passes so any Team activity resets the quiet hold.
+   */
+  position(): number {
+    return this.state.ordered.length
   }
 
   /**
@@ -1093,9 +1107,10 @@ export class AgentTeamLedger {
       // operation carries the merged set, so a retry has to re-derive the same
       // list for the collision check to prove it is the same request.
       const recipients = this.mergeBodyMentions(actor.memberId, channel.channelRef, body, this.normalizeRecipients(request.actor, request.recipients))
+      const parentTaskRef = this.resolveParentTaskRef(request, channel.channelRef)
       const existing = this.state.byRequest.get(request.requestId)
       if (existing !== undefined) {
-        this.assertSameMessage(existing, request, recipients)
+        this.assertSameMessage(existing, request, recipients, parentTaskRef)
         return this.resolved(this.messageResult(existing))
       }
       this.assertMentionTargets(channel, recipients)
@@ -1108,7 +1123,8 @@ export class AgentTeamLedger {
       const threadRef = this.ref('thread')
       const taskRef = asTask ? this.ref('task') : undefined
       const task = taskRef === undefined ? undefined
-        : Object.freeze({ taskRef, channelRef: channel.channelRef, threadRef, status: 'todo' as const, resolution: 'open' as const })
+        : Object.freeze({ taskRef, channelRef: channel.channelRef, threadRef, status: 'todo' as const, resolution: 'open' as const,
+          ...(parentTaskRef === undefined ? {} : { parentTaskRef }) })
       const thread: AgentTeamThread = Object.freeze({ threadRef, ...(taskRef === undefined ? {} : { taskRef }), revision: sequence })
       const message: AgentTeamMessage = Object.freeze({
         messageRef: this.ref('message'), channelRef: channel.channelRef, threadRef, ...(taskRef === undefined ? {} : { taskRef }),
@@ -1850,6 +1866,65 @@ export class AgentTeamLedger {
       resolved.push(Object.freeze({ taskRef: task.taskRef, channelRef: task.channelRef, threadRef: task.threadRef, taskNumber: numbers.get(task.taskRef) ?? 0 }))
     }
     return resolved
+  }
+
+  /**
+   * The Human Task list projection: every Task in the Workspace, its home
+   * Channel ordinal order, with the facts one row draws without a per-row
+   * Member or Thread view. Status follows the one derived rule the results
+   * and radar use, so the list never disagrees with a Thread heading about
+   * where a Task stands. Sub-task trees assemble client-side from
+   * `parentTaskRef`; the ledger stays flat, exactly like the projection it
+   * derives from.
+   */
+  tasksForWorkspace(request: AgentTeamTasksRequest): AgentTeamTasks {
+    const numbers = this.taskNumbers(request.workspaceId)
+    const rows = [...this.state.tasks.values()]
+      .filter(task => this.workspaceOfTask(task) === request.workspaceId)
+      .map(task => this.taskRowFor(task, numbers))
+      .sort((left, right) => left.taskNumber - right.taskNumber || left.taskRef.localeCompare(right.taskRef))
+    const initialization = this.initialization()
+    return Object.freeze({ humanMemberId: initialization.data.humanMemberId, tasks: Object.freeze(rows) })
+  }
+
+  /**
+   * Open Tasks across every Workspace for the Host's idle continuation
+   * watcher; not an RPC surface. Status follows the same derived rule as the
+   * Task list, so the watcher and the Human Task list can never disagree
+   * about what still counts as open.
+   */
+  incompleteTasksForWatch(): readonly (AgentTeamTaskRow & { readonly workspaceId: WorkspaceId })[] {
+    return [...this.state.tasks.values()].flatMap(task => {
+      const workspaceId = this.workspaceOfTask(task)
+      if (workspaceId === undefined) return []
+      const row = this.taskRowFor(task, this.state.taskNumberByTask)
+      return row.status === 'done' || row.status === 'closed'
+        ? []
+        : [Object.freeze({ ...row, workspaceId })]
+    })
+  }
+
+  /** The Workspace one Task lives in, or undefined when its Channel is archived (hidden from every surface). */
+  private workspaceOfTask(task: AgentTeamTask): WorkspaceId | undefined {
+    const channel = this.state.channels.get(task.channelRef)
+    return channel === undefined || channel.state === 'archived' ? undefined : channel.workspaceId
+  }
+
+  /** One Task-list row; the single mapping behind the Human read and the watcher. */
+  private taskRowFor(task: AgentTeamTask, numbers: ReadonlyMap<AgentTeamTaskRef, number>): AgentTeamTaskRow {
+    const newest = (this.state.factsByThread.get(task.threadRef) ?? []).at(-1)
+    return Object.freeze({
+      taskRef: task.taskRef,
+      threadRef: task.threadRef,
+      channelRef: task.channelRef,
+      taskNumber: numbers.get(task.taskRef) ?? 0,
+      status: this.deriveResolvedTaskStatus(task, this.state.claims.values()),
+      resolution: task.resolution,
+      subject: boundedInboxPreview(this.threadAnchor(task.threadRef).body),
+      ...(task.parentTaskRef === undefined ? {} : { parentTaskRef: task.parentTaskRef }),
+      claimOwners: this.liveClaimOwners(task),
+      lastActivityAt: newest?.occurredAt ?? '',
+    })
   }
 
   view(request: AgentTeamViewRequest, memberId?: AgentTeamMemberId): AgentTeamView {
@@ -4193,7 +4268,8 @@ export class AgentTeamLedger {
       || operation.data.member.memberId !== request.memberId || operation.data.member.handle !== request.handle.trim()
       || operation.data.member.description !== request.description.trim()
       || !isDeepStrictEqual(operation.data.member.model ?? undefined, request.model ?? undefined)
-      || !isDeepStrictEqual(operation.data.member.capabilities ?? undefined, request.capabilities ?? undefined)) this.throwRequestCollision(request.requestId)
+      || !isDeepStrictEqual(operation.data.member.capabilities ?? undefined, request.capabilities ?? undefined)
+      || (operation.data.member.leader ?? undefined) !== (request.leader ?? undefined)) this.throwRequestCollision(request.requestId)
   }
 
   private assertSameChannelJoin(operation: AgentTeamOperation, request: AgentTeamAuthorizedJoinChannelRequest): asserts operation is AgentTeamChannelMemberAddedOperation {
@@ -4233,12 +4309,37 @@ export class AgentTeamLedger {
     return Object.freeze({ receipt: this.receipt(operation), recipient: this.requireMember(operation.data.recipientMemberId) })
   }
 
-  private assertSameMessage(operation: AgentTeamOperation, request: AgentTeamAuthorizedSendMessageRequest, recipients: readonly AgentTeamMemberId[]): asserts operation is AgentTeamMessageSentOperation {
+  private assertSameMessage(operation: AgentTeamOperation, request: AgentTeamAuthorizedSendMessageRequest, recipients: readonly AgentTeamMemberId[], parentTaskRef: AgentTeamTaskRef | undefined): asserts operation is AgentTeamMessageSentOperation {
     if (operation.kind !== 'team/message-sent' || !this.sameActor(operation.actor, request.actor)
       || operation.data.workspaceId !== request.workspaceId || operation.data.message.channelRef !== request.channelRef
       || operation.data.message.body !== request.body.trim() || !this.sameList(operation.data.mentions, recipients)
       || !this.sameList(operation.data.message.attachments?.map(attachment => attachment.attachmentId) ?? [], request.attachments ?? [])
-      || (request.asTask !== false) !== (operation.data.task !== undefined)) this.throwRequestCollision(request.requestId)
+      || (request.asTask !== false) !== (operation.data.task !== undefined)
+      || operation.data.task?.parentTaskRef !== parentTaskRef) this.throwRequestCollision(request.requestId)
+  }
+
+  /**
+   * Resolve the optional sub-task parent of a Task creation: full or
+   * unambiguous abbreviated ref, in this Workspace, same Channel as the new
+   * Task, and still open. Cross-Channel parents would fork the per-Channel
+   * numbering a Task row shows, so they are refused instead of silently
+   * renumbered; a closed parent takes no new sub-tasks.
+   */
+  private resolveParentTaskRef(request: AgentTeamAuthorizedSendMessageRequest, channelRef: AgentTeamChannelRef): AgentTeamTaskRef | undefined {
+    if (request.parentTaskRef === undefined) return undefined
+    if (request.asTask === false) throw new Error('parentTaskRef requires a Task creation; omit asTask:false or drop parentTaskRef')
+    const key = this.uniqueRefKey(this.state.tasks, request.parentTaskRef, 'task')
+    const parent = key === undefined ? undefined : this.state.tasks.get(key)
+    if (parent === undefined) throw new Error(`unknown Task '${request.parentTaskRef}'${this.unknownRefHint(request.parentTaskRef, 'task', 'Task')}`)
+    const parentChannel = this.state.channels.get(parent.channelRef)
+    if (parentChannel === undefined || parentChannel.workspaceId !== request.workspaceId || parentChannel.state === 'archived') {
+      throw new Error(`Task '${parent.taskRef}' is not available in this Workspace`)
+    }
+    if (parent.channelRef !== channelRef) {
+      throw new Error(`a sub-task must live in its parent's Channel: '${parent.taskRef}' is in '${parent.channelRef}', this send targets '${channelRef}'`)
+    }
+    if (parent.resolution === 'closed') throw new Error(`Task '${parent.taskRef}' is closed; reopen it before adding sub-tasks`)
+    return parent.taskRef
   }
 
   private assertSameReply(operation: AgentTeamOperation, request: AgentTeamAuthorizedReplyRequest, recipients: readonly AgentTeamMemberId[]): asserts operation is AgentTeamThreadRepliedOperation {

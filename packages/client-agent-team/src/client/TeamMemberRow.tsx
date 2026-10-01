@@ -33,7 +33,7 @@ export function TeamMemberIdentity({ status, name, className, t }: {
   return <>
     <TeamMemberAvatar status={status} t={t} />
     <span className={className === undefined ? css.copy : `${css.copy} ${className}`}>
-      <strong>{name ?? `@${status.member.handle.replace(/^@/, '')}`}</strong>
+      <strong>{name ?? `@${status.member.handle.replace(/^@/, '')}`}{status.member.leader === true && <small className={css.leader}>{t('leaderBadge')}</small>}</strong>
       <small>{status.member.description}</small>
     </span>
   </>

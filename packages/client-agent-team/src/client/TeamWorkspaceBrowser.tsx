@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, useSyncExternalStore } from 'react'
-import { IconAgentPresetOutlineRegular, IconListPenOutlineRegular, IconQueueOutlineRegular, Tooltip } from '@deepseek-ai/dsh-client-ui-primitives'
+import { IconAgentPresetOutlineRegular, IconChecklistOutlineRegular, IconListPenOutlineRegular, IconQueueOutlineRegular, Tooltip } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { AgentTeamAddMemberRequest } from '@wowyuarm/dsh-agent-team/types'
 import type { TeamSidebarProps } from './slots.ts'
 import { TeamWorkspaceSelector } from './TeamWorkspaceSelector.tsx'
@@ -24,7 +24,7 @@ function InboxMark({ unread }: { readonly unread: number }) {
   </span>
 }
 
-export function TeamWorkspaceBrowser({ wide, expandSidebar, navigation, selectWorkspace, selectChannel, selectInbox, t, useWorkspaces, loadMembers, loadInbox, subscribeChanges, subscribeReads, addMember, loadChannels, createChannel, updateChannel, archiveChannel, updateMember, recoverMember, clearMemberContext, compactMemberContext, diagnoseMember, archiveMember, joinWorkspace, leaveWorkspace, joinChannel, removeChannelMember, loadModels, openMemberSession }: TeamSidebarProps) {
+export function TeamWorkspaceBrowser({ wide, expandSidebar, navigation, selectWorkspace, selectChannel, selectInbox, selectTasks, t, useWorkspaces, loadMembers, loadInbox, subscribeChanges, subscribeReads, addMember, loadChannels, createChannel, updateChannel, archiveChannel, updateMember, recoverMember, clearMemberContext, compactMemberContext, diagnoseMember, archiveMember, joinWorkspace, leaveWorkspace, joinChannel, removeChannelMember, loadModels, openMemberSession }: TeamSidebarProps) {
   const navigationState = useSyncExternalStore(navigation.subscribe, navigation.getSnapshot, navigation.getSnapshot)
   const workspaces = useWorkspaces(state => state.items)
   const selected = navigationState.workspaceId
@@ -38,8 +38,9 @@ export function TeamWorkspaceBrowser({ wide, expandSidebar, navigation, selectWo
   // embedded Member Session covers that page: the Inbox stays the remembered
   // face underneath — closing the overlay returns to it, marker included —
   // but the card is not a second current page while an Agent holds the seat.
-  const overviewIsCurrent = navigationState.channelRef === undefined && navigationState.memberSessionId === undefined && navigationState.inbox !== true
+  const overviewIsCurrent = navigationState.channelRef === undefined && navigationState.memberSessionId === undefined && navigationState.inbox !== true && navigationState.tasks !== true
   const inboxIsCurrent = navigationState.inbox === true && navigationState.memberSessionId === undefined
+  const tasksIsCurrent = navigationState.tasks === true && navigationState.memberSessionId === undefined
   const [creatingAgents, setCreatingAgents] = useState<readonly AgentTeamAddMemberRequest[]>([])
   // Rail icons request expansion and name the section to reveal once wide.
   const [pendingSection, setPendingSection] = useState<SidebarSection>()
@@ -84,13 +85,13 @@ export function TeamWorkspaceBrowser({ wide, expandSidebar, navigation, selectWo
   }, [loadInbox, subscribeChanges, subscribeReads, workspaces])
 
   useEffect(() => {
-    // The Inbox page is global and needs no selected Workspace, so the
-    // auto-select must not yank the seat back to a Workspace overview.
-    if (navigationState.inbox === true) return
+    // The Inbox and Tasks pages are global and need no selected Workspace, so
+    // the auto-select must not yank the seat back to a Workspace overview.
+    if (navigationState.inbox === true || navigationState.tasks === true) return
     if (navigationState.mode === 'team' && selectedId !== undefined && selectedId !== selected) {
       selectWorkspace(selectedId)
     }
-  }, [navigationState.inbox, navigationState.mode, selected, selectedId, selectWorkspace])
+  }, [navigationState.inbox, navigationState.tasks, navigationState.mode, selected, selectedId, selectWorkspace])
 
   useEffect(() => {
     if (!wide || pendingSection === undefined) return
@@ -104,6 +105,11 @@ export function TeamWorkspaceBrowser({ wide, expandSidebar, navigation, selectWo
       <Tooltip label={inboxLabel} side="right">
         <button type="button" className={css.railButton} aria-label={inboxLabel} aria-current={inboxIsCurrent ? 'page' : undefined} onClick={() => { selectInbox(); expandSidebar() }}>
           <InboxMark unread={inboxTotal} />
+        </button>
+      </Tooltip>
+      <Tooltip label={t('tasksTitle')} side="right">
+        <button type="button" className={css.railButton} aria-label={t('tasksTitle')} aria-current={tasksIsCurrent ? 'page' : undefined} onClick={() => { selectTasks(); expandSidebar() }}>
+          <IconChecklistOutlineRegular size={16} />
         </button>
       </Tooltip>
       <Tooltip label={t('channels')} side="right">
@@ -126,6 +132,10 @@ export function TeamWorkspaceBrowser({ wide, expandSidebar, navigation, selectWo
     <button type="button" className={css.inboxCard} aria-label={inboxLabel} aria-current={inboxIsCurrent ? 'page' : undefined} onClick={selectInbox}>
       <InboxMark unread={inboxTotal} />
       <span className={css.inboxCardLabel}>{t('inboxTitle')}</span>
+    </button>
+    <button type="button" className={css.tasksCard} aria-label={t('tasksTitle')} aria-current={tasksIsCurrent ? 'page' : undefined} onClick={selectTasks}>
+      <IconChecklistOutlineRegular size={16} />
+      <span className={css.inboxCardLabel}>{t('tasksTitle')}</span>
     </button>
     <TeamWorkspaceSelector workspaces={workspaces} selectedId={selectedId} current={overviewIsCurrent} onSelect={selectWorkspace} t={t} />
     {selectedId !== undefined && <div className={css.workspaceSection}>

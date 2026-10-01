@@ -363,7 +363,7 @@ describe('Team Inbox surfaces', () => {
       return nav as HTMLElement
     })
     const labels = [...rail.querySelectorAll('button')].map(button => button.getAttribute('aria-label'))
-    expect(labels).toEqual(['收件箱', '频道', 'Agents'])
+    expect(labels).toEqual(['收件箱', '任务', '频道', 'Agents'])
     b.seedInbox([inboxRow('w1', 'thread:w1')])
     b.seedInbox([inboxRow('w1', 'thread:w1')])
     const inboxButton = within(rail).getByRole('button', { name: '收件箱' })

@@ -115,13 +115,16 @@
   margin: 8px;
 }
 
-/* The Human mention-Inbox entry: a card above the Workspace selector on the wide
-   rail, a queue icon on the narrow rail. Both mark unread the same way — a
-   dot on the icon's corner rather than a number beside it. The quantity is not
-   gone, it moved into the control's own name: what a reader scans the sidebar
-   for is whether anything waits, and the count answers a question asked on
-   purpose. */
-.inboxCard {
+/* The cross-Workspace queue entries — mention-Inbox and Tasks — as twin cards
+   above the Workspace selector on the wide rail, queue icons on the narrow rail.
+   Both mark unread the same way — a dot on the icon's corner rather than a
+   number beside it. The quantity is not gone, it moved into the control's own
+   name: what a reader scans the sidebar for is whether anything waits, and the
+   count answers a question asked on purpose. Each entry keeps its own class —
+   they read as one family, not one control, and a reader addressing one by
+   name never lands on the other. */
+.inboxCard,
+.tasksCard {
   align-items: center;
   background: transparent;
   border: 0;
@@ -139,12 +142,16 @@
 }
 .inboxCard:hover,
 .inboxCard:focus-visible,
-.inboxCard[aria-current='page'] {
+.inboxCard[aria-current='page'],
+.tasksCard:hover,
+.tasksCard:focus-visible,
+.tasksCard[aria-current='page'] {
   /* The mark on the card cuts itself out of the card, not out of the page. */
   --team-mark-ring: var(--dsw-alias-interactive-bg-hover);
   background: var(--dsw-alias-interactive-bg-hover);
 }
-.inboxCard:focus-visible {
+.inboxCard:focus-visible,
+.tasksCard:focus-visible {
   outline: var(--dsw-focus-ring-width, 2px) solid var(--dsw-focus-ring-color, var(--dsw-alias-state-business-primary));
   outline-offset: -2px;
 }
