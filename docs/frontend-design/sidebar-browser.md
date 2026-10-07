@@ -129,4 +129,6 @@ The Tasks page is the Human's cross-Workspace Task list: every Task with its sub
 
 A parent row adds its sub-task progress (`n/m 子任务`); the subject is the preview line. Sub-tasks indent one step under their parent; a row whose parent is itself a sub-task, or whose parent row is absent from the list, flattens to top level — the list never hides a row behind a missing link. Clicking a row selects that row's Workspace and opens the Task's Thread.
 
+Open rows carry a selection checkbox outside the row button, so selecting never opens the Thread; the first tick raises one sticky batch bar — the selected count, 验收所选, 关闭所选, 清除选择 — that resolves the selection through one Host `changeTasks` call per touched Workspace. The bar's note reports committed, already-terminal, and failed counts; a committed run clears its selection and its note outlives the bar as one status line, while a failed run keeps the selection for retry.
+
 The empty state speaks the shared pair (「还没有任务」 plus its hint); loading, error, and retry reuse the shared conversation classes. While open, the page fetches each participated Workspace once and subscribes without a change scope, refetching on every wake; closed, the fetches stop.

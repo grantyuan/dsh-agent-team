@@ -20,6 +20,10 @@ Neither slice names an archived Channel's Threads: archival ends participation a
 
 The Client merges the per-Workspace Inbox calls in the Client; there is no home-level Inbox ledger or Remote.
 
+Task resolution is Human-only and comes in two shapes: the single `changeTask` the Thread page offers and the batch `changeTasks` the Tasks page offers — one call per Workspace resolving several Tasks in one Host turn, each Task committing its own durable operation under a request id derived from the batch's, so a retried batch replays idempotently.
+
+The batch deliberately forgoes the unread fence: the selection is made from the Host's own Task-list projection, so demanding a Thread read per Task would defeat it, while each Task still upholds its own terminal state — an already-resolved Task reports back as `already_resolved` instead of failing its batch, and one rejected Task never blocks the rest.
+
 ## Team Member context boundary
 The explicit `team-member` preset contains coding tools, background jobs, the skill loader tool, todo, compaction, all eight Team tools, Workspace instruction discovery, and private-memory context. Harness `agent-instructions` remains the sole loader for `AGENTS.md`/`CLAUDE.md`. Each Member private root has `memory.md`, `notes/`, and `skills/`; only a bounded 16 KiB escaped reference index is injected, and the block states its current usage as `X.X KiB / 16 KiB` with a percentage. Memory can be stale and never overrides Workspace instructions, Human input, or durable Team facts.
 

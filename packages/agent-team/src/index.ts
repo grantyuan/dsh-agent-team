@@ -141,6 +141,8 @@ import type {
   AgentTeamTaskRequest,
   AgentTeamTaskResult,
   AgentTeamTasks,
+  AgentTeamTasksBatchRequest,
+  AgentTeamTasksBatchResult,
   AgentTeamTasksRequest,
   AgentTeamThreadAttentionRequest,
   AgentTeamThreadAttentionResult,
@@ -2189,6 +2191,20 @@ export default class AgentTeam extends TypertRemoteService {
     this.requireWorkspace(request.workspaceId)
     const result = await this.requireLedger().changeTask({ ...request, actor: agentTeamHumanActor() })
     this.emitCommittedOutcome(result)
+    return result.value
+  }
+
+  /** Human-only batch Task resolution: acceptance or closing for several Tasks in one turn. */
+  @Remote('changeTasks')
+  async changeTasks(request: AgentTeamTasksBatchRequest): Promise<AgentTeamTasksBatchResult> {
+    this.requireAccepting()
+    this.requireWorkspace(request.workspaceId)
+    const result = await this.requireLedger().changeTasks({ ...request, actor: agentTeamHumanActor() })
+    if (result.committed) {
+      for (const outcome of result.value.outcomes) {
+        if (outcome.kind === 'committed') this.emitCommitted(outcome.receipt)
+      }
+    }
     return result.value
   }
 

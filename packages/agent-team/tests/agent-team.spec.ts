@@ -2699,6 +2699,64 @@ describe('AgentTeam Task list and sub-task ledger', () => {
     expect(replayLedger(test).getMember(member.memberId)?.leader).toBe(true)
     replayLedger(test).validate()
   })
+
+  it('resolves a batch of Tasks in one turn without demanding Thread reads', async () => {
+    const test = await harness()
+    const channelRef = await engineeringChannel(test)
+    const ledger = replayLedger(test)
+    const { actor } = await addLedgerMember(ledger, channelRef)
+    const first = await startTask(ledger, channelRef, actor, 'batch-1', 'First')
+    const second = await startTask(ledger, channelRef, actor, 'batch-2', 'Second')
+    // The Human never read either Thread: the batch selection over the Host's
+    // own Task list is its own intent, so unread work does not defer it.
+    const batch = await ledger.changeTasks({ requestId: requestId('batch'), workspaceId: alpha,
+      taskRefs: [first.task.taskRef, second.task.taskRef], action: 'accept', actor: agentTeamHumanActor() })
+    expect(batch.committed).toBe(true)
+    expect(batch.value.outcomes.map(outcome => outcome.kind)).toEqual(['committed', 'committed'])
+    expect(ledger.tasksForWorkspace({ workspaceId: alpha }).tasks.map(row => row.status)).toEqual(['done', 'done'])
+    expect(ledger.incompleteTasksForWatch()).toEqual([])
+    replayLedger(test).validate()
+  })
+
+  it('reports refused Tasks in the batch without blocking the rest', async () => {
+    const test = await harness()
+    const channelRef = await engineeringChannel(test)
+    const ledger = replayLedger(test)
+    const { actor } = await addLedgerMember(ledger, channelRef)
+    const resolved = await startTask(ledger, channelRef, actor, 'resolved', 'Already accepted')
+    await ledger.changeTask({ requestId: requestId('accept-one'), workspaceId: alpha, taskRef: resolved.task.taskRef,
+      action: 'accept', baseRevision: resolved.thread.revision, actor: agentTeamHumanActor() })
+    const kept = await startTask(ledger, channelRef, actor, 'kept', 'Still open')
+    const unknown = 'task:00000000-0000-4000-8000-000000000000' as AgentTeamTaskRef
+    const batch = await ledger.changeTasks({ requestId: requestId('batch-mixed'), workspaceId: alpha,
+      taskRefs: [resolved.task.taskRef, unknown, kept.task.taskRef], action: 'accept', actor: agentTeamHumanActor() })
+    expect(batch.value.outcomes.map(outcome => outcome.kind)).toEqual(['already_resolved', 'failed', 'committed'])
+    const refused = batch.value.outcomes[1]
+    expect(refused.kind === 'failed' && refused.reason).toMatch(/unknown Task ref/)
+    expect(ledger.tasksForWorkspace({ workspaceId: alpha }).tasks.map(row => row.status)).toEqual(['done', 'done'])
+    replayLedger(test).validate()
+  })
+
+  it('replays a retried batch idempotently and rejects a reused batch id with a different action', async () => {
+    const test = await harness()
+    const channelRef = await engineeringChannel(test)
+    const ledger = replayLedger(test)
+    const { actor } = await addLedgerMember(ledger, channelRef)
+    const first = await startTask(ledger, channelRef, actor, 'retry-1', 'First')
+    const second = await startTask(ledger, channelRef, actor, 'retry-2', 'Second')
+    const batchRequest = { requestId: requestId('batch-retry'), workspaceId: alpha,
+      taskRefs: [first.task.taskRef, second.task.taskRef], action: 'accept' as const, actor: agentTeamHumanActor() }
+    await ledger.changeTasks(batchRequest)
+    const position = ledger.positionInWorkspace(alpha)
+    const retry = await ledger.changeTasks(batchRequest)
+    expect(retry.committed).toBe(false)
+    expect(retry.value.outcomes.map(outcome => outcome.kind)).toEqual(['committed', 'committed'])
+    // A replay commits no new operations: the per-Workspace position is unmoved.
+    expect(ledger.positionInWorkspace(alpha)).toBe(position)
+    expect(ledger.incompleteTasksForWatch()).toEqual([])
+    await expect(ledger.changeTasks({ ...batchRequest, action: 'close' })).rejects.toThrow(/was reused with a different operation or payload/)
+    replayLedger(test).validate()
+  })
 })
 
 describe('AgentTeam per-Workspace durable position', () => {

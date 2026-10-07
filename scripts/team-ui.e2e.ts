@@ -2162,6 +2162,25 @@ it('drives the complete opt-in Agent Team journey in real Web', async () => {
   await page.locator('[data-team-thread]').waitFor()
   await page.getByRole('button', { name: '返回频道' }).click()
   await page.getByRole('heading', { name: '# delivery' }).waitFor()
+  // Batch acceptance: the multi-select bar resolves several open Tasks through
+  // one Host call. Ticking a row is the intent — no Thread reads demanded — and
+  // the committed rows move to the done section while the note names the count.
+  await page.locator('button[class*="tasksCard"]').click()
+  await page.locator('[data-team-tasks]').waitFor()
+  const batchParentShell = page.locator('[data-team-tasks] [class*="rowShell"]').filter({ hasText: '叠放校验：谁在这个 Task 上' })
+  const batchChildShell = page.locator('[data-team-tasks] [class*="rowShell"]').filter({ hasText: '叠放校验：拆分出的第一步' })
+  await batchParentShell.getByRole('checkbox').check()
+  await batchChildShell.getByRole('checkbox').check()
+  const batchBar = page.getByRole('toolbar', { name: '已选 2 项' })
+  await batchBar.waitFor()
+  await batchBar.getByRole('button', { name: '验收所选' }).click()
+  await expect.poll(async () => await batchParentShell.count()).toBe(0)
+  await expect.poll(async () => await batchChildShell.count()).toBe(0)
+  await page.getByRole('status').filter({ hasText: '已提交 2 项' }).waitFor()
+  // The done section carries both: the parent with its now-complete progress
+  // count, the child standing where it landed.
+  const acceptedParent = page.locator('[data-team-tasks] button').filter({ hasText: '叠放校验：谁在这个 Task 上' })
+  await expect.poll(async () => (await acceptedParent.count()) === 1 && (await acceptedParent.textContent())?.includes('子任务 1/1')).toBe(true)
   // Narrow: the Tasks entry is the second rail button, and the page it opens
   // keeps every row inside the 390px frame.
   await page.setViewportSize({ width: 390, height: 844 })

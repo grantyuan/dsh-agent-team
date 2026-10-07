@@ -401,6 +401,30 @@ export async function runtimeWithTeam(options?: { mode?: 'team'; workspaceId?: s
     inboxRows = rows.map(row => ({ workspaceId: row.workspaceId, item: row as Record<string, unknown> }))
     wakeAll()
   }
+  // The Human Task-list double: one `tasks` call per visible Workspace reads
+  // the seeded rows, and `changeTasks` mutates them the way the ledger's
+  // per-Task commits would — accept lands a row in done, close in closed — so
+  // the batch bar drives the page through the same remote the Host serves.
+  let taskRows: Array<{ workspaceId: string; row: Record<string, unknown> }> = []
+  const tasks = vi.fn(async ({ workspaceId }: { workspaceId: string }) => ({
+    ok: true as const,
+    value: { humanMemberId: 'member:human', tasks: taskRows.filter(entry => entry.workspaceId === workspaceId).map(entry => entry.row) },
+  }))
+  const changeTasks = vi.fn(async (request: { workspaceId: string; taskRefs: readonly string[]; action: 'accept' | 'close' }) => {
+    const outcomes = request.taskRefs.map(taskRef => {
+      const entry = taskRows.find(candidate => candidate.workspaceId === request.workspaceId && candidate.row.taskRef === taskRef)
+      if (entry === undefined) return { kind: 'failed' as const, taskRef, reason: `unknown Task ref '${taskRef}'` }
+      entry.row = { ...entry.row, status: request.action === 'accept' ? 'done' : 'closed', resolution: request.action === 'accept' ? 'accepted' : 'closed' }
+      return { kind: 'committed' as const, taskRef, receipt: {}, task: {}, thread: {}, activity: {} }
+    })
+    wakeAll()
+    return { ok: true as const, value: { outcomes } }
+  })
+  /** Seed the Task list every Workspace read answers with. */
+  const seedTasks = (rows: ReadonlyArray<{ workspaceId: string; row: Record<string, unknown> }>): void => {
+    taskRows = [...rows]
+    wakeAll()
+  }
   const changes = vi.fn(async function* (request: AgentTeamChangesRequest, signal?: AbortSignal) {
     let pending = false
     let resume: (() => void) | undefined
@@ -531,7 +555,7 @@ export async function runtimeWithTeam(options?: { mode?: 'team'; workspaceId?: s
   // refuses by contract.
   runtime.remote.provideNamespaces({
     session: { modelCatalog },
-    agentTeam: { members, joinWorkspace, leaveWorkspace, addMember, view: viewChannels, inbox, readThread, threadHistory: loadThreadHistory, threadObservations, putAttachment, getAttachment, createChannel, updateChannel, archiveChannel, updateMember, recoverMember, clearMemberContext, compactMemberContext, archiveMember, joinChannel, removeChannelMember, sendMessage, reply, changeTask, promoteThread, resolveTaskRefs, changes, environment, humanProfile, setHumanProfile, putHumanAvatar, getHumanAvatar, removeHumanAvatar },
+    agentTeam: { members, joinWorkspace, leaveWorkspace, addMember, view: viewChannels, inbox, tasks, readThread, threadHistory: loadThreadHistory, threadObservations, putAttachment, getAttachment, createChannel, updateChannel, archiveChannel, updateMember, recoverMember, clearMemberContext, compactMemberContext, archiveMember, joinChannel, removeChannelMember, sendMessage, reply, changeTask, changeTasks, promoteThread, resolveTaskRefs, changes, environment, humanProfile, setHumanProfile, putHumanAvatar, getHumanAvatar, removeHumanAvatar },
   })
   Object.assign(runtime.remote, {
     $stream: <T,>(options: ConstructorParameters<typeof RemoteStream<T>>[1]) => new RemoteStream(connection, options),
@@ -563,5 +587,5 @@ export async function runtimeWithTeam(options?: { mode?: 'team'; workspaceId?: s
   const disposeSettings = runtime.slots.register({ name: 'sidebar.settings', priority: 0 }, BaselineSettings as never)
   const team = await runtime.mount({ inject: [...inject], apply })
   const view = runtime.renderRoot()
-  return { runtime, team, view, disposeWorkspace, disposeSettings, members, humanProfile, setHumanProfile, getHumanAvatar, putHumanAvatar, removeHumanAvatar, seedHumanProfile, failHumanProfile, failHumanProfileWrite, environment, seedEnvironment, failEnvironment, joinWorkspace, leaveWorkspace, addMember, status, viewChannels, createChannel, updateChannel, archiveChannel, putAttachment, getAttachment, updateMember, recoverMember, clearMemberContext, compactMemberContext, archiveMember, modelCatalog, joinChannel, removeChannelMember, sendMessage, reply, changeTask, promoteThread, resolveTaskRefs, publishAgentReply, publishPresence, seedChannel, publishChannelUpdate, failChanges, recoverChanges, readThread, loadThreadHistory, threadObservations, changes, inbox, seedInbox, openSession }
+  return { runtime, team, view, disposeWorkspace, disposeSettings, members, humanProfile, setHumanProfile, getHumanAvatar, putHumanAvatar, removeHumanAvatar, seedHumanProfile, failHumanProfile, failHumanProfileWrite, environment, seedEnvironment, failEnvironment, joinWorkspace, leaveWorkspace, addMember, status, viewChannels, createChannel, updateChannel, archiveChannel, putAttachment, getAttachment, updateMember, recoverMember, clearMemberContext, compactMemberContext, archiveMember, modelCatalog, joinChannel, removeChannelMember, sendMessage, reply, changeTask, changeTasks, promoteThread, resolveTaskRefs, publishAgentReply, publishPresence, seedChannel, publishChannelUpdate, failChanges, recoverChanges, readThread, loadThreadHistory, threadObservations, changes, inbox, seedInbox, tasks, seedTasks, openSession }
 }

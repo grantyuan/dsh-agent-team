@@ -77,8 +77,13 @@ export function TeamInboxPage({ useWorkspaces, loadInbox, subscribeChanges, sele
   // Only the first refresh owns the loading surface; later wakes refresh the
   // rendered rows in place instead of flashing them back to skeleton.
   const loadedRef = useRef(false)
+  // Wakes can start refreshes faster than their reads answer: without a
+  // ticket, a slow read that started first can land after a fast second and
+  // overwrite fresh rows with a stale queue. Only the newest refresh may write.
+  const refreshTicket = useRef(0)
 
   const refresh = useCallback(async () => {
+    const ticket = ++refreshTicket.current
     if (!loadedRef.current) setLoading(true)
     const results = await Promise.all(workspaces.map(async workspace => {
       const result = await loadInbox({ workspaceId: workspace.workspaceId, limit: 100 })
@@ -86,6 +91,7 @@ export function TeamInboxPage({ useWorkspaces, loadInbox, subscribeChanges, sele
         ? { ok: true as const, workspaceId: workspace.workspaceId, workspaceTitle: workspace.title, items: result.value.items, recent: result.value.recent, humanMemberId: result.value.humanMemberId }
         : { ok: false as const, message: result.error.message }
     }))
+    if (ticket !== refreshTicket.current) return
     const failure = results.find(result => !result.ok)
     setHumanMemberId(results.find(result => result.ok)?.humanMemberId)
     const asRows = (items: readonly AgentTeamInboxItem[], workspaceId: WorkspaceId, workspaceTitle: string): TeamInboxRow[] =>

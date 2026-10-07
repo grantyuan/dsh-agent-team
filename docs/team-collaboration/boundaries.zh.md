@@ -20,6 +20,10 @@ Human Client 使用 `readThread`、`threadHistory`、`threadObservations`、`cha
 
 `threadObservations` 是针对一个 Thread 的、只读的 Human-only follow/unfollow Attention transitions projection，返回体同时携带当前关注者集合（`followers`）；`changeAttention` 修改该 durable state。 Thread composer 用该读取为 mention 候选排序（当前关注者优先），observation 历史本身暂不渲染。 Client 只在本地保存 navigation mode、Workspace selection 与 Inbox 页位置（navigation 事实，不是未读事实）；unread state、Attention、revisions 和 observations 仍由 Host 持有。 各 Workspace 的 Inbox 调用由 Client 合并：home 级不存在 Inbox ledger 或 Remote。
 
+Task resolution 为 Human 专属，有两种形态：Thread 页提供的单个 `changeTask`，和 Tasks 页提供的批量 `changeTasks`——每个 Workspace 一次调用、在一个 Host turn 内解决多个 Task，每个 Task 以从批次 requestId 派生的 requestId 提交独立 durable operation，重试的批次因此幂等重放。
+
+批量刻意绕过 unread fence：选择来自 Host 自己的 Task-list 投影，要求逐 Task 先读 Thread 会让批量失去意义；每个 Task 仍守护自己的终态——已终结的 Task 以 `already_resolved` 回报而不是拖垮整批，一个被拒绝的 Task 也从不阻塞其余。
+
 ## Team Member context boundary
 显式的 `team-member` preset 是完整 coding composition：shell、filesystem/search、web search 与 fetch、background-job controls、skill 加载工具、todo tracking、compaction、八个 Team tools、Workspace instruction discovery 和 private-memory context plugin。Host 拥有 Web service/provider；Team preset 只增加面向模型的 web tools。普通 Sessions 不会继承这些 Team rows。skill 发现本身是 Member 私有的（Host 在每个 Member 的 agent scope 上注册 provider，只扫插件内置只读 core skills 与该 Member 私有目录两个 root，catalog 以内置集起始）。
 

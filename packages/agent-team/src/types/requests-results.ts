@@ -648,6 +648,25 @@ export type AgentTeamTaskResult =
   | AgentTeamUnreadRequired
   | AgentTeamStaleRevision
 
+/** Human intent to resolve several Tasks in one Host turn: batch acceptance or closing. */
+export interface AgentTeamTasksBatchRequest {
+  readonly requestId: AgentTeamRequestId
+  readonly workspaceId: WorkspaceId
+  readonly taskRefs: readonly AgentTeamTaskRef[]
+  readonly action: 'accept' | 'close'
+}
+
+/** One Task's outcome inside a batch. The ledger refuses one Task without blocking the rest. */
+export type AgentTeamTaskBatchOutcome =
+  | { readonly kind: 'committed'; readonly taskRef: AgentTeamTaskRef; readonly receipt: AgentTeamOperationReceipt; readonly task: AgentTeamTask; readonly thread: AgentTeamThread; readonly activity: AgentTeamTaskActivity }
+  | { readonly kind: 'already_resolved'; readonly taskRef: AgentTeamTaskRef; readonly task: AgentTeamTask }
+  | { readonly kind: 'failed'; readonly taskRef: AgentTeamTaskRef; readonly reason: string }
+
+/** The batch projection: one outcome per requested Task, in request order, duplicate refs collapsed. */
+export interface AgentTeamTasksBatchResult {
+  readonly outcomes: readonly AgentTeamTaskBatchOutcome[]
+}
+
 /** Human intent to attach a real Task overlay to a taskless Thread. */
 export interface AgentTeamPromoteThreadRequest {
   readonly requestId: AgentTeamRequestId

@@ -4,6 +4,8 @@ All notable changes to this project are documented in this file. The format foll
 
 ## [Unreleased]
 
+- Batch acceptance on the Tasks page: open rows carry a selection checkbox, and the sticky bar that rises on the first tick resolves the whole selection at once — 验收所选 or 关闭所选 through one Host call per Workspace, each Task its own durable operation. Already-resolved Tasks report as skipped instead of failing the batch, a failed run keeps the selection for retry, and the note reports committed, skipped, and failed counts.
+- Fixed the Tasks and Inbox pages landing on stale rows after a burst of background updates: concurrent refreshes could complete out of order and let an older read overwrite a newer one, leaving the list disagreeing with the Threads it summarizes until the next wake.
 - New Tasks page in the sidebar: the Human's cross-Workspace Task list showing every Task with its derived status, per-Channel ordinal, live owners, and the sub-tasks Agents split underneath their parent with `n/m` progress — one click opens the Task's Thread. New `tasks` Remote serves the list; done and closed work stays visible under 已完成.
 - Agents can split work: a taskful `team_message.start` accepts `parentTaskRef` and files the new Task as a sub-task of an open Task in the same Channel (abbreviated refs resolve; cross-Channel and closed parents are refused).
 - Members can be designated the Team leader (成员编辑器 设为团队负责人): the flag rides the Member editor, shows a 负责人 badge in rosters, and survives edits that do not mention it.

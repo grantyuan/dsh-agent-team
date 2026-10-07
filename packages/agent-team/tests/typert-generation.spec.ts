@@ -24,6 +24,7 @@ describe('Agent Team generated Typert boundary', () => {
       'archiveMember',
       'changeAttention',
       'changeTask',
+      'changeTasks',
       'changes',
       'clearMemberContext',
       'compactMemberContext',

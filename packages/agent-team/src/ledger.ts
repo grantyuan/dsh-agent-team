@@ -98,6 +98,9 @@ import type {
   AgentTeamTaskRef,
   AgentTeamTaskRow,
   AgentTeamTasks,
+  AgentTeamTasksBatchRequest,
+  AgentTeamTaskBatchOutcome,
+  AgentTeamTasksBatchResult,
   AgentTeamTasksRequest,
   AgentTeamThread,
   AgentTeamThreadAttention,
@@ -248,6 +251,10 @@ export interface AgentTeamAuthorizedClaimRequest extends AgentTeamClaimRequest {
 }
 
 export interface AgentTeamAuthorizedTaskRequest extends AgentTeamTaskRequest {
+  readonly actor: AgentTeamHumanActor
+}
+
+export interface AgentTeamAuthorizedTasksBatchRequest extends AgentTeamTasksBatchRequest {
   readonly actor: AgentTeamHumanActor
 }
 
@@ -1356,60 +1363,126 @@ export class AgentTeamLedger {
       const { task, thread } = this.threadForActor(request.actor, request.workspaceId, request.taskRef)
       const deferred = this.deferredThreadWrite(request.actor.memberId, task, thread, request.baseRevision)
       if (deferred !== undefined) return this.resolved(deferred)
-      if (request.action === 'accept' && task.resolution !== 'open') throw new Error(`Task '${task.taskRef}' is already ${task.resolution}`)
-      if (request.action === 'close' && task.resolution === 'closed') throw new Error(`Task '${task.taskRef}' is already closed`)
-      // Acceptance normally waits for every Claim to finish (in_review);
-      // a Human may also accept early while work is in progress, which then
-      // completes the still-active Claims inside the same atomic operation.
-      // A never-claimed todo Task may be accepted directly as well: work
-      // finished outside the ledger is declared complete by the Human.
-      if (request.action === 'accept' && task.status !== 'in_review' && task.status !== 'in_progress' && task.status !== 'todo') {
-        throw new Error(`Task '${task.taskRef}' must be in_review, in_progress, or todo before acceptance`)
+      return this.committed(await this.commitTaskChange(request, task, thread))
+    })
+  }
+
+  /**
+   * The one Task-resolution commit behind both Human write paths — the
+   * Thread-page single write (which has already cleared the unread and
+   * baseRevision fences) and the Human batch (whose selection is its own
+   * intent). Guards, Claim transitions, and the team/task-changed operation
+   * live here exactly once; a refused transition throws and each caller
+   * reports that in its own shape.
+   */
+  private async commitTaskChange(request: AgentTeamAuthorizedTaskRequest, task: AgentTeamTask, thread: AgentTeamThread): Promise<Extract<AgentTeamTaskResult, { kind: 'committed' }>> {
+    if (request.action === 'accept' && task.resolution !== 'open') throw new Error(`Task '${task.taskRef}' is already ${task.resolution}`)
+    if (request.action === 'close' && task.resolution === 'closed') throw new Error(`Task '${task.taskRef}' is already closed`)
+    // Acceptance normally waits for every Claim to finish (in_review);
+    // a Human may also accept early while work is in progress, which then
+    // completes the still-active Claims inside the same atomic operation.
+    // A never-claimed todo Task may be accepted directly as well: work
+    // finished outside the ledger is declared complete by the Human.
+    if (request.action === 'accept' && task.status !== 'in_review' && task.status !== 'in_progress' && task.status !== 'todo') {
+      throw new Error(`Task '${task.taskRef}' must be in_review, in_progress, or todo before acceptance`)
+    }
+    const priorActiveClaims = [...this.state.claims.values()].filter(claim => claim.taskRef === task.taskRef && claim.state === 'active')
+    if (request.action === 'accept' && task.status === 'in_progress' && priorActiveClaims.length === 0) {
+      throw new Error(`Task '${task.taskRef}' has no active Claims to complete for early acceptance`)
+    }
+    if (request.action === 'reopen' && task.resolution === 'open') throw new Error(`Task '${task.taskRef}' is already open`)
+    const sequence = this.nextSequence()
+    const claims = [...this.state.claims.values()].filter(claim => claim.taskRef === task.taskRef).map(claim =>
+      request.action === 'close' && claim.state === 'active' ? Object.freeze({ ...claim, state: 'released' as const })
+        : request.action === 'accept' && claim.state === 'active' ? Object.freeze({ ...claim, state: 'done' as const })
+          : claim)
+    const releasedClaims = claims.filter(claim => claim.state === 'released' && this.state.claims.get(claim.claimRef)?.state === 'active')
+    const completedClaims = claims.filter(claim => claim.state === 'done' && this.state.claims.get(claim.claimRef)?.state === 'active')
+    // Every done Claim at commit time — pre-finished and atomically
+    // completed alike — is the acceptance discriminator: the one list
+    // accept markers deliver from, so a normal accept no longer stays
+    // silent about the Members whose work it accepted. Sorted lexically
+    // so replay validation compares stably regardless of claim-ref
+    // generation order.
+    const acceptedClaims = request.action === 'accept'
+      ? claims.filter(claim => claim.state === 'done').sort((left, right) => left.claimRef.localeCompare(right.claimRef))
+      : []
+    const resolution = request.action === 'reopen' ? 'open' as const : request.action === 'accept' ? 'accepted' as const : 'closed' as const
+    const status = resolution === 'accepted' ? 'done' as const : resolution === 'closed' ? 'closed' as const
+      : this.deriveTaskStatus(task.taskRef, claims)
+    const nextTask: AgentTeamTask = Object.freeze({ ...task, resolution, status })
+    const nextThread: AgentTeamThread = Object.freeze({ ...thread, revision: sequence })
+    const activity: AgentTeamTaskActivity = Object.freeze({ activityRef: this.ref('activity'), kind: request.action,
+      taskRef: task.taskRef, threadRef: task.threadRef, actor: request.actor.memberId, sequence,
+      ...(releasedClaims.length === 0 ? {} : { releasedClaimRefs: Object.freeze(releasedClaims.map(claim => claim.claimRef)) }),
+      ...(completedClaims.length === 0 ? {} : { completedClaimRefs: Object.freeze(completedClaims.map(claim => claim.claimRef)) }),
+      ...(request.action === 'accept' ? { acceptedClaimRefs: Object.freeze(acceptedClaims.map(claim => claim.claimRef)) } : {}) })
+    const inbox = request.action === 'close'
+      ? this.closeThreadInbox(activity, thread.threadRef)
+      : request.action === 'reopen'
+        ? this.reopenThreadInbox(activity, thread.threadRef)
+        : this.acceptThreadInbox(activity, thread.threadRef, acceptedClaims.map(claim => claim.owner))
+    const operation: AgentTeamTaskChangedOperation = Object.freeze({
+      ...this.operationBase(request, sequence), kind: 'team/task-changed',
+      data: Object.freeze({ workspaceId: request.workspaceId, baseRevision: request.baseRevision,
+        activity, task: nextTask, thread: nextThread, claims: Object.freeze(claims), inbox }),
+    })
+    await this.table.put(operation.operationId, operation)
+    this.apply(operation)
+    return this.taskResult(operation)
+  }
+
+  /**
+   * Human batch resolution: every requested Task resolves inside one
+   * serialized turn, each as its own team/task-changed operation whose
+   * requestId derives from the batch's, so a retried batch replays the
+   * committed Tasks instead of re-committing them. The Host resolves each
+   * Thread's revision at commit time, and the unread and baseRevision fences
+   * that guard a Thread-page write do not apply here: the selection comes
+   * from the Task list the Host itself projected, so demanding a prior read
+   * of every Thread would end the batch before it began. One refused Task
+   * never blocks the rest — its outcome carries the ledger's own reason, and
+   * an already-resolved Task is reported as such rather than as an error.
+   */
+  async changeTasks(request: AgentTeamAuthorizedTasksBatchRequest): Promise<AgentTeamLedgerResult<AgentTeamTasksBatchResult>> {
+    return await this.enqueue(async () => {
+      this.assertHumanActor(request.actor)
+      const outcomes: AgentTeamTaskBatchOutcome[] = []
+      let committedAny = false
+      for (const taskRef of new Set(request.taskRefs)) {
+        const perTaskRequestId = `${request.requestId}:${taskRef}` as AgentTeamRequestId
+        const existing = this.state.byRequest.get(perTaskRequestId)
+        if (existing !== undefined) {
+          // A retried batch keeps its identity per Task, so the replay check
+          // compares everything the client authored — action, Workspace, Task
+          // — but not baseRevision, which the Host resolved, not the client.
+          if (existing.kind !== 'team/task-changed' || !this.sameActor(existing.actor, request.actor)
+            || existing.data.workspaceId !== request.workspaceId || existing.data.task.taskRef !== taskRef
+            || existing.data.activity.kind !== request.action) this.throwRequestCollision(request.requestId)
+          outcomes.push(Object.freeze({ kind: 'committed', taskRef, receipt: this.receipt(existing), task: existing.data.task, thread: existing.data.thread, activity: existing.data.activity }))
+          continue
+        }
+        try {
+          const { task, thread } = this.threadForActor(request.actor, request.workspaceId, taskRef)
+          if ((request.action === 'accept' && task.resolution !== 'open') || (request.action === 'close' && task.resolution === 'closed')) {
+            outcomes.push(Object.freeze({ kind: 'already_resolved', taskRef, task }))
+            continue
+          }
+          const committed = await this.commitTaskChange(
+            Object.freeze({ requestId: perTaskRequestId, workspaceId: request.workspaceId, taskRef, action: request.action, baseRevision: thread.revision, actor: request.actor }),
+            task, thread)
+          committedAny = true
+          outcomes.push(Object.freeze({ kind: 'committed', taskRef, receipt: committed.receipt, task: committed.task, thread: committed.thread, activity: committed.activity }))
+        } catch (error) {
+          outcomes.push(Object.freeze({ kind: 'failed', taskRef, reason: error instanceof Error ? error.message : String(error) }))
+        }
       }
-      const priorActiveClaims = [...this.state.claims.values()].filter(claim => claim.taskRef === task.taskRef && claim.state === 'active')
-      if (request.action === 'accept' && task.status === 'in_progress' && priorActiveClaims.length === 0) {
-        throw new Error(`Task '${task.taskRef}' has no active Claims to complete for early acceptance`)
-      }
-      if (request.action === 'reopen' && task.resolution === 'open') throw new Error(`Task '${task.taskRef}' is already open`)
-      const sequence = this.nextSequence()
-      const claims = [...this.state.claims.values()].filter(claim => claim.taskRef === task.taskRef).map(claim =>
-        request.action === 'close' && claim.state === 'active' ? Object.freeze({ ...claim, state: 'released' as const })
-          : request.action === 'accept' && claim.state === 'active' ? Object.freeze({ ...claim, state: 'done' as const })
-            : claim)
-      const releasedClaims = claims.filter(claim => claim.state === 'released' && this.state.claims.get(claim.claimRef)?.state === 'active')
-      const completedClaims = claims.filter(claim => claim.state === 'done' && this.state.claims.get(claim.claimRef)?.state === 'active')
-      // Every done Claim at commit time — pre-finished and atomically
-      // completed alike — is the acceptance discriminator: the one list
-      // accept markers deliver from, so a normal accept no longer stays
-      // silent about the Members whose work it accepted. Sorted lexically
-      // so replay validation compares stably regardless of claim-ref
-      // generation order.
-      const acceptedClaims = request.action === 'accept'
-        ? claims.filter(claim => claim.state === 'done').sort((left, right) => left.claimRef.localeCompare(right.claimRef))
-        : []
-      const resolution = request.action === 'reopen' ? 'open' as const : request.action === 'accept' ? 'accepted' as const : 'closed' as const
-      const status = resolution === 'accepted' ? 'done' as const : resolution === 'closed' ? 'closed' as const
-        : this.deriveTaskStatus(task.taskRef, claims)
-      const nextTask: AgentTeamTask = Object.freeze({ ...task, resolution, status })
-      const nextThread: AgentTeamThread = Object.freeze({ ...thread, revision: sequence })
-      const activity: AgentTeamTaskActivity = Object.freeze({ activityRef: this.ref('activity'), kind: request.action,
-        taskRef: task.taskRef, threadRef: task.threadRef, actor: request.actor.memberId, sequence,
-        ...(releasedClaims.length === 0 ? {} : { releasedClaimRefs: Object.freeze(releasedClaims.map(claim => claim.claimRef)) }),
-        ...(completedClaims.length === 0 ? {} : { completedClaimRefs: Object.freeze(completedClaims.map(claim => claim.claimRef)) }),
-        ...(request.action === 'accept' ? { acceptedClaimRefs: Object.freeze(acceptedClaims.map(claim => claim.claimRef)) } : {}) })
-      const inbox = request.action === 'close'
-        ? this.closeThreadInbox(activity, thread.threadRef)
-        : request.action === 'reopen'
-          ? this.reopenThreadInbox(activity, thread.threadRef)
-          : this.acceptThreadInbox(activity, thread.threadRef, acceptedClaims.map(claim => claim.owner))
-      const operation: AgentTeamTaskChangedOperation = Object.freeze({
-        ...this.operationBase(request, sequence), kind: 'team/task-changed',
-        data: Object.freeze({ workspaceId: request.workspaceId, baseRevision: request.baseRevision,
-          activity, task: nextTask, thread: nextThread, claims: Object.freeze(claims), inbox }),
-      })
-      await this.table.put(operation.operationId, operation)
-      this.apply(operation)
-      return this.committed(this.taskResult(operation))
+      // A fully replayed retry commits nothing new, exactly like a replayed
+      // single write; a mixed one reports committed at the result level and
+      // its per-Task outcomes tell the two apart.
+      return committedAny
+        ? this.committed(Object.freeze({ outcomes: Object.freeze(outcomes) }))
+        : this.resolved(Object.freeze({ outcomes: Object.freeze(outcomes) }))
     })
   }
 

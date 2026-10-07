@@ -15,3 +15,52 @@
   display: flex;
   flex: none;
 }
+
+/* A selectable row wraps its button in one shell so the checkbox sits outside
+   the button — a control inside a button would open the Thread on the very
+   click meant to select. The shell owns the row's full width and hands the
+   button back the rest; every other row keeps its plain 100% button. */
+.rowShell {
+  align-items: stretch;
+  display: flex;
+}
+.inShell {
+  flex: 1;
+  min-width: 0;
+  width: auto;
+}
+.rowCheck {
+  accent-color: var(--dsw-alias-state-business-primary);
+  align-self: center;
+  flex: none;
+  margin: 0 2px 0 6px;
+}
+
+/* The multi-select bar: sticky to the reading column's bottom edge so the
+   actions stay in reach wherever the list is scrolled, on the same surface the
+   rows draw on. The note line shares the bar's single text ink; it is feedback,
+   not a headline. */
+.batchBar {
+  align-items: center;
+  backdrop-filter: blur(8px);
+  background: color-mix(in srgb, var(--dsw-alias-surface-primary) 88%, transparent);
+  border-radius: var(--dsw-radius-lg, 8px);
+  bottom: 8px;
+  column-gap: 8px;
+  display: flex;
+  flex-wrap: wrap;
+  padding: 8px 10px;
+  position: sticky;
+  row-gap: 4px;
+}
+.batchCount {
+  color: var(--dsw-alias-label-primary);
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+  margin-right: auto;
+}
+.batchNote {
+  color: var(--dsw-alias-label-secondary);
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
