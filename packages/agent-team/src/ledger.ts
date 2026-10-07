@@ -2010,17 +2010,19 @@ export class AgentTeamLedger {
   /**
    * Open Tasks across every Workspace for the Host's idle continuation
    * watcher; not an RPC surface. Status follows the same derived rule as the
-   * Task list, so the watcher and the Human Task list can never disagree
-   * about what still counts as open.
+   * Task list, but the watcher's open set stops at `in_review`: a Task that
+   * finished its Claims now waits for Human acceptance, which is not work to
+   * remind stopped Agents about, so the watcher and the Human Task list
+   * intentionally disagree about that one status.
    */
   incompleteTasksForWatch(): readonly (AgentTeamTaskRow & { readonly workspaceId: WorkspaceId })[] {
     return [...this.state.tasks.values()].flatMap(task => {
       const workspaceId = this.workspaceOfTask(task)
       if (workspaceId === undefined) return []
       const row = this.taskRowFor(task, this.state.taskNumberByTask)
-      return row.status === 'done' || row.status === 'closed'
-        ? []
-        : [Object.freeze({ ...row, workspaceId })]
+      return row.status === 'todo' || row.status === 'in_progress'
+        ? [Object.freeze({ ...row, workspaceId })]
+        : []
     })
   }
 

@@ -2611,6 +2611,24 @@ describe('AgentTeam Task list and sub-task ledger', () => {
     replayLedger(test).validate()
   })
 
+  it('stops counting an in_review Task as watcher work while the Human list keeps showing it', async () => {
+    const test = await harness()
+    const channelRef = await engineeringChannel(test)
+    const ledger = replayLedger(test)
+    const { actor } = await addLedgerMember(ledger, channelRef)
+    const task = await startTask(ledger, channelRef, actor, 'task', 'Awaiting acceptance')
+    const reviewClaim = committed((await ledger.changeClaim({ requestId: requestId('review-claim'), workspaceId: alpha, taskRef: task.task.taskRef,
+      action: 'claim', direction: 'reviewing it', baseRevision: task.thread.revision, actor })).value)
+    committed((await ledger.changeClaim({ requestId: requestId('review-done'), workspaceId: alpha, taskRef: task.task.taskRef,
+      action: 'done', claimRef: reviewClaim.claim.claimRef, baseRevision: reviewClaim.thread.revision, actor })).value)
+    // in_review awaits Human acceptance, so it is open to the Human list yet
+    // absent from the watcher's work set: a stopped Team must not be nudged
+    // about a Task only the Human can move.
+    expect(ledger.tasksForWorkspace({ workspaceId: alpha }).tasks[0]).toMatchObject({ status: 'in_review' })
+    expect(ledger.incompleteTasksForWatch()).toEqual([])
+    replayLedger(test).validate()
+  })
+
   it('rejects a sub-task whose parent is unknown, cross-Channel, or closed', async () => {
     const test = await harness()
     const channelRef = await engineeringChannel(test)
@@ -2731,8 +2749,8 @@ describe('AgentTeam Task list and sub-task ledger', () => {
     const batch = await ledger.changeTasks({ requestId: requestId('batch-mixed'), workspaceId: alpha,
       taskRefs: [resolved.task.taskRef, unknown, kept.task.taskRef], action: 'accept', actor: agentTeamHumanActor() })
     expect(batch.value.outcomes.map(outcome => outcome.kind)).toEqual(['already_resolved', 'failed', 'committed'])
-    const refused = batch.value.outcomes[1]
-    expect(refused.kind === 'failed' && refused.reason).toMatch(/unknown Task ref/)
+    const refused = batch.value.outcomes.find(outcome => outcome.kind === 'failed')
+    expect(refused !== undefined && refused.reason).toMatch(/unknown Task ref/)
     expect(ledger.tasksForWorkspace({ workspaceId: alpha }).tasks.map(row => row.status)).toEqual(['done', 'done'])
     replayLedger(test).validate()
   })
