@@ -2656,7 +2656,7 @@ describe('AgentTeam Task list and sub-task ledger', () => {
     const child = await startTask(ledger, channelRef, actor, 'sub', 'Sub', first.task.taskRef)
     const retry = await ledger.sendMessage(send)
     expect(retry.committed).toBe(false)
-    expect(withTask(retry.value).task.taskRef).toBe(child.task.taskRef)
+    expect(retry.value.kind === 'committed' ? retry.value.task?.taskRef : undefined).toBe(child.task.taskRef)
     await expect(ledger.sendMessage({ ...send, parentTaskRef: second.task.taskRef })).rejects.toThrow(/was reused with a different operation or payload/)
     replayLedger(test).validate()
   })
@@ -2698,5 +2698,36 @@ describe('AgentTeam Task list and sub-task ledger', () => {
     await ledger.updateMember({ ...base, requestId: requestId('redesignate'), leader: true })
     expect(replayLedger(test).getMember(member.memberId)?.leader).toBe(true)
     replayLedger(test).validate()
+  })
+})
+
+describe('AgentTeam per-Workspace durable position', () => {
+  it('attributes committed operations to their Workspace and replays the counts', async () => {
+    const test = await harness(new MemoryMediaPool(), [alpha, beta])
+    const ledger = replayLedger(test)
+    const { member, actor } = await addLedgerMember(ledger, undefined)
+    // Member lifecycle records count under the Member's default Workspace.
+    expect(ledger.positionInWorkspace(alpha)).toBe(1)
+    expect(ledger.positionInWorkspace(beta)).toBe(0)
+
+    const alphaChannel = (await ledger.createChannel({ requestId: requestId('ch-a'), workspaceId: alpha, name: 'a', description: '', memberIds: [member.memberId], actor: agentTeamHumanActor() })).value.channel
+    await ledger.sendMessage({ requestId: requestId('msg-a'), workspaceId: alpha, channelRef: alphaChannel.channelRef, body: 'A', asTask: false, actor })
+    // channel-created and message-sent both carry data.workspaceId = alpha.
+    expect(ledger.positionInWorkspace(alpha)).toBe(3)
+    expect(ledger.positionInWorkspace(beta)).toBe(0)
+
+    // joinWorkspace counts under beta (its own data.workspaceId).
+    await ledger.joinWorkspace({ requestId: requestId('join-beta'), workspaceId: beta, memberId: member.memberId, actor: agentTeamHumanActor() })
+    expect(ledger.positionInWorkspace(beta)).toBe(1)
+    // A member edit counts under the Member's default Workspace, not beta.
+    await ledger.updateMember({ requestId: requestId('upd'), memberId: member.memberId, handle: member.handle, description: 'updated', actor: agentTeamHumanActor() })
+    expect(ledger.positionInWorkspace(alpha)).toBe(4)
+    expect(ledger.positionInWorkspace(beta)).toBe(1)
+
+    // Replay rebuilds identical counts (no separate durable store).
+    const replay = replayLedger(test)
+    expect(replay.positionInWorkspace(alpha)).toBe(ledger.positionInWorkspace(alpha))
+    expect(replay.positionInWorkspace(beta)).toBe(ledger.positionInWorkspace(beta))
+    replay.validate()
   })
 })

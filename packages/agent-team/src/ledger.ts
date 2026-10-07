@@ -531,6 +531,15 @@ export class AgentTeamLedger {
    * also stays monotone across a restart.
    */
   private projectionVersion = 0
+  /**
+   * Committed-operation count per Workspace, maintained incrementally on every
+   * live apply and rebuilt by replay. It is written only when `applyTo` targets
+   * the live state, so a record-validation scratch projection never disturbs it.
+   * The idle-continuation watcher compares it between passes to tell whether a
+   * single Workspace's own activity reset its quiet hold — the global position
+   * cannot, because any other Workspace's writes move that too.
+   */
+  private readonly workspacePositionCache = new Map<WorkspaceId, number>()
 
   constructor(
     private readonly table: KvTable<AgentTeamOperationId, AgentTeamOperation>,
@@ -887,6 +896,44 @@ export class AgentTeamLedger {
    */
   position(): number {
     return this.state.ordered.length
+  }
+
+  /**
+   * Committed operations attributable to one Workspace. Unlike {@link position}
+   * this moves only when that Workspace's own operations commit, so the
+   * continuation watcher's per-Workspace quiet holds can ignore activity in
+   * unrelated Workspaces. Member lifecycle records count under the Member's
+   * default Workspace (`member.workspaceId`), matching how their brand scopes.
+   */
+  positionInWorkspace(workspaceId: WorkspaceId): number {
+    return this.workspacePositionCache.get(workspaceId) ?? 0
+  }
+
+  /**
+   * The Workspaces one committed operation belongs to. Operations that carry an
+   * explicit `data.workspaceId` are scoped there directly; Member lifecycle
+   * records fall back to the Member's default Workspace (`data.member.workspaceId`).
+   * `team/initialized` belongs to no Workspace.
+   */
+  private operationWorkspaces(operation: AgentTeamOperation): readonly WorkspaceId[] {
+    switch (operation.kind) {
+      case 'team/initialized':
+        return []
+      case 'team/member-added':
+      case 'team/member-suspended':
+      case 'team/member-resumed':
+      case 'team/member-session-restarted':
+      case 'team/member-context-cleared':
+      case 'team/member-session-renewed':
+      case 'team/member-session-rolled-over':
+      case 'team/member-updated':
+      case 'team/member-archived':
+      case 'team/member-removed':
+        return [operation.data.member.workspaceId]
+      default:
+        // Every remaining kind carries `data.workspaceId` directly.
+        return [operation.data.workspaceId]
+    }
   }
 
   /**
@@ -2901,6 +2948,13 @@ export class AgentTeamLedger {
 
   private applyTo(target: Projection, operation: AgentTeamOperation): void {
     target.ordered.push(operation)
+    if (target === this.state) {
+      // Incremental per-Workspace counts for live applies only; the record-
+      // validation replay targets a scratch projection and must not disturb them.
+      for (const workspaceId of this.operationWorkspaces(operation)) {
+        this.workspacePositionCache.set(workspaceId, (this.workspacePositionCache.get(workspaceId) ?? 0) + 1)
+      }
+    }
     target.byRequest.set(operation.requestId, operation)
     target.byOperation.set(operation.operationId, operation)
     if (operation.kind === 'team/initialized') return

@@ -578,6 +578,14 @@ export default class AgentTeam extends TypertRemoteService {
         .filter(member => member.state === 'enabled')
         .map(member => member.memberId)
     },
+    membersInWorkspace: workspaceId => {
+      const ledger = this.ledger
+      if (ledger === undefined) return []
+      return ledger.listMembers()
+        .filter(member => member.state === 'enabled' && ledger.workspacesOf(member.memberId).includes(workspaceId))
+        .map(member => member.memberId)
+    },
+    positionInWorkspace: workspaceId => this.ledger?.positionInWorkspace(workspaceId) ?? -1,
     presenceOf: memberId => {
       const member = this.ledger?.getMember(memberId)
       return member === undefined ? 'unavailable' : this.memberStatus(member).presence
