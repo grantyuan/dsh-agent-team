@@ -363,6 +363,25 @@ it('drives the complete opt-in Agent Team journey in real Web', async () => {
       const leftGap = inputBox!.x - cardBox!.x
       const rightGap = cardBox!.x + cardBox!.width - (inputBox!.x + inputBox!.width)
       expect(Math.abs(leftGap - rightGap)).toBeLessThanOrEqual(2)
+      // The custom role paragraph stages locally: the dialog edits a draft
+      // that only rides the member-added commit below — nothing durable
+      // happens here. The live UTF-8 counter mirrors the Host's 8 KiB
+      // ceiling before anything is staged or stored.
+      await dialog.getByRole('button', { name: '编辑段落' }).click()
+      const stageDialog = page.getByRole('dialog', { name: '自定义角色段落' })
+      const stageField = stageDialog.getByRole('textbox', { name: '自定义角色段落' })
+      await stageField.waitFor()
+      const stagedParagraph = '你是负责实现功能的资深工程师。'
+      await stageField.fill(stagedParagraph)
+      await stageDialog.getByText(`${Buffer.byteLength(stagedParagraph)} / 8192 字节`, { exact: true }).waitFor()
+      await settleAnimations(page)
+      await page.screenshot({ path: join(UI03_SHOTS, 'agent-create-prompt-stage.png'), fullPage: true })
+      await stageField.fill('段'.repeat(2731))
+      await stageDialog.getByText('超出 8192 字节上限（当前 8193 字节），请精简后再保存。').waitFor()
+      await expect.poll(async () => await stageDialog.getByRole('button', { name: '应用' }).isDisabled()).toBe(true)
+      await stageField.fill(stagedParagraph)
+      await stageDialog.getByRole('button', { name: '应用' }).click()
+      await expect.poll(() => page.getByRole('dialog', { name: '自定义角色段落' }).count()).toBe(0)
     }
     await dialog.getByRole('button', { name: '创建 Agent' }).click()
     await page.getByText(name, { exact: true }).waitFor({ timeout: 20_000 })
@@ -636,6 +655,69 @@ it('drives the complete opt-in Agent Team journey in real Web', async () => {
   await contextMenu.getByRole('menuitem', { name: '延续当前上下文' }).click()
   await expect.poll(async () => await editSave.isDisabled()).toBe(true)
   await agentEditor.getByRole('button', { name: '关闭', exact: true }).click()
+
+  // The custom role paragraph rides the editor as its own durable dialog: a
+  // fresh memberPromptView read fills the textarea, the live UTF-8 counter
+  // mirrors the Host ceiling, and the save commits one echo-complete member
+  // update while the editor stays open.
+  const storedParagraph = '你是负责实现功能的资深工程师。'
+  const editedParagraph = '你是负责实现功能的资深工程师，坚持小步提交与完整验证。'
+  await builderRow.hover()
+  await builderRow.getByRole('button', { name: 'builder 的操作' }).click()
+  await page.getByRole('menuitem', { name: '编辑 Agent' }).click()
+  const promptEditor = page.getByRole('dialog', { name: '编辑 Agent' })
+  await promptEditor.getByRole('button', { name: '编辑段落' }).click()
+  const promptDialog = page.getByRole('dialog', { name: '自定义角色段落' })
+  const promptField = promptDialog.getByRole('textbox', { name: '自定义角色段落' })
+  await expect.poll(() => promptField.inputValue()).toBe(storedParagraph)
+  await promptDialog.getByText(`${Buffer.byteLength(storedParagraph)} / 8192 字节`, { exact: true }).waitFor()
+  await settleAnimations(page)
+  await page.screenshot({ path: join(UI04_SHOTS, 'agent-edit-prompt-dialog.png'), fullPage: true })
+  await promptField.fill('段'.repeat(2731))
+  await promptDialog.getByText('超出 8192 字节上限（当前 8193 字节），请精简后再保存。').waitFor()
+  await expect.poll(async () => await promptDialog.getByRole('button', { name: '保存' }).isDisabled()).toBe(true)
+  await promptField.fill(editedParagraph)
+  await promptDialog.getByRole('button', { name: '保存' }).click()
+  await expect.poll(() => page.getByRole('dialog', { name: '自定义角色段落' }).count()).toBe(0)
+  // The commit is durable: reopening reads the new paragraph back through
+  // memberPromptView.
+  await promptEditor.getByRole('button', { name: '编辑段落' }).click()
+  const reopenedPrompt = page.getByRole('dialog', { name: '自定义角色段落' })
+  await expect.poll(() => reopenedPrompt.getByRole('textbox', { name: '自定义角色段落' }).inputValue()).toBe(editedParagraph)
+  // The reopened read equals the stored paragraph, so the save gates on the
+  // untouched text.
+  await expect.poll(async () => await reopenedPrompt.getByRole('button', { name: '保存' }).isDisabled()).toBe(true)
+  await settleAnimations(page)
+  await page.screenshot({ path: join(UI04_SHOTS, 'agent-edit-prompt-committed.png'), fullPage: true })
+  await reopenedPrompt.getByRole('button', { name: '取消' }).click()
+  await expect.poll(() => page.getByRole('dialog', { name: '自定义角色段落' }).count()).toBe(0)
+  await promptEditor.getByRole('button', { name: '关闭', exact: true }).click()
+
+  // The Prompt dialog rides the 390 breakpoint: the collapsed rail expands,
+  // the editor reopens from the panel, and the dialog stays inside the
+  // viewport with the committed paragraph loaded.
+  await page.setViewportSize({ width: 390, height: 844 })
+  await page.locator('[data-sidebar-collapsed="true"]').waitFor()
+  await page.getByRole('button', { name: '打开侧边栏' }).click()
+  await builderRow.hover()
+  await builderRow.getByRole('button', { name: 'builder 的操作' }).click()
+  await page.getByRole('menuitem', { name: '编辑 Agent' }).click()
+  const narrowEditor = page.getByRole('dialog', { name: '编辑 Agent' })
+  await narrowEditor.getByRole('button', { name: '编辑段落' }).click()
+  const narrowPrompt = page.getByRole('dialog', { name: '自定义角色段落' })
+  await expect.poll(() => narrowPrompt.getByRole('textbox', { name: '自定义角色段落' }).inputValue()).toBe(editedParagraph)
+  await expect.poll(async () => await narrowPrompt.getByRole('button', { name: '保存' }).isDisabled()).toBe(true)
+  const narrowPromptBox = await narrowPrompt.boundingBox()
+  expect(narrowPromptBox).not.toBeNull()
+  expect(narrowPromptBox!.x).toBeGreaterThanOrEqual(0)
+  expect(narrowPromptBox!.x + narrowPromptBox!.width).toBeLessThanOrEqual(390)
+  await settleAnimations(page)
+  await page.screenshot({ path: join(UI04_SHOTS, 'agent-edit-prompt-dialog-narrow.png'), fullPage: true })
+  await page.keyboard.press('Escape')
+  await expect.poll(() => page.getByRole('dialog', { name: '自定义角色段落' }).count()).toBe(0)
+  await narrowEditor.getByRole('button', { name: '关闭', exact: true }).click()
+  await page.setViewportSize({ width: 1440, height: 960 })
+  await expect.poll(() => page.locator('[class*="agentRow"]').count()).toBeGreaterThan(0)
 
   // The manual clear-context entry is retired (ticket 01): Members manage
   // their own context through the context_rollover tool, so every row menu must

@@ -277,12 +277,42 @@ describe('Agent Team display-fact updates', () => {
     // The start policy is the closed continue/fresh pair.
     await expect(ctx.agentTeam.updateMember({ requestId: requestId('policy-bad'), memberId, handle: 'builder', description: 'Still builds', contextStartPolicy: 'whenever' as never })).rejects.toThrow(/context start policy/)
 
-    // The prompt profile is shape-checked only at this layer: blank section
-    // names are intent errors, while sizes stay to the prompt ticket.
+    // The profile is shape-checked at this layer: blank section names are
+    // intent errors, and the paragraph is bounded in UTF-8 bytes — not code
+    // units — with the exact boundary value accepted.
     await expect(ctx.agentTeam.updateMember({ requestId: requestId('prompt-blank'), memberId, handle: 'builder', description: 'Still builds', prompt: { droppedSections: ['   '] } })).rejects.toThrow(/must not be empty/)
+    await expect(ctx.agentTeam.updateMember({ requestId: requestId('prompt-over'), memberId, handle: 'builder', description: 'Still builds', prompt: { customPrompt: '段'.repeat(2731) } })).rejects.toThrow(/must not exceed 8192 UTF-8 bytes/)
+    const boundary = await ctx.agentTeam.updateMember({ requestId: requestId('prompt-boundary'), memberId, handle: 'builder', description: 'Still builds', prompt: { customPrompt: `${'段'.repeat(2730)}ab` } })
+    expect(boundary.status.member.prompt).toEqual({ customPrompt: `${'段'.repeat(2730)}ab` })
+
+    // A whitespace-only paragraph normalizes to an absent profile on both
+    // write paths, and the idempotent-retry comparison normalizes the request
+    // the same way: differently-spaced blanks resolve, real drift collides.
+    const blank = await ctx.agentTeam.addMember({
+      requestId: requestId('blank-add'), workspaceId: alpha, handle: 'blank', description: 'Blank paragraph',
+      presetId: 'team-member', channelRefs: [], prompt: { customPrompt: '   ' },
+    })
+    expect(blank.status.member.prompt).toBeUndefined()
+    const blankEdit = await ctx.agentTeam.updateMember({ requestId: requestId('blank-edit'), memberId, handle: 'builder', description: 'Still builds', prompt: { droppedSections: ['skills'], customPrompt: '\n\t' } })
+    expect(blankEdit.status.member.prompt).toEqual({ droppedSections: ['skills'] })
+    const blankRetry = await ctx.agentTeam.updateMember({ requestId: requestId('blank-edit'), memberId, handle: 'builder', description: 'Still builds', prompt: { droppedSections: ['skills'], customPrompt: '   ' } })
+    expect(blankRetry.status.member.prompt).toEqual({ droppedSections: ['skills'] })
+    await expect(ctx.agentTeam.updateMember({ requestId: requestId('blank-edit'), memberId, handle: 'builder', description: 'Still builds', prompt: { droppedSections: ['skills'], customPrompt: 'Different' } })).rejects.toThrow(/was reused with a different operation or payload/)
 
     // Re-pin for the replay and restart assertions below.
     await ctx.agentTeam.updateMember({ requestId: requestId('repin'), memberId, handle: 'builder', description: 'Still builds', prompt, contextStartPolicy: 'fresh', contextWindow: 96_000 })
+
+    // The Human read behind the Prompt dialog mirrors the stored profile plus
+    // the echo inputs its durable edit re-commits.
+    const promptView = ctx.agentTeam.memberPromptView({ memberId })
+    expect(promptView.prompt).toEqual(prompt)
+    expect(promptView.handle).toBe('builder')
+    expect(promptView.description).toBe('Still builds')
+    expect(promptView.state).toBe('enabled')
+    expect(promptView.contextStartPolicy).toBe('fresh')
+    expect(promptView.contextWindow).toBe(96_000)
+    expect(promptView.model).toBeUndefined()
+    expect(promptView.capabilities).toBeUndefined()
 
     // A Member written before the fields existed replays without them.
     const legacy = await seedMember(ctx, created.channel.channelRef, 'legacy')
@@ -301,11 +331,13 @@ describe('Agent Team display-fact updates', () => {
     // durable context facts, legacy Member still field-free.
     const records = [...facility.get('agent_team')!.table('operations').entries()] as Array<[string, unknown]>
     const revived = await harness(storedPool(records))
-    expect(revived.ctx.agentTeam.status()).toMatchObject({ agentMemberCount: 2 })
+    expect(revived.ctx.agentTeam.status()).toMatchObject({ agentMemberCount: 3 })
     const restored = revived.ctx.agentTeam.membersForClient({ workspaceId: alpha }).find(status => status.member.memberId === memberId)
     expect(restored?.member.prompt).toEqual(prompt)
     expect(restored?.member.contextStartPolicy).toBe('fresh')
     expect(restored?.member.contextWindow).toBe(96_000)
+    const restoredBlank = revived.ctx.agentTeam.membersForClient({ workspaceId: alpha }).find(status => status.member.memberId === blank.status.member.memberId)
+    expect(restoredBlank?.member.prompt).toBeUndefined()
     const restoredLegacy = revived.ctx.agentTeam.membersForClient({ workspaceId: alpha }).find(status => status.member.memberId === legacy.status.member.memberId)
     expect(restoredLegacy?.member.contextStartPolicy).toBeUndefined()
     expect(restoredLegacy?.member.contextWindow).toBeUndefined()

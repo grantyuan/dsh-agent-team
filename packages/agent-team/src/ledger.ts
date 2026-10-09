@@ -518,6 +518,32 @@ function freezePromptProfile(prompt: AgentTeamMemberPromptProfile | undefined): 
   }
 }
 
+/** The custom role paragraph is bounded in UTF-8 bytes, so CJK prose costs what it ships. */
+const MEMBER_PROMPT_MAX_BYTES = 8192
+
+/** One shared encoder: the commit rule, its diagnostics, and retries measure identically. */
+const promptBytes = new TextEncoder()
+
+function customPromptByteLength(text: string): number {
+  return promptBytes.encode(text).length
+}
+
+/**
+ * Normalize one Remote-supplied prompt profile for storage: a whitespace-only
+ * custom paragraph is the empty paragraph and stores as an absent field, so
+ * "no paragraph" has one durable representation. The other subfields ride
+ * verbatim; a profile left without any field stores as absent.
+ */
+function normalizePromptProfile(prompt: AgentTeamMemberPromptProfile | undefined): AgentTeamMemberPromptProfile | undefined {
+  if (prompt === undefined) return undefined
+  const normalized = {
+    ...(prompt.droppedSections === undefined ? {} : { droppedSections: prompt.droppedSections }),
+    ...(prompt.customPrompt === undefined || prompt.customPrompt.trim() === '' ? {} : { customPrompt: prompt.customPrompt }),
+    ...(prompt.autoPrune === undefined ? {} : { autoPrune: prompt.autoPrune }),
+  }
+  return Object.keys(normalized).length === 0 ? undefined : normalized
+}
+
 /** Replay and append logic behind the Agent Team service interface. */
 export class AgentTeamLedger {
   /** Live projection; record validation replays build independent Projection values instead. */
@@ -691,11 +717,15 @@ export class AgentTeamLedger {
       this.assertCapabilities(request.member.capabilities)
       this.assertContextControl(request.member.contextStartPolicy, request.member.contextWindow)
       this.assertPromptProfile(request.member.prompt)
+      // The request's raw prompt must not ride the identity spread: a blank
+      // paragraph normalizes to an absent field, and the profile spread below
+      // cannot remove a key the identity spread already planted.
+      const { prompt: _requestPrompt, ...requestMemberWithoutPrompt } = request.member
       const member = Object.freeze({
-        ...request.member, handle, description, presetId, state: 'enabled' as const,
+        ...requestMemberWithoutPrompt, handle, description, presetId, state: 'enabled' as const,
         ...(request.member.model === undefined ? {} : { model: Object.freeze({ ...request.member.model }) }),
         ...freezeCapabilities(request.member.capabilities),
-        ...freezePromptProfile(request.member.prompt),
+        ...freezePromptProfile(normalizePromptProfile(request.member.prompt)),
         ...(request.member.contextStartPolicy === undefined ? {} : { contextStartPolicy: request.member.contextStartPolicy }),
         ...(request.member.contextWindow === undefined ? {} : { contextWindow: request.member.contextWindow }),
       })
@@ -737,7 +767,7 @@ export class AgentTeamLedger {
         ...priorWithoutOverlays, handle, description,
         ...(request.model === undefined ? {} : { model: Object.freeze({ ...request.model }) }),
         ...freezeCapabilities(request.capabilities),
-        ...freezePromptProfile(request.prompt),
+        ...freezePromptProfile(normalizePromptProfile(request.prompt)),
         ...(request.contextStartPolicy === undefined ? {} : { contextStartPolicy: request.contextStartPolicy }),
         ...(request.contextWindow === undefined ? {} : { contextWindow: request.contextWindow }),
         ...(request.leader === undefined ? {} : { leader: request.leader }),
@@ -4367,12 +4397,18 @@ export class AgentTeamLedger {
   }
 
   /**
-   * Prompt profiles are shape-checked only: names must be non-blank. Sizes
-   * and known-section membership belong to the prompt-profile work, so an
-   * edit can never make an old ledger unreplayable.
+   * Prompt profile commit rule: section names must be non-blank and the custom
+   * paragraph must fit the UTF-8 byte bound, measured on the normalized form
+   * that will be stored. The replay schema stays shape-only, so a tightened
+   * commit rule can never make an old ledger unreplayable.
    */
   private assertPromptProfile(prompt: AgentTeamUpdateMemberRequest['prompt']): void {
-    if (prompt?.droppedSections?.some(name => name.trim() === '')) throw new Error('prompt profile section names must not be empty')
+    const normalized = normalizePromptProfile(prompt)
+    if (normalized?.droppedSections?.some(name => name.trim() === '')) throw new Error('prompt profile section names must not be empty')
+    const customPrompt = normalized?.customPrompt
+    if (customPrompt !== undefined && customPromptByteLength(customPrompt) > MEMBER_PROMPT_MAX_BYTES) {
+      throw new Error(`custom prompt paragraph must not exceed ${MEMBER_PROMPT_MAX_BYTES} UTF-8 bytes`)
+    }
   }
 
   private initialization(): AgentTeamInitializedOperation {
@@ -4405,7 +4441,7 @@ export class AgentTeamLedger {
       || operation.data.member.description !== request.description.trim() || operation.data.member.presetId !== request.presetId.trim()
       || !isDeepStrictEqual(operation.data.member.model ?? undefined, request.member.model ?? undefined)
       || !isDeepStrictEqual(operation.data.member.capabilities ?? undefined, request.member.capabilities ?? undefined)
-      || !isDeepStrictEqual(operation.data.member.prompt ?? undefined, request.member.prompt ?? undefined)
+      || !isDeepStrictEqual(operation.data.member.prompt ?? undefined, normalizePromptProfile(request.member.prompt))
       || (operation.data.member.contextStartPolicy ?? undefined) !== (request.member.contextStartPolicy ?? undefined)
       || (operation.data.member.contextWindow ?? undefined) !== (request.member.contextWindow ?? undefined)
       || !this.sameList(operation.data.channelRefs, this.normalizeUnique(request.channelRefs, 'initial Member Channels'))) this.throwRequestCollision(request.requestId)
@@ -4443,7 +4479,7 @@ export class AgentTeamLedger {
       || operation.data.member.description !== request.description.trim()
       || !isDeepStrictEqual(operation.data.member.model ?? undefined, request.model ?? undefined)
       || !isDeepStrictEqual(operation.data.member.capabilities ?? undefined, request.capabilities ?? undefined)
-      || !isDeepStrictEqual(operation.data.member.prompt ?? undefined, request.prompt ?? undefined)
+      || !isDeepStrictEqual(operation.data.member.prompt ?? undefined, normalizePromptProfile(request.prompt))
       || (operation.data.member.contextStartPolicy ?? undefined) !== (request.contextStartPolicy ?? undefined)
       || (operation.data.member.contextWindow ?? undefined) !== (request.contextWindow ?? undefined)
       || (operation.data.member.leader ?? undefined) !== (request.leader ?? undefined)) this.throwRequestCollision(request.requestId)

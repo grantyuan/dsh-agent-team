@@ -28,6 +28,8 @@ import type {
   AgentTeamPutAttachmentRequest,
   AgentTeamPutAttachmentResult,
   AgentTeamMemberResult,
+  AgentTeamMemberPromptView,
+  AgentTeamMemberPromptViewRequest,
   AgentTeamAddMemberResult,
   AgentTeamRecoverMemberRequest,
   AgentTeamRecoverMemberResult,
@@ -123,6 +125,8 @@ export type TeamSidebarProps = PropsRuntime<'sidebar.workspaces'>
     updateChannel: (request: AgentTeamUpdateChannelRequest) => Promise<RemoteResult<AgentTeamUpdateChannelResult>>
     archiveChannel: (request: AgentTeamArchiveChannelRequest) => Promise<RemoteResult<AgentTeamArchiveChannelResult>>
     updateMember: (request: AgentTeamUpdateMemberRequest) => Promise<RemoteResult<AgentTeamMemberResult>>
+    /** Fresh Host read behind the Prompt dialog: the stored profile plus the echo inputs its durable edit re-commits. */
+    loadPromptView: (request: AgentTeamMemberPromptViewRequest) => Promise<RemoteResult<AgentTeamMemberPromptView>>
     recoverMember: (request: AgentTeamRecoverMemberRequest) => Promise<RemoteResult<AgentTeamRecoverMemberResult>>
     /**
      * Host clear-context remote: the visible "reset" row action renews the

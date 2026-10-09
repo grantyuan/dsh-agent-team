@@ -51,7 +51,9 @@ UI work 的边界如下：
 
 - Human navigation 从 Channels 开始，沿 Workspace → Channel → Thread；真实 Task 是其 Thread 上的 card/header overlay。 Channel composer 默认创建 taskless Thread，并提供默认关闭的「作为任务」控件以原子创建 Task。 taskless Thread 保留 normal read/reply/inbox behavior，但在 promotion 前隐藏 Task status、Claims 和 Task-resolution controls。 Promotion 是 durable、non-optimistic 的 Host mutation；成功后 Client 重新读取 Thread 和 supplemental projections，而不是本地合成 Task。
 
-  Agent 的创建与编辑对话框携带 handle、description、model 和任务启动上下文块——continue/fresh 策略选择器加一个上下文窗口覆盖输入。该块与 model 走同一套 absent-clears 语义：fresh 策略与解析成功的窗口仅在设置时随请求发送，空输入读作「跟随模型路由窗口」，解析失败的输入渲染本地 alert 并禁用提交。编辑器对尚无 UI 的 `prompt` 画像按存储值原样回传，Remote 写入的画像因此在一次纯展示事实编辑后得以保留，与 `capabilities` 同一模式。
+  Agent 的创建与编辑对话框携带 handle、description、model 和任务启动上下文块——continue/fresh 策略选择器加一个上下文窗口覆盖输入。该块与 model 走同一套 absent-clears 语义：fresh 策略与解析成功的窗口仅在设置时随请求发送，空输入读作「跟随模型路由窗口」，解析失败的输入渲染本地 alert 并禁用提交。编辑器按「对话框已提交画像与行快照中较新者」回传 `prompt`，纯展示事实编辑因此绝不会因缺省清掉段落，与 `capabilities` 同一模式。
+
+  Prompt 对话框是该段落的唯一编辑器：每次打开都重新读取专用的 `memberPromptView` Remote——存储画像加 handle、description、state——渲染一个带实时 UTF-8 字节计数器的 textarea（镜像 Host 的 8192 字节上限），并提交一次 echo 齐全的 member update，把段落合并进读到的画像——`droppedSections` 与 `autoPrune` 得以保留，存储的 model/capabilities/context 覆盖也随行回传（缺席即清除）。非启用状态的 Member 只读渲染；创建表单的段落仅本地暂存，直到 member-added commit。
 
   Human Client 消费 Host 的 Inbox 投影（「收件箱 / Inbox」队列：合并各 Workspace 的徽标与页，覆盖读者的整片未读——mention 只在其中计数，绝不是准入条件——外加该读者写过 Message 的「最近活跃」段（回复过的 Thread 无论是否 follow 都算他的；按最新活跃降序，Host 侧每个 Workspace 上限 10，合并到页面上最多 5 条，永不进入 agent 的 Inbox）），但绝不维护并行 Inbox authority；打开页不确认任何内容。 Thread reads 使用 Host projections（`readThread`、`threadHistory`）和 Host mutations（replies、promotion、Task actions）。 当前 Thread UI 不提供 Attention controls 或 observations；其 Host Remote methods 留给后续自有 UI。 Browser 会持久化 Team navigation mode、Workspace selection、最近选中的 Channel 或 Thread 以及 Inbox 页位置（回到 Team 时恢复位置），但不持久化 unread 或 Attention。
 

@@ -4,6 +4,8 @@
 
 显式的 `team-member` preset 是唯一的 Team Member composition。它加入完整 coding capability rows（shell、filesystem/search、web search 与 fetch、background jobs、skill 加载工具、todo、compaction）；skill 发现本身不是 preset row——每个 Member 的 provider 由 Host 注册在其 agent scope 上（见 Host authority）、Team collaboration guidance/tools、Harness Workspace instruction discovery 和有界的 private-memory reference context。普通 Sessions 留在这个 isolated roster 之外，不会获得 Team prompt sections、tools 或 Member memory。
 
+每个 Member 还可携带一段 custom role paragraph：ledger 画像的 `customPrompt`，由 Host 限制在 8192 个 UTF-8 字节内、空白归一化为缺省（见 Host authority）。激活时它作为一个 scoped `systemPrompt.section`（`team:member-prompt`，排在既有 sections 之后）注册在 Member 自己的 agent scope 上，因此保持成员隔离，普通 Sessions 永远看不到它。编辑在与 tool、skill 编辑相同的 turn boundary 换装该 section，不续期 Session；段落清空或离开 Team 时解除注册。Human 通过 Web Client 的 Prompt 对话框经 `memberPromptView` Remote 编辑它（见 client-and-remote）。
+
 九个 model-facing tools 定义在 `packages/tool-agent-team/src/`：六个 Team 工具在 `index.ts`，三个 context 工具在 `context-tools.ts`；实现的 collaboration contract 记录在 [`tools.zh.md`](../team-collaboration/tools.zh.md)。它们挂载在隔离开的 `team-member` preset 下（`cordis.patch.yml` 里的一条 declarative row）。不要为了让测试可用就把 tool package 作为 global row 添加；普通 Sessions 必须保持 Team-free。
 
 Member 上下文自主管理在这些 preset 之上由 Host 编排。`context_rollover` 与 `context_checkpoint` 工具只做校验并结束/锚定 turn：在 tool 时，引擎的门先拒绝 Member 自己的 timeline 未列为 restorable 的 `checkpointRef`，通过这道门的 ref 仍由 Host 的 seed resolver（与换窗同一套）预校验，因此当下不可能成功的 ref 以 model-visible 的 error result 拒绝，而不是返回假 `scheduled`；可变 guard 集（jobs、route limits）在 commit seam 复查。

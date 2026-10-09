@@ -2,7 +2,8 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import type { RemoteResult } from '@deepseek-ai/dsh-typert-protocol'
-import { ContextPickerField, ModelPickerField, parseContextWindow } from '../src/client/TeamMemberEditor.tsx'
+import type { AgentTeamMemberId, AgentTeamMemberPromptView, AgentTeamMemberResult, AgentTeamUpdateMemberRequest } from '@wowyuarm/dsh-agent-team/types'
+import { ContextPickerField, MemberPromptDialog, ModelPickerField, parseContextWindow } from '../src/client/TeamMemberEditor.tsx'
 import { zh } from '../src/client/locales.ts'
 import type { TeamModelCatalog } from '../src/client/slots.ts'
 
@@ -151,5 +152,156 @@ describe('parseContextWindow', () => {
     expect(parseContextWindow('-1')).toBeNaN()
     expect(parseContextWindow('abc')).toBeNaN()
     expect(parseContextWindow('9'.repeat(400))).toBeNaN()
+  })
+})
+
+const promptMemberId = 'member:prompt-1' as AgentTeamMemberId
+
+function promptView(overrides: Partial<AgentTeamMemberPromptView> = {}): AgentTeamMemberPromptView {
+  return {
+    memberId: promptMemberId,
+    handle: 'builder',
+    description: 'Builds changes',
+    state: 'enabled',
+    prompt: { customPrompt: 'Stored paragraph.' },
+    ...overrides,
+  }
+}
+
+const viewOk = (value: AgentTeamMemberPromptView): Promise<RemoteResult<AgentTeamMemberPromptView>> =>
+  Promise.resolve({ ok: true, value } as RemoteResult<AgentTeamMemberPromptView>)
+// A plain impl (not a shared vi.fn): each test wraps it in its own `vi.fn`, so
+// call records never leak between tests.
+const updateCommit = async (_request: AgentTeamUpdateMemberRequest): Promise<RemoteResult<AgentTeamMemberResult>> =>
+  ({ ok: true, value: {} }) as unknown as RemoteResult<AgentTeamMemberResult>
+
+describe('MemberPromptDialog stage mode', () => {
+  it('stages a local paragraph with a live UTF-8 byte counter and refuses to apply an over-limit one', () => {
+    const onApply = vi.fn()
+    render(<MemberPromptDialog mode="stage" initialText="已有段落" onApply={onApply} onClose={() => {}} t={t} />)
+    const box = screen.getByRole('textbox', { name: '自定义角色段落' }) as HTMLTextAreaElement
+    expect(box.value).toBe('已有段落')
+    // Four CJK characters measure 12 UTF-8 bytes, not 4 code units.
+    expect(screen.getByText('12 / 8192 字节')).toBeTruthy()
+    fireEvent.change(box, { target: { value: '段'.repeat(2731) } })
+    expect(screen.getByRole('alert').textContent).toBe('超出 8192 字节上限（当前 8193 字节），请精简后再保存。')
+    expect((screen.getByRole('button', { name: '应用' }) as HTMLButtonElement).disabled).toBe(true)
+    expect(onApply).not.toHaveBeenCalled()
+    fireEvent.change(box, { target: { value: '新段落' } })
+    expect(screen.queryByRole('alert')).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: '应用' }))
+    expect(onApply).toHaveBeenCalledWith('新段落')
+  })
+})
+
+describe('MemberPromptDialog edit mode', () => {
+  it('loads the stored paragraph, commits an echo-complete update, and reports the merged profile', async () => {
+    const loadPromptView = vi.fn(() => viewOk(promptView({ prompt: { droppedSections: ['skills'], customPrompt: 'Stored paragraph.', autoPrune: true } })))
+    const updateMember = vi.fn(updateCommit)
+    const onCommitted = vi.fn()
+    render(
+      <MemberPromptDialog
+        mode="edit"
+        memberId={promptMemberId}
+        loadPromptView={loadPromptView}
+        updateMember={updateMember}
+        onCommitted={onCommitted}
+        onClose={() => {}}
+        t={t}
+      />,
+    )
+    const box = await screen.findByRole('textbox', { name: '自定义角色段落' }) as HTMLTextAreaElement
+    expect(box.value).toBe('Stored paragraph.')
+    fireEvent.change(box, { target: { value: 'New paragraph.' } })
+    fireEvent.click(screen.getByRole('button', { name: '保存' }))
+    await waitFor(() => expect(updateMember).toHaveBeenCalledTimes(1))
+    const request = updateMember.mock.calls[0]![0] as AgentTeamUpdateMemberRequest
+    // Merge, never replace: the other profile subfields survive a paragraph
+    // edit, and absent-clears makes the stored echo inputs ride the commit.
+    expect(request.prompt).toEqual({ droppedSections: ['skills'], customPrompt: 'New paragraph.', autoPrune: true })
+    expect(request.handle).toBe('builder')
+    expect(request.description).toBe('Builds changes')
+    expect(onCommitted).toHaveBeenCalledWith({ droppedSections: ['skills'], customPrompt: 'New paragraph.', autoPrune: true })
+  })
+
+  it('keeps the save disabled while the paragraph is untouched', async () => {
+    const loadPromptView = vi.fn(() => viewOk(promptView({ prompt: { customPrompt: 'Stored paragraph.' } })))
+    render(
+      <MemberPromptDialog
+        mode="edit"
+        memberId={promptMemberId}
+        loadPromptView={loadPromptView}
+        updateMember={vi.fn(updateCommit)}
+        onCommitted={() => {}}
+        onClose={() => {}}
+        t={t}
+      />,
+    )
+    await screen.findByRole('textbox', { name: '自定义角色段落' })
+    expect((screen.getByRole('button', { name: '保存' }) as HTMLButtonElement).disabled).toBe(true)
+  })
+
+  it('keeps the save disabled while the paragraph exceeds the byte limit', async () => {
+    const loadPromptView = vi.fn(() => viewOk(promptView()))
+    const updateMember = vi.fn(updateCommit)
+    render(
+      <MemberPromptDialog
+        mode="edit"
+        memberId={promptMemberId}
+        loadPromptView={loadPromptView}
+        updateMember={updateMember}
+        onCommitted={() => {}}
+        onClose={() => {}}
+        t={t}
+      />,
+    )
+    const box = await screen.findByRole('textbox', { name: '自定义角色段落' }) as HTMLTextAreaElement
+    fireEvent.change(box, { target: { value: '段'.repeat(2731) } })
+    expect(screen.getByRole('alert').textContent).toBe('超出 8192 字节上限（当前 8193 字节），请精简后再保存。')
+    expect((screen.getByRole('button', { name: '保存' }) as HTMLButtonElement).disabled).toBe(true)
+    expect(updateMember).not.toHaveBeenCalled()
+  })
+
+  it('renders a non-enabled Member read-only with the save disabled', async () => {
+    const loadPromptView = vi.fn(() => viewOk(promptView({ state: 'suspended' })))
+    const updateMember = vi.fn(updateCommit)
+    render(
+      <MemberPromptDialog
+        mode="edit"
+        memberId={promptMemberId}
+        loadPromptView={loadPromptView}
+        updateMember={updateMember}
+        onCommitted={() => {}}
+        onClose={() => {}}
+        t={t}
+      />,
+    )
+    const box = await screen.findByRole('textbox', { name: '自定义角色段落' }) as HTMLTextAreaElement
+    expect(box.hasAttribute('disabled')).toBe(true)
+    expect(screen.getByText('该成员当前不是启用状态，段落以只读展示。')).toBeTruthy()
+    expect((screen.getByRole('button', { name: '保存' }) as HTMLButtonElement).disabled).toBe(true)
+    expect(updateMember).not.toHaveBeenCalled()
+  })
+
+  it('renders the read failure with a retry entry that reloads the view', async () => {
+    const loadPromptView = vi.fn(() => Promise.resolve({ ok: false, error: { message: 'read refused' } }) as Promise<RemoteResult<AgentTeamMemberPromptView>>)
+    render(
+      <MemberPromptDialog
+        mode="edit"
+        memberId={promptMemberId}
+        loadPromptView={loadPromptView}
+        updateMember={updateCommit}
+        onCommitted={() => {}}
+        onClose={() => {}}
+        t={t}
+      />,
+    )
+    expect(await screen.findByRole('alert')).toBeTruthy()
+    expect(screen.getByRole('alert').textContent).toBe('段落读取失败：read refused')
+    expect(screen.queryByRole('textbox', { name: '自定义角色段落' })).toBeNull()
+    loadPromptView.mockImplementation(() => viewOk(promptView()))
+    fireEvent.click(screen.getByRole('button', { name: '重试' }))
+    expect(await screen.findByRole('textbox', { name: '自定义角色段落' })).toBeTruthy()
+    expect(loadPromptView).toHaveBeenCalledTimes(2)
   })
 })

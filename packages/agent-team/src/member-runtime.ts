@@ -2,8 +2,8 @@
  * Per-Member runtime state extracted from the Agent Team Host service: the
  * cohesive per-Member maps and methods that must dispose together across
  * activation, edit, suspend, and removal — the tool-policy restriction seam,
- * the private skill selection/provider mounts, capability warnings, and
- * private-memory provisioning.
+ * the custom role paragraph section, the private skill selection/provider
+ * mounts, capability warnings, and private-memory provisioning.
  *
  * This class is Host-side by design: its turn-boundary wait subscribes to
  * Host-level agent events, and every traceable-service registration goes
@@ -52,6 +52,20 @@ export const AGENT_TEAM_TOOL_NAMES = Object.freeze([
   'context_checkpoint',
   'context_timeline',
 ] as const)
+
+/**
+ * Section name one Member's custom role paragraph registers under. Namespaced
+ * like the shipped team sections so it cannot collide with any harness-owned
+ * or preset-owned name.
+ */
+export const MEMBER_PROMPT_SECTION_NAME = 'team:member-prompt'
+
+/**
+ * Placement after every harness-owned section: the deployment persona suffix,
+ * the last centrally allocated row, sits at 10200, so a human-written role
+ * paragraph reads as the Member's own closing word.
+ */
+export const MEMBER_PROMPT_SECTION_ORDER = 10300
 
 /** Copy a Remote-supplied capability overlay into owned frozen storage. */
 export function deepCopyCapabilities(capabilities: AgentTeamMemberCapabilities): AgentTeamMemberCapabilities {
@@ -128,6 +142,8 @@ export class MemberRuntime {
   private readonly skillSelections = new Map<AgentTeamMemberId, MemberSkillSelectionRef>()
   /** Per-Member private skill provider disposers; released with the Member's agent scope. */
   private readonly skillProviderDisposals = new Map<AgentTeamMemberId, () => void>()
+  /** Live per-Member custom role paragraph disposers; released with the Member's agent scope. */
+  private readonly memberPromptSections = new Map<AgentTeamMemberId, () => void>()
 
   constructor(private readonly deps: MemberRuntimeDeps) {}
 
@@ -188,6 +204,37 @@ export class MemberRuntime {
   private setCapabilityWarnings(memberId: AgentTeamMemberId, warnings: readonly AgentTeamCapabilityWarning[]): void {
     if (warnings.length === 0) this.capabilityWarnings.delete(memberId)
     else this.capabilityWarnings.set(memberId, Object.freeze([...warnings]))
+  }
+
+  /**
+   * Register one Member's custom role paragraph as a scoped prompt section on
+   * the freshly composed agent scope. Scoping is the isolation: the section
+   * joins only this Member's assembled prompt, never a sibling Member or an
+   * ordinary Session. A blank stored paragraph registers nothing.
+   */
+  applyMemberPromptSection(agentCtx: Context, member: AgentTeamAgentMember): void {
+    const customPrompt = member.prompt?.customPrompt
+    if (customPrompt === undefined || customPrompt.trim() === '') return
+    this.memberPromptSections.set(member.memberId, agentCtx.systemPrompt.section({
+      name: MEMBER_PROMPT_SECTION_NAME,
+      order: MEMBER_PROMPT_SECTION_ORDER,
+      text: customPrompt,
+    }))
+  }
+
+  /** Swap a live Member's role paragraph: release the old section, then re-register from the stored profile. */
+  reapplyMemberPromptSection(member: AgentTeamAgentMember): void {
+    this.releaseMemberPromptSection(member.memberId)
+    this.applyMemberPromptSection(this.deps.liveMemberContext(member.memberId), member)
+  }
+
+  /** Release one Member's custom role paragraph disposer; safe to call twice. */
+  releaseMemberPromptSection(memberId: AgentTeamMemberId): void {
+    const dispose = this.memberPromptSections.get(memberId)
+    if (dispose !== undefined) {
+      this.memberPromptSections.delete(memberId)
+      dispose()
+    }
   }
 
   /**
@@ -349,6 +396,7 @@ export class MemberRuntime {
       providerDispose()
     }
     this.releaseMemberToolPolicy(memberId)
+    this.releaseMemberPromptSection(memberId)
   }
 
   /** Dispose every registered per-Member seam; service shutdown only. */
@@ -358,6 +406,8 @@ export class MemberRuntime {
     this.skillProviderDisposals.clear()
     for (const dispose of this.memberRestrictions.values()) dispose()
     this.memberRestrictions.clear()
+    for (const dispose of this.memberPromptSections.values()) dispose()
+    this.memberPromptSections.clear()
     this.capabilityWarnings.clear()
   }
 }

@@ -101,6 +101,8 @@ import type {
   AgentTeamMemberActor,
   AgentTeamMessageAttachment,
   AgentTeamMemberId,
+  AgentTeamMemberPromptView,
+  AgentTeamMemberPromptViewRequest,
   AgentTeamMemberResult,
   AgentTeamMembersRequest,
   AgentTeamResolveTaskRefsRequest,
@@ -1007,6 +1009,24 @@ export default class AgentTeam extends TypertRemoteService {
     return this.members()
       .filter(status => request.workspaceId === undefined || ledger.participatesIn(status.member.memberId, request.workspaceId))
       .map(({ member: { privateMemoryPath: _privateMemoryPath, ...member }, ...status }) => Object.freeze({ ...status, member: Object.freeze(member), workspaceIds: ledger.workspacesOf(member.memberId) }))
+  }
+
+  /** Human read behind the Prompt dialog: the stored prompt profile plus the lifecycle facts it renders from. */
+  @Remote('memberPromptView')
+  memberPromptView(request: AgentTeamMemberPromptViewRequest): AgentTeamMemberPromptView {
+    const member = this.requireLedger().getMember(request.memberId)
+    if (member === undefined) throw new Error(`unknown Agent Member '${request.memberId}'`)
+    return Object.freeze({
+      memberId: member.memberId,
+      handle: member.handle,
+      description: member.description,
+      state: member.state,
+      ...(member.prompt === undefined ? {} : { prompt: member.prompt }),
+      ...(member.model === undefined ? {} : { model: member.model }),
+      ...(member.capabilities === undefined ? {} : { capabilities: member.capabilities }),
+      ...(member.contextStartPolicy === undefined ? {} : { contextStartPolicy: member.contextStartPolicy }),
+      ...(member.contextWindow === undefined ? {} : { contextWindow: member.contextWindow }),
+    })
   }
 
   /** Emit a current baseline, then coalesced invalidations until canceled. */
@@ -2196,6 +2216,9 @@ export default class AgentTeam extends TypertRemoteService {
       if (active !== undefined && !isDeepStrictEqual(previous?.capabilities ?? undefined, stored.capabilities ?? undefined)) {
         await this.applyCapabilityEdit(active, stored)
       }
+      if (active !== undefined && !isDeepStrictEqual(previous?.prompt ?? undefined, stored.prompt ?? undefined)) {
+        await this.applyPromptEdit(active, stored)
+      }
       return Object.freeze({ receipt: result.value.receipt, status: this.memberStatus(stored) })
     })
   }
@@ -2220,6 +2243,26 @@ export default class AgentTeam extends TypertRemoteService {
     }
     this.memberRuntime.reapplyMemberToolPolicy(stored)
     this.memberRuntime.swapSkillSelection(memberId, stored.capabilities?.skills?.allow)
+  }
+
+  /**
+   * Live-apply a prompt edit at a turn boundary: while the Agent runs, the
+   * current turn keeps its assembled prompt; the swap happens once idle, so
+   * the next step assembles with the new custom paragraph, with the same
+   * Session and history surviving. Suspend/remove during the wait cancels
+   * the swap — the disposed scope released the old section already and no
+   * disposer leaks.
+   */
+  private async applyPromptEdit(active: AgentHandle, stored: AgentTeamAgentMember): Promise<void> {
+    const memberId = stored.memberId
+    const waited = await this.memberRuntime.awaitTurnBoundary(active)
+    if (waited && this.handles.get(memberId) !== active) {
+      // The wait resolved because the old generation was disposed, not
+      // because the turn ended; the ledger intent applies at the next
+      // activation instead.
+      return
+    }
+    this.memberRuntime.reapplyMemberPromptSection(stored)
   }
 
   /** Irreversibly remove one Member, archive its Session, and delete its private namespace. */
@@ -3553,6 +3596,7 @@ export default class AgentTeam extends TypertRemoteService {
         try {
           await this.ctx.agentPresets.mount(agentCtx, member.presetId)
           this.memberRuntime.applyMemberToolPolicy(agentCtx, member)
+          this.memberRuntime.applyMemberPromptSection(agentCtx, member)
           this.validateMemberPreset(agentCtx)
         } catch (error) {
           // Tag composition failures with their own class: the activation

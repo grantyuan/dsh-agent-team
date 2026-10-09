@@ -30,6 +30,32 @@
   width: 100%;
 }
 
+/* The prompt paragraph textarea shares the Input atom chrome (border, radius,
+   focus ring) and starts six rows tall; vertical resize lets a long paragraph
+   grow inside the dialog's own scroll region instead of stretching it. */
+.textArea {
+  border: 1px solid var(--dsw-alias-border-l2);
+  border-radius: var(--dsw-radius-sm, 8px);
+  box-sizing: border-box;
+  color: var(--dsw-alias-label-primary);
+  font: inherit;
+  line-height: 22px;
+  min-height: 132px;
+  padding: 6px 10px;
+  resize: vertical;
+  width: 100%;
+}
+
+.textArea:disabled {
+  cursor: default;
+  opacity: 0.6;
+}
+
+.textArea:focus-visible {
+  border-color: var(--dsw-alias-brand-primary);
+  outline: none;
+}
+
 /* Picker lists cap their card and scroll internally so growing model
    catalogs cannot stretch the dialog. */
 .menuCap {

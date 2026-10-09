@@ -141,6 +141,34 @@ export interface AgentTeamUpdateMemberRequest {
   readonly leader?: boolean
 }
 
+/** Human read of one Member's prompt profile for the Prompt dialog. */
+export interface AgentTeamMemberPromptViewRequest {
+  readonly memberId: AgentTeamMemberId
+}
+
+/**
+ * Host view behind the Prompt dialog: the stored prompt profile, the
+ * lifecycle facts the dialog renders from, and the stored overrides its
+ * durable edit must echo back (absent-clears). The section list, usage
+ * projection, and curation surfaces join as optional fields when the
+ * prompt-profile work lands them; existing consumers stay source-compatible.
+ */
+export interface AgentTeamMemberPromptView {
+  readonly memberId: AgentTeamMemberId
+  readonly handle: string
+  /** Display purpose text the durable edit re-commits. */
+  readonly description: string
+  /** Lifecycle state; suspended/archived/inactive Members render read-only. */
+  readonly state: AgentTeamAgentMember['state']
+  /** Stored prompt profile; absent fields are clear. */
+  readonly prompt?: AgentTeamMemberPromptProfile
+  /** Stored overrides the dialog's edit echoes verbatim, so absence cannot clear them. */
+  readonly model?: AgentTeamModelSelection
+  readonly capabilities?: AgentTeamMemberCapabilities
+  readonly contextStartPolicy?: 'continue' | 'fresh'
+  readonly contextWindow?: number
+}
+
 /** Human intent to suspend or resume one Agent Member. */
 export interface AgentTeamSetMemberStateRequest {
   readonly requestId: AgentTeamRequestId

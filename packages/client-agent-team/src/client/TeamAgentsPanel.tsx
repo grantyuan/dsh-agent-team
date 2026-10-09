@@ -15,7 +15,7 @@ import { mintRequestId } from './requests.ts'
 import { diagnosticText, restartOffered } from './TeamPresenceDot.tsx'
 import { TeamRowMenu } from './TeamRowMenu.tsx'
 import { TeamSidebarSection } from './TeamSidebarSection.tsx'
-import { AgentEditorDialog, ContextPickerField, ModelPickerField, parseContextWindow, sameModel, warmModelCatalog } from './TeamMemberEditor.tsx'
+import { AgentEditorDialog, ContextPickerField, MemberPromptDialog, ModelPickerField, parseContextWindow, sameModel, warmModelCatalog } from './TeamMemberEditor.tsx'
 import { TeamAgentImport } from './TeamAgentImport.tsx'
 import createCss from './create.module.css'
 import css from './sidebar.module.css'
@@ -26,6 +26,7 @@ interface TeamAgentsPanelProps {
   readonly subscribeChanges: TeamSidebarProps['subscribeChanges']
   readonly addMember: TeamSidebarProps['addMember']
   readonly updateMember: TeamSidebarProps['updateMember']
+  readonly loadPromptView: TeamSidebarProps['loadPromptView']
   readonly recoverMember: TeamSidebarProps['recoverMember']
   readonly clearMemberContext: TeamSidebarProps['clearMemberContext']
   readonly compactMemberContext: TeamSidebarProps['compactMemberContext']
@@ -41,7 +42,7 @@ interface TeamAgentsPanelProps {
   readonly t: TeamSidebarProps['t']
 }
 
-export function TeamAgentsPanel({ workspaceId, loadMembers, subscribeChanges, addMember, updateMember, recoverMember, clearMemberContext, compactMemberContext, diagnoseMember, archiveMember, joinWorkspace, leaveWorkspace, loadModels, memberSessionId, openMemberSession, onCreatingChange, t }: TeamAgentsPanelProps) {
+export function TeamAgentsPanel({ workspaceId, loadMembers, subscribeChanges, addMember, updateMember, loadPromptView, recoverMember, clearMemberContext, compactMemberContext, diagnoseMember, archiveMember, joinWorkspace, leaveWorkspace, loadModels, memberSessionId, openMemberSession, onCreatingChange, t }: TeamAgentsPanelProps) {
   const [members, setMembers] = useState<readonly AgentTeamClientMemberStatus[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string>()
@@ -52,6 +53,8 @@ export function TeamAgentsPanel({ workspaceId, loadMembers, subscribeChanges, ad
   const [model, setModel] = useState<AgentTeamModelSelection | undefined>(undefined)
   const [policy, setPolicy] = useState<'continue' | 'fresh'>('continue')
   const [windowText, setWindowText] = useState('')
+  const [promptText, setPromptText] = useState('')
+  const [promptOpen, setPromptOpen] = useState(false)
   const parsedWindow = parseContextWindow(windowText)
   const windowInvalid = Number.isNaN(parsedWindow)
   const [creating, setCreating] = useState(false)
@@ -189,6 +192,7 @@ export function TeamAgentsPanel({ workspaceId, loadMembers, subscribeChanges, ad
         setModel(undefined)
         setPolicy('continue')
         setWindowText('')
+        setPromptText('')
         setFormOpen(false)
         if (result.value.status.presence === 'unavailable') {
           setError(diagnosticText(result.value.status) || t('statusUnavailable'))
@@ -213,11 +217,13 @@ export function TeamAgentsPanel({ workspaceId, loadMembers, subscribeChanges, ad
     const normalizedHandle = handle.trim()
     const normalizedDescription = description.trim()
     if (normalizedHandle.length === 0 || creating || windowInvalid) return
+    const stagedPrompt = promptText.trim() === '' ? undefined : promptText
     const sameRequest = retryRequest !== undefined && retryRequest.workspaceId === workspaceId
       && retryRequest.handle === normalizedHandle && retryRequest.description === normalizedDescription
       && sameModel(retryRequest.model, model)
       && (retryRequest.contextStartPolicy ?? 'continue') === policy
       && retryRequest.contextWindow === parsedWindow
+      && (retryRequest.prompt?.customPrompt ?? undefined) === stagedPrompt
       && retryRequest.channelRefs.length === 0
     void provision(sameRequest ? retryRequest : {
       requestId: mintRequestId(),
@@ -234,6 +240,9 @@ export function TeamAgentsPanel({ workspaceId, loadMembers, subscribeChanges, ad
       // window".
       ...(policy === 'fresh' ? { contextStartPolicy: policy } : {}),
       ...(parsedWindow === undefined ? {} : { contextWindow: parsedWindow }),
+      // The staged paragraph rides the member-added commit; an empty or blank
+      // one stays absent — the same shape the Host's normalization stores.
+      ...(stagedPrompt === undefined ? {} : { prompt: { customPrompt: stagedPrompt } }),
     })
   }
 
@@ -267,9 +276,23 @@ export function TeamAgentsPanel({ workspaceId, loadMembers, subscribeChanges, ad
             disabled={creating}
             t={t}
           />
+          <div className={createCss.field}>
+            <span>{t('memberPrompt')}</span>
+            <Button variant="outline" disabled={creating} onClick={() => { setPromptOpen(true) }}>{t('memberPromptEdit')}</Button>
+            <small className={css.editHint}>{t('memberPromptHint')}</small>
+          </div>
           {formOpen && error !== undefined && <p className={createCss.error} role="alert">{error}</p>}
         </form>}
       </Modal>
+      {formOpen && promptOpen && (
+        <MemberPromptDialog
+          mode="stage"
+          initialText={promptText}
+          onApply={next => { setPromptText(next); setRetryRequest(undefined) }}
+          onClose={() => { setPromptOpen(false) }}
+          t={t}
+        />
+      )}
       <TeamSidebarSection
         title={t('agents')}
         open={sectionOpen}
@@ -289,7 +312,7 @@ export function TeamAgentsPanel({ workspaceId, loadMembers, subscribeChanges, ad
         <div className={css.agentList}>
           {orderedMembers.map(status => (
             <SortableRow key={status.member.memberId} drag={drag} orderKey={status.member.memberId}>
-              <AgentRow workspaceId={workspaceId} leaveWorkspace={leaveWorkspace} status={status} {...(memberSessionId === undefined ? {} : { current: status.member.sessionId === memberSessionId })} updateMember={updateMember} recoverMember={recoverMember} clearMemberContext={clearMemberContext} compactMemberContext={compactMemberContext} diagnoseMember={diagnoseMember} archiveMember={archiveMember} loadModels={loadModels} openMemberSession={openMemberSession} onUpdated={refresh} t={t} />
+              <AgentRow workspaceId={workspaceId} leaveWorkspace={leaveWorkspace} status={status} {...(memberSessionId === undefined ? {} : { current: status.member.sessionId === memberSessionId })} updateMember={updateMember} loadPromptView={loadPromptView} recoverMember={recoverMember} clearMemberContext={clearMemberContext} compactMemberContext={compactMemberContext} diagnoseMember={diagnoseMember} archiveMember={archiveMember} loadModels={loadModels} openMemberSession={openMemberSession} onUpdated={refresh} t={t} />
             </SortableRow>
           ))}
         </div>
@@ -309,13 +332,14 @@ export function TeamAgentsPanel({ workspaceId, loadMembers, subscribeChanges, ad
  * conversation page, the avatar carries identity plus the presence badge, and
  * the row menu opens the editor.
  */
-function AgentRow({ workspaceId, leaveWorkspace, status, current, updateMember, recoverMember, clearMemberContext, compactMemberContext, diagnoseMember, archiveMember, loadModels, openMemberSession, onUpdated, t }: {
+function AgentRow({ workspaceId, leaveWorkspace, status, current, updateMember, loadPromptView, recoverMember, clearMemberContext, compactMemberContext, diagnoseMember, archiveMember, loadModels, openMemberSession, onUpdated, t }: {
   readonly workspaceId: WorkspaceId
   readonly leaveWorkspace: TeamSidebarProps['leaveWorkspace']
   readonly status: AgentTeamClientMemberStatus
   /** This Member's Session is the one embedded in the conversation seat. */
   readonly current?: boolean
   readonly updateMember: TeamSidebarProps['updateMember']
+  readonly loadPromptView: TeamSidebarProps['loadPromptView']
   readonly recoverMember: TeamSidebarProps['recoverMember']
   readonly clearMemberContext: TeamSidebarProps['clearMemberContext']
   readonly compactMemberContext: TeamSidebarProps['compactMemberContext']
@@ -545,6 +569,7 @@ function AgentRow({ workspaceId, leaveWorkspace, status, current, updateMember, 
         <AgentEditorDialog
           status={status}
           updateMember={updateMember}
+          loadPromptView={loadPromptView}
           loadModels={loadModels}
           onCommitted={onUpdated}
           onClose={() => { setEditing(false) }}

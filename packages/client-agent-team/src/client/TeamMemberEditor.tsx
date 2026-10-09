@@ -1,5 +1,5 @@
-import { useEffect, useState } from 'react'
-import type { AgentTeamClientMemberStatus, AgentTeamModelSelection, AgentTeamUpdateMemberRequest } from '@wowyuarm/dsh-agent-team/types'
+import { useEffect, useRef, useState } from 'react'
+import type { AgentTeamClientMemberStatus, AgentTeamMemberId, AgentTeamMemberPromptProfile, AgentTeamMemberPromptView, AgentTeamModelSelection, AgentTeamUpdateMemberRequest } from '@wowyuarm/dsh-agent-team/types'
 import type { RemoteResult } from '@deepseek-ai/dsh-typert-protocol'
 import type { TeamModelCatalog, TeamModelEffortOption, TeamModelProviderGroup, TeamSidebarProps } from './slots.ts'
 import { Button, Checkbox, IconChevronDownOutlineRegular, Input, Menu, Modal } from '@deepseek-ai/dsh-client-ui-primitives'
@@ -242,6 +242,251 @@ export function parseContextWindow(text: string): number | undefined {
 }
 
 /**
+ * The UTF-8 byte bound of one custom role paragraph. Mirrors the Host's
+ * ledger commit rule, so this live counter agrees with the Host for CJK
+ * prose too: the bytes the user sees are the bytes the commit measures.
+ */
+export const MEMBER_PROMPT_MAX_BYTES = 8192
+
+const promptByteEncoder = new TextEncoder()
+
+/** UTF-8 byte length of one paragraph — the measure the Host commit rule and this counter share. */
+export function utf8ByteLength(text: string): number {
+  return promptByteEncoder.encode(text).length
+}
+
+/** The shared paragraph field: one textarea plus the live UTF-8 byte counter (or its over-limit alert). */
+function PromptParagraphField({ text, onTextChange, disabled, t }: {
+  readonly text: string
+  readonly onTextChange: (text: string) => void
+  readonly disabled: boolean
+  readonly t: TeamSidebarProps['t']
+}) {
+  const bytes = utf8ByteLength(text)
+  const over = bytes > MEMBER_PROMPT_MAX_BYTES
+  return <div className={createCss.field}>
+    <textarea
+      className={createCss.textArea!}
+      rows={6}
+      value={text}
+      placeholder={t('promptPlaceholder')}
+      aria-label={t('promptDialogTitle')}
+      aria-invalid={over || undefined}
+      data-modal-autofocus
+      onChange={event => onTextChange(event.target.value)}
+      disabled={disabled}
+    />
+    {over
+      ? <p className={css.editHint} role="alert">{t('promptBytesOver', { count: bytes, limit: MEMBER_PROMPT_MAX_BYTES })}</p>
+      : <small className={css.editHint}>{t('promptBytes', { count: bytes, limit: MEMBER_PROMPT_MAX_BYTES })}</small>}
+  </div>
+}
+
+/**
+ * Create-form staging of the custom role paragraph: the paragraph lives in
+ * the create form's local state until the member-added commit — nothing
+ * durable happens here, Apply hands the draft back and closes.
+ */
+function StagePromptDialog({ initialText, onApply, onClose, t }: {
+  readonly initialText: string
+  readonly onApply: (text: string) => void
+  readonly onClose: () => void
+  readonly t: TeamSidebarProps['t']
+}) {
+  const [text, setText] = useState(initialText)
+  const over = utf8ByteLength(text) > MEMBER_PROMPT_MAX_BYTES
+  return (
+    <Modal
+      open
+      onClose={onClose}
+      title={t('promptDialogTitle')}
+      closeLabel={t('close')}
+      contentClassName={createCss.dialogContent!}
+      footer={<>
+        <Button variant="outline" onClick={onClose}>{t('cancel')}</Button>
+        <Button variant="primary" disabled={over} onClick={() => { onApply(text); onClose() }}>{t('promptApply')}</Button>
+      </>}
+    >
+      <PromptParagraphField text={text} onTextChange={setText} disabled={false} t={t} />
+    </Modal>
+  )
+}
+
+/**
+ * Durable edit of one Member's custom role paragraph: a fresh
+ * memberPromptView read fills the textarea, and the save commits one
+ * echo-complete member update — absent-clears makes echoing the stored
+ * model/capabilities/context overrides mandatory, and the other prompt
+ * subfields (droppedSections, autoPrune) merge from the read instead of
+ * being replaced. A non-enabled Member renders read-only.
+ */
+function EditPromptDialog({ memberId, loadPromptView, updateMember, onCommitted, onClose, t }: {
+  readonly memberId: AgentTeamMemberId
+  readonly loadPromptView: TeamSidebarProps['loadPromptView']
+  readonly updateMember: TeamSidebarProps['updateMember']
+  /** Receives the committed prompt profile (undefined = cleared) once the update lands. */
+  readonly onCommitted: (prompt: AgentTeamMemberPromptProfile | undefined) => Promise<void> | void
+  readonly onClose: () => void
+  readonly t: TeamSidebarProps['t']
+}) {
+  const [view, setView] = useState<AgentTeamMemberPromptView>()
+  const [loadError, setLoadError] = useState<string>()
+  const [reloadToken, setReloadToken] = useState(0)
+  const [text, setText] = useState('')
+  useEffect(() => {
+    let mounted = true
+    setLoadError(undefined)
+    loadPromptView({ memberId }).then(
+      result => {
+        if (!mounted) return
+        if (result.ok) {
+          setView(result.value)
+          setText(result.value.prompt?.customPrompt ?? '')
+        } else {
+          setLoadError(result.error.message)
+        }
+      },
+      (cause: unknown) => {
+        if (!mounted) return
+        setLoadError(cause instanceof Error ? cause.message : String(cause))
+      },
+    )
+    return () => { mounted = false }
+  }, [loadPromptView, memberId, reloadToken])
+  // The profile this dialog's update will have committed, handed to
+  // onCommitted after the Host confirms — the still-open editor dialog echoes
+  // it instead of a row snapshot that may predate the commit.
+  const committedRef = useRef<AgentTeamMemberPromptProfile | undefined>(undefined)
+  const { saving, error, pendingRequest, save } = useEditDialogSave({
+    save: updateMember,
+    onCommitted: () => onCommitted(committedRef.current),
+    onClose,
+  })
+  if (view === undefined) {
+    return (
+      <Modal
+        open
+        onClose={onClose}
+        title={t('promptDialogTitle')}
+        closeLabel={t('close')}
+        contentClassName={createCss.dialogContent!}
+        footer={<Button variant="outline" onClick={onClose}>{t('cancel')}</Button>}
+      >
+        {loadError === undefined
+          ? <p className={createCss.state}>{t('promptLoading')}</p>
+          : (
+            <div className={createCss.failure}>
+              <p className={createCss.error} role="alert">{t('promptLoadFailed', { message: loadError })}</p>
+              <Button size="sm" variant="outline" onClick={() => setReloadToken(token => token + 1)}>{t('retry')}</Button>
+            </div>
+          )}
+      </Modal>
+    )
+  }
+  const stored = view.prompt
+  const paragraph = text.trim() === '' ? undefined : text
+  const over = utf8ByteLength(text) > MEMBER_PROMPT_MAX_BYTES
+  const readonly = view.state !== 'enabled'
+  // Merge, never replace: the stored profile's other subfields survive an
+  // edit that only touches the paragraph, and a profile left without any
+  // field stores as absent on the Host.
+  const mergedPrompt: AgentTeamMemberPromptProfile | undefined = paragraph === undefined && stored === undefined
+    ? undefined
+    : {
+      ...(stored?.droppedSections === undefined ? {} : { droppedSections: stored.droppedSections }),
+      ...(paragraph === undefined ? {} : { customPrompt: paragraph }),
+      ...(stored?.autoPrune === undefined ? {} : { autoPrune: stored.autoPrune }),
+    }
+  const dirty = paragraph !== stored?.customPrompt
+  const submit = async (event: React.FormEvent<HTMLFormElement>) => {
+    event.preventDefault()
+    if (saving || readonly || over || !dirty) return
+    const payload = {
+      requestId: mintRequestId(),
+      memberId: view.memberId,
+      handle: view.handle,
+      description: view.description,
+      ...(mergedPrompt === undefined ? {} : { prompt: mergedPrompt }),
+      // Echo the stored overrides: an absent field would clear them, and
+      // this dialog edits the paragraph only.
+      ...(view.model === undefined ? {} : { model: view.model }),
+      ...(view.capabilities === undefined ? {} : { capabilities: view.capabilities }),
+      ...(view.contextStartPolicy === undefined ? {} : { contextStartPolicy: view.contextStartPolicy }),
+      ...(view.contextWindow === undefined ? {} : { contextWindow: view.contextWindow }),
+    }
+    const previous = pendingRequest.current
+    const samePending = previous !== undefined && previous.memberId === payload.memberId
+      && previous.handle === payload.handle && previous.description === payload.description
+      && (previous.prompt === undefined) === (payload.prompt === undefined)
+      && previous.prompt?.droppedSections === payload.prompt?.droppedSections
+      && previous.prompt?.autoPrune === payload.prompt?.autoPrune
+      && previous.prompt?.customPrompt === payload.prompt?.customPrompt
+      && previous.model === payload.model && previous.capabilities === payload.capabilities
+      && (previous.contextStartPolicy ?? undefined) === (payload.contextStartPolicy ?? undefined)
+      && (previous.contextWindow ?? undefined) === (payload.contextWindow ?? undefined)
+    committedRef.current = mergedPrompt
+    await save(samePending ? previous : payload)
+  }
+  return (
+    <Modal
+      open
+      onClose={onClose}
+      title={t('promptDialogTitle')}
+      description={`@${view.handle}`}
+      closeLabel={t('close')}
+      contentClassName={createCss.dialogContent!}
+      footer={<>
+        <Button variant="outline" disabled={saving} onClick={onClose}>{t('cancel')}</Button>
+        <Button type="submit" form="team-member-prompt-form" variant="primary" disabled={saving || readonly || over || !dirty}>{saving ? t('editSaving') : t('editSave')}</Button>
+      </>}
+    >
+      <form id="team-member-prompt-form" className={createCss.form} onSubmit={event => { void submit(event) }}>
+        {readonly && <p className={createCss.notice}>{t('promptReadonly')}</p>}
+        <PromptParagraphField text={text} onTextChange={next => { pendingRequest.current = undefined; setText(next) }} disabled={saving || readonly} t={t} />
+        {error !== undefined && <p className={createCss.error} role="alert">{error}</p>}
+      </form>
+    </Modal>
+  )
+}
+
+/**
+ * One Prompt dialog behind both entry points: the create form stages a local
+ * paragraph (`stage` mode — nothing durable until the member-added commit),
+ * the editor commits a durable echo-complete member update (`edit` mode).
+ */
+export function MemberPromptDialog(props: {
+  readonly t: TeamSidebarProps['t']
+  readonly onClose: () => void
+} & (
+  | {
+    readonly mode: 'stage'
+    readonly initialText: string
+    readonly onApply: (text: string) => void
+  }
+  | {
+    readonly mode: 'edit'
+    readonly memberId: AgentTeamMemberId
+    readonly loadPromptView: TeamSidebarProps['loadPromptView']
+    readonly updateMember: TeamSidebarProps['updateMember']
+    readonly onCommitted: (prompt: AgentTeamMemberPromptProfile | undefined) => Promise<void> | void
+  }
+)) {
+  if (props.mode === 'stage') {
+    return <StagePromptDialog initialText={props.initialText} onApply={props.onApply} onClose={props.onClose} t={props.t} />
+  }
+  return (
+    <EditPromptDialog
+      memberId={props.memberId}
+      loadPromptView={props.loadPromptView}
+      updateMember={props.updateMember}
+      onCommitted={props.onCommitted}
+      onClose={props.onClose}
+      t={props.t}
+    />
+  )
+}
+
+/**
  * Shared task-start context block for the create and edit forms: one Menu
  * row choosing between the continue and fresh start policies plus a numeric
  * context-window override that can only narrow the route window. An empty
@@ -317,9 +562,10 @@ export function ContextPickerField({ policy, onPolicyChange, windowText, onWindo
  * task-start context control commit through one durable update. Channel
  * membership is managed from the Channel side, not here.
  */
-export function AgentEditorDialog({ status, updateMember, loadModels, onCommitted, onClose, t }: {
+export function AgentEditorDialog({ status, updateMember, loadPromptView, loadModels, onCommitted, onClose, t }: {
   readonly status: AgentTeamClientMemberStatus
   readonly updateMember: TeamSidebarProps['updateMember']
+  readonly loadPromptView: TeamSidebarProps['loadPromptView']
   readonly loadModels: TeamSidebarProps['loadModels']
   readonly onCommitted: () => Promise<void> | void
   readonly onClose: () => void
@@ -330,6 +576,12 @@ export function AgentEditorDialog({ status, updateMember, loadModels, onCommitte
   const [description, setDescription] = useState(status.member.description)
   const [model, setModel] = useState<AgentTeamModelSelection | undefined>(status.member.model)
   const [leader, setLeader] = useState(status.member.leader === true)
+  const [promptOpen, setPromptOpen] = useState(false)
+  // The profile the Prompt dialog last committed, kept separate from the row
+  // snapshot: between the dialog's durable commit and the next roster
+  // refresh, `status` still holds the older profile and echoing it would
+  // silently revert the paragraph. Undefined means the dialog has not run.
+  const [promptEcho, setPromptEcho] = useState<{ readonly prompt: AgentTeamMemberPromptProfile | undefined }>()
   const [policy, setPolicy] = useState<'continue' | 'fresh'>(status.member.contextStartPolicy ?? 'continue')
   const [windowText, setWindowText] = useState(status.member.contextWindow === undefined ? '' : String(status.member.contextWindow))
   const { saving, error, pendingRequest, save } = useEditDialogSave({
@@ -356,10 +608,13 @@ export function AgentEditorDialog({ status, updateMember, loadModels, onCommitte
       // The editor owns no capabilities UI, but an absent field would clear a
       // Remote-written override; echo the stored intent through the edit.
       ...(status.member.capabilities === undefined ? {} : { capabilities: status.member.capabilities }),
-      // Same echo for the prompt profile: this editor has no profile UI yet,
-      // so the stored profile rides the edit instead of being cleared by
-      // omission.
-      ...(status.member.prompt === undefined ? {} : { prompt: status.member.prompt }),
+      // Same echo for the prompt profile: the Prompt dialog commits its own
+      // durable edit and hands back the committed profile, so this editor
+      // echoes the newer of that commit and the row snapshot — an edit never
+      // clears the paragraph by omission.
+      ...(promptEcho !== undefined
+        ? (promptEcho.prompt === undefined ? {} : { prompt: promptEcho.prompt })
+        : (status.member.prompt === undefined ? {} : { prompt: status.member.prompt })),
       // The policy is only sent when fresh: under absent-clears, omitting it
       // both clears a stored fresh policy and keeps an absent one when the
       // picker reads continue. An empty window input means the same for the
@@ -412,9 +667,32 @@ export function AgentEditorDialog({ status, updateMember, loadModels, onCommitte
           disabled={saving}
           t={t}
         />
+        <div className={createCss.field}>
+          <span>{t('memberPrompt')}</span>
+          <Button variant="outline" disabled={saving} onClick={() => { setPromptOpen(true) }}>{t('memberPromptEdit')}</Button>
+          <small className={css.editHint}>{t('memberPromptHint')}</small>
+        </div>
         <Checkbox checked={leader} onChange={next => { pendingRequest.current = undefined; setLeader(next) }} disabled={saving} label={t('memberLeader')} title={t('memberLeaderHint')} />
         {error !== undefined && <p className={createCss.error} role="alert">{error}</p>}
       </form>
+      {promptOpen && (
+        <MemberPromptDialog
+          mode="edit"
+          memberId={memberId}
+          loadPromptView={loadPromptView}
+          updateMember={updateMember}
+          onCommitted={prompt => {
+            setPromptEcho({ prompt })
+            // The dialog's durable commit supersedes any failed editor retry
+            // request still held for idempotent replay — replaying it would
+            // carry the pre-commit prompt echo.
+            pendingRequest.current = undefined
+            return onCommitted()
+          }}
+          onClose={() => { setPromptOpen(false) }}
+          t={t}
+        />
+      )}
     </Modal>
   )
 }

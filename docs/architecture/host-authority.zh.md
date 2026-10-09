@@ -57,7 +57,7 @@ Team 是每个 DSH home 内唯一的协作域。append-only operation ledger 是
   `skills.allow` 通过 live selection ref 过滤 `list()` 输出（编辑与 tool 编辑同一 turn 边界换过滤并失效 catalog）；过滤是可见性语义不是安全边界——两个 root 始终被扫描和 watch。 Member remove 连同私有目录一起删除；suspend/resume 与 Host restart 恢复相同 catalog。
 
 ## Member 上下文控制
-- Member 在 `model` 与 `capabilities` 之外携带三个可选覆盖字段：`contextStartPolicy`（`continue` | `fresh`）、`contextWindow`（不小于 8192 的整数），以及本回合仅在 ledger 中穿行回放的 `prompt` 画像（`droppedSections`、`customPrompt`、`autoPrune`）——commit 校验只看形状，尚无任何消费方。
+- Member 在 `model` 与 `capabilities` 之外携带三个可选覆盖字段：`contextStartPolicy`（`continue` | `fresh`）、`contextWindow`（不小于 8192 的整数），以及 `prompt` 画像（`droppedSections`、`customPrompt`、`autoPrune`）。 commit 校验将存储的 `customPrompt` 限制在 8192 个 UTF-8 字节内，并把空白段落归一化为缺省字段；该段落是画像中唯一被消费的字段——它成为 Member 的 custom prompt section（见 Tools and preset）——`droppedSections` 与 `autoPrune` 仍只在 ledger 中穿行回放。
 - 创建与编辑在 commit 时校验，记录 schema 镜像同一下限——低于下限的存储记录会拒绝重放。编辑遵循 `model` 的 absent-clears 语义；这些字段出现之前的旧 ledger 按普通 continue/跟随路由的 Member 重放。
 - 窗口覆盖只会从路由向下收窄压力预算、绝不放大：`routeLimitsForAgent` 以覆盖值与实时路由窗口的较小者计算预算，超过路由的覆盖值等于没有设置。未设置覆盖的 Member 行为与之前完全一致。
 - `fresh` 策略在任务边界重续 Member 上下文：Member 认领任务时，或 Human 原子开始的 committed 直接提及点名该 Member 时，Host 通过序列化 lifecycle 队列、走 Human 重置路径使用的同一个 `renewMemberContextNow` 持久操作安排一次上下文续期。调度器等待 Member 的 turn 边界，像 member transition 一样收敛运行中的 Agent。
