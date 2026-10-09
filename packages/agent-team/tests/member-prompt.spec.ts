@@ -30,7 +30,7 @@ import { WorkspaceId } from '@deepseek-ai/dsh-workspace'
 import AgentTeam from '../src/index.ts'
 import { COMPLETION_MARKER } from '../src/response-guard.ts'
 import { MEMBER_PROMPT_SECTION_NAME, sectionToolMapping } from '../src/member-runtime.ts'
-import type { AgentTeamMemberId, AgentTeamRequestId } from '../src/types.ts'
+import type { AgentTeamChannelRef, AgentTeamInboxItem, AgentTeamMemberId, AgentTeamRequestId } from '../src/types.ts'
 import { MemoryStorageBackend } from './helpers/memory-backend.ts'
 
 const sharedCleanups: Array<() => Promise<void>> = []
@@ -150,6 +150,7 @@ async function buildSharedHarness(): Promise<{
   const teamMemberPlugins = [
     { id: 'member-context', name: '@wowyuarm/dsh-agent-team/member-context' },
     { id: 'team-tools', name: pathToFileURL(join(import.meta.dirname, 'helpers', 'team-tools-fixture.mjs')).href },
+    { id: 'usage-sections', name: pathToFileURL(join(import.meta.dirname, 'helpers', 'usage-section-fixture.mjs')).href },
   ]
   const ctx = new Context()
   ctx.baseUrl = pathToFileURL(resolve(import.meta.dirname, '../../../')).href + '/'
@@ -520,5 +521,170 @@ describe('Agent Team member custom role paragraph', () => {
     expect(mapping.get('mentions')).toEqual(['team_inbox'])
     expect(mapping.get('glued')).toEqual([])
     expect(mapping.get('prose')).toEqual([])
+  })
+})
+
+/**
+ * Poll until the probe observes its value or the deadline passes — the sweep
+ * is a fire-and-forget background body, so tests observe its effects.
+ */
+async function until<T>(probe: () => T | undefined, label: string, timeoutMs = 10_000): Promise<T> {
+  const deadline = Date.now() + timeoutMs
+  for (;;) {
+    const value = probe()
+    if (value !== undefined) return value
+    if (Date.now() > deadline) throw new Error(`not observed before deadline: ${label}`)
+    await new Promise(resolve => setTimeout(resolve, 100))
+  }
+}
+
+function probeInbox(ctx: Context, workspaceId: WorkspaceId, channelRef: AgentTeamChannelRef, prefix: string): AgentTeamInboxItem | undefined {
+  // Channel-scoped: the shared ledger never forgets, so an unscoped Human
+  // inbox probe would match earlier tests' notices.
+  return ctx.agentTeam.inbox({ workspaceId }).items.find(item => item.channelRef === channelRef && item.previewText?.startsWith(prefix))
+}
+
+/** One Human task start that @mentions the Member — the atomic-start boundary the sweep rides. */
+async function startTaskFor(ctx: Context, workspaceId: WorkspaceId, channelRef: AgentTeamChannelRef, label: string, handle: string): Promise<void> {
+  await ctx.agentTeam.sendMessage({ asTask: true, requestId: requestId(label), workspaceId, channelRef, body: `@${handle} please look into this` })
+}
+
+describe('Agent Team member section usage and auto-prune', () => {
+  it('projects per-section usage numbers and candidates on the view without auto-pruning by default', async () => {
+    useAdapter(new EmptyAdapter())
+    const { ctx, workspaceId } = shared
+    const member = await addMember(ctx, workspaceId, 'u1-view')
+    const view = await ctx.agentTeam.memberPromptView({ memberId: member.memberId })
+    // Every live section carries its in-window count; zero mapped calls with
+    // no prose mark is the long-unused shape, but the switch-off default
+    // exposes no candidate list and never prunes.
+    const mapped = view.sections!.find(section => section.name === 'usage:mapped')
+    expect(mapped?.usage).toBe(0)
+    expect(mapped?.proseOnly).toBe(false)
+    expect(view.sections!.find(section => section.name === 'usage:prose')?.proseOnly).toBe(true)
+    expect(view.pruneCandidates).toBeUndefined()
+    expect(view.usagePartial).toBeUndefined()
+    expect(view.prompt).toBeUndefined()
+  })
+
+  it('ask mode: the task-start sweep posts the inbox notice and leaves the drop to Human confirmation', async () => {
+    useAdapter(new EmptyAdapter())
+    const { ctx, workspaceId } = shared
+    const member = await addMember(ctx, workspaceId, 'u2-ask')
+    await ctx.agentTeam.updateMember({
+      requestId: requestId('u2-opt-in'), memberId: member.memberId, handle: member.handle, description: 'Prompt member',
+      prompt: { autoPrune: true },
+    })
+    const channel = await ctx.agentTeam.createChannel({ requestId: requestId('u2-channel'), workspaceId, name: 'usage-ask', description: 'Ask mode', memberIds: [member.memberId] })
+    const before = await ctx.agentTeam.memberPromptView({ memberId: member.memberId })
+    expect(before.pruneCandidates).toEqual(['usage:mapped'])
+
+    await startTaskFor(ctx, workspaceId, channel.channel.channelRef, 'u2-start', member.handle)
+    const notice = await until(() => probeInbox(ctx, workspaceId, channel.channel.channelRef, 'Auto-prune notice:'), 'ask-mode notice')
+    expect(notice.channelRef).toBe(channel.channel.channelRef)
+    // The sweep asked; the ledger stayed untouched.
+    const unchanged = await ctx.agentTeam.memberPromptView({ memberId: member.memberId })
+    expect(unchanged.prompt).toEqual({ autoPrune: true })
+    expect(sectionNames(await memberTurnAssembly(ctx, member))).toContain('usage:mapped')
+
+    // The Human confirmation commits the drop through the same durable edit.
+    await ctx.agentTeam.updateMember({
+      requestId: requestId('u2-confirm'), memberId: member.memberId, handle: member.handle, description: 'Prompt member',
+      prompt: { autoPrune: true, droppedSections: ['usage:mapped'] },
+    })
+    expect(sectionNames(await memberTurnAssembly(ctx, member))).not.toContain('usage:mapped')
+    expect(sectionNames(await memberTurnAssembly(ctx, member))).toContain('usage:prose')
+  })
+
+  it('full-auto mode: the upgrade commits the drop, live-applies it, and still announces', async () => {
+    useAdapter(new EmptyAdapter())
+    const { ctx, workspaceId } = shared
+    const member = await addMember(ctx, workspaceId, 'u3-full')
+    await ctx.agentTeam.updateMember({
+      requestId: requestId('u3-opt-in'), memberId: member.memberId, handle: member.handle, description: 'Prompt member',
+      prompt: { autoPrune: true, autoExecutePrune: true },
+    })
+    const channel = await ctx.agentTeam.createChannel({ requestId: requestId('u3-channel'), workspaceId, name: 'usage-full', description: 'Full auto', memberIds: [member.memberId] })
+
+    await startTaskFor(ctx, workspaceId, channel.channel.channelRef, 'u3-start', member.handle)
+    await until(() => probeInbox(ctx, workspaceId, channel.channel.channelRef, 'Auto-prune executed:'), 'full-auto notice')
+    const view = await ctx.agentTeam.memberPromptView({ memberId: member.memberId })
+    expect(view.prompt).toEqual({ autoPrune: true, autoExecutePrune: true, droppedSections: ['usage:mapped'] })
+    expect(sectionNames(await memberTurnAssembly(ctx, member))).not.toContain('usage:mapped')
+    expect(sectionNames(await memberTurnAssembly(ctx, member))).toContain('usage:prose')
+  })
+
+  it('the switch-off default never sweeps, though the view still shows the numbers', async () => {
+    useAdapter(new EmptyAdapter())
+    const { ctx, workspaceId } = shared
+    const member = await addMember(ctx, workspaceId, 'u4-off')
+    const channel = await ctx.agentTeam.createChannel({ requestId: requestId('u4-channel'), workspaceId, name: 'usage-off', description: 'Switch off', memberIds: [member.memberId] })
+
+    await startTaskFor(ctx, workspaceId, channel.channel.channelRef, 'u4-start', member.handle)
+    // The sweep (if any) is quick; a grace wait bounds the negative assertion.
+    await new Promise(resolve => setTimeout(resolve, 1500))
+    expect(probeInbox(ctx, workspaceId, channel.channel.channelRef, 'Auto-prune')).toBeUndefined()
+    const after = await ctx.agentTeam.memberPromptView({ memberId: member.memberId })
+    expect(after.prompt).toBeUndefined()
+    expect(sectionNames(await memberTurnAssembly(ctx, member))).toContain('usage:mapped')
+  })
+
+  it('counts the member\'s mapped tool calls into the view and out of the candidates', async () => {
+    const adapter = new GatedAdapter()
+    useAdapter(adapter)
+    const { ctx, workspaceId } = shared
+    const member = await addMember(ctx, workspaceId, 'u6-count')
+    const agent = liveAgent(ctx, member)
+
+    // One held turn that calls ordinary_tool — the section's mapped tool.
+    const idle = waitForIdle(ctx, agent)
+    const running = waitForRunning(ctx, agent)
+    agent.followup(createUserMessage({ content: [{ type: 'text', text: 'run' }], source: { kind: 'user' } }))
+    await running
+    adapter.enqueue(closingReply('done'))
+    adapter.release()
+    await idle
+
+    const view = await ctx.agentTeam.memberPromptView({ memberId: member.memberId })
+    expect(view.sections!.find(section => section.name === 'usage:mapped')?.usage).toBe(1)
+    expect(view.sections!.find(section => section.name === 'usage:prose')?.usage).toBe(0)
+    expect(view.pruneCandidates).toBeUndefined()
+  })
+
+  it('a partial usage fold degrades the view and downgrades full-auto to ask', async () => {
+    useAdapter(new EmptyAdapter())
+    const { ctx, workspaceId } = shared
+    const member = await addMember(ctx, workspaceId, 'u5-partial')
+    await ctx.agentTeam.updateMember({
+      requestId: requestId('u5-opt-in'), memberId: member.memberId, handle: member.handle, description: 'Prompt member',
+      prompt: { autoPrune: true, autoExecutePrune: true },
+    })
+    // Build a lineage: the Human context reset parents the new generation at
+    // the archived one, so the fold has an ancestor to read.
+    await ctx.agentTeam.clearMemberContext({ requestId: requestId('u5-reset'), workspaceId, memberId: member.memberId })
+
+    // Unreadable archives: the fold degrades instead of guessing. The reader
+    // is an instance field, so the patch shadows the prototype method and the
+    // restore hands the walk back to the real stored-session read.
+    const reader = (ctx.agentTeam as unknown as { sessionReader: { read: (sessionId: SessionId) => Promise<unknown> } }).sessionReader
+    const original = reader.read
+    reader.read = async () => ({ ok: false })
+    try {
+      const view = await ctx.agentTeam.memberPromptView({ memberId: member.memberId })
+      expect(view.usagePartial).toBe(true)
+      expect(view.pruneCandidates).toEqual(['usage:mapped'])
+
+      // The full-auto trigger runs, but the partial fold downgrades it to ask
+      // mode: unreadable history can only under-count, so it never drives an
+      // automatic drop.
+      const channel = await ctx.agentTeam.createChannel({ requestId: requestId('u5-channel'), workspaceId, name: 'usage-partial', description: 'Partial', memberIds: [member.memberId] })
+      await startTaskFor(ctx, workspaceId, channel.channel.channelRef, 'u5-start', member.handle)
+      await until(() => probeInbox(ctx, workspaceId, channel.channel.channelRef, 'Auto-prune notice:'), 'degraded ask-mode notice')
+      const after = await ctx.agentTeam.memberPromptView({ memberId: member.memberId })
+      expect(after.prompt).toEqual({ autoPrune: true, autoExecutePrune: true })
+      expect(after.usagePartial).toBe(true)
+    } finally {
+      reader.read = original
+    }
   })
 })

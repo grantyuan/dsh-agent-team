@@ -514,6 +514,7 @@ function freezePromptProfile(prompt: AgentTeamMemberPromptProfile | undefined): 
       ...(prompt.droppedSections === undefined ? {} : { droppedSections: Object.freeze([...prompt.droppedSections]) }),
       ...(prompt.customPrompt === undefined ? {} : { customPrompt: prompt.customPrompt }),
       ...(prompt.autoPrune === undefined ? {} : { autoPrune: prompt.autoPrune }),
+      ...(prompt.autoExecutePrune === undefined ? {} : { autoExecutePrune: prompt.autoExecutePrune }),
     }),
   }
 }
@@ -543,6 +544,7 @@ function normalizePromptProfile(prompt: AgentTeamMemberPromptProfile | undefined
     ...(prompt.droppedSections === undefined ? {} : { droppedSections: prompt.droppedSections }),
     ...(prompt.customPrompt === undefined || prompt.customPrompt.trim() === '' ? {} : { customPrompt: prompt.customPrompt }),
     ...(prompt.autoPrune === undefined ? {} : { autoPrune: prompt.autoPrune }),
+    ...(prompt.autoExecutePrune === undefined ? {} : { autoExecutePrune: prompt.autoExecutePrune }),
   }
   return Object.keys(normalized).length === 0 ? undefined : normalized
 }
@@ -4408,6 +4410,8 @@ export class AgentTeamLedger {
   private assertPromptProfile(prompt: AgentTeamUpdateMemberRequest['prompt']): void {
     const normalized = normalizePromptProfile(prompt)
     if (normalized?.droppedSections?.some(name => name.trim() === '')) throw new Error('prompt profile section names must not be empty')
+    if (normalized?.autoPrune !== undefined && typeof normalized.autoPrune !== 'boolean') throw new Error('prompt profile autoPrune must be a boolean')
+    if (normalized?.autoExecutePrune !== undefined && typeof normalized.autoExecutePrune !== 'boolean') throw new Error('prompt profile autoExecutePrune must be a boolean')
     const customPrompt = normalized?.customPrompt
     if (customPrompt !== undefined && customPromptByteLength(customPrompt) > MEMBER_PROMPT_MAX_BYTES) {
       throw new Error(`custom prompt paragraph must not exceed ${MEMBER_PROMPT_MAX_BYTES} UTF-8 bytes`)

@@ -239,7 +239,7 @@ describe('Agent Team display-fact updates', () => {
   it('carries Member prompt profile and context control through lifecycle operations, edits, replay, and Host restart', async () => {
     const { ctx, facility } = await harness()
     const created = await ctx.agentTeam.createChannel({ requestId: requestId('channel'), workspaceId: alpha, name: 'engineering', description: 'Engineering work' })
-    const prompt = { droppedSections: ['skills'], customPrompt: 'Prefer exhaustive test coverage.', autoPrune: true } as const
+    const prompt = { droppedSections: ['skills'], customPrompt: 'Prefer exhaustive test coverage.', autoPrune: true, autoExecutePrune: true } as const
     const added = await ctx.agentTeam.addMember({
       requestId: requestId('context-add'), workspaceId: alpha, handle: 'builder', description: 'Builds changes',
       presetId: 'team-member', channelRefs: [created.channel.channelRef], prompt, contextStartPolicy: 'fresh', contextWindow: 128_000,

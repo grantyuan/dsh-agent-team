@@ -314,45 +314,54 @@ function StagePromptDialog({ initialText, onApply, onClose, t }: {
 
 /**
  * One row of the Prompt dialog's section list: the section's keep/drop toggle
- * beside its byte size and inert marks. Protected rows refuse drops, stale
- * rows have no live section to toggle, and prose-only rows carry the "no
- * automatic signal" badge — a section no current tool name maps to.
+ * beside its byte size, its in-window mapped-call count, and its inert marks.
+ * Protected rows always speak "kept" and refuse drops; a stale residue row (a
+ * stored drop the live assembly no longer knows) stays re-checkable to purge
+ * the inert name, and once purged renders checked but disabled — there is no
+ * live section left to drop. Prose-only rows carry the "no automatic signal"
+ * badge; the long-unused badge marks a live, kept section whose mapped tools
+ * saw no calls inside the usage window.
  */
-function PromptSectionRow({ section, dropped, onToggle, disabled, t }: {
+function PromptSectionRow({ section, dropped, candidate, onToggle, disabled, t }: {
   readonly section: AgentTeamMemberPromptSectionEntry
   readonly dropped: boolean
+  /** Zero mapped calls inside the usage window on a live, protected-free, kept section. */
+  readonly candidate: boolean
   /** Receives the section name and the requested drop state (true = remove from the next assembly). */
   readonly onToggle: (name: string, drop: boolean) => void
   readonly disabled: boolean
   readonly t: TeamSidebarProps['t']
 }) {
-  const toggleable = !section.isProtected && !section.stale
   return (
     <li className={createCss.sectionRow!} data-team-prompt-section={section.name}>
       {/* The checkbox speaks "kept": a live section renders checked, dropping
-          unchecks it, and a stale row has no live section to keep. */}
+          unchecks it, and a purged stale residue stays checked but disabled. */}
       <Checkbox
-        checked={!section.stale && !dropped}
-        disabled={disabled || !toggleable}
+        checked={section.isProtected || !dropped}
+        disabled={disabled || section.isProtected || (section.stale && !dropped)}
         label={section.name}
         onChange={next => onToggle(section.name, !next)}
       />
       {section.chars !== undefined && <small className={css.editHint}>{t('promptSectionBytes', { count: section.chars })}</small>}
+      {!section.proseOnly && section.usage !== undefined && <small className={css.editHint}>{t('promptSectionUsage', { count: section.usage })}</small>}
       {section.isProtected && <span className={createCss.badge!}>{t('promptSectionProtected')}</span>}
       {section.stale && <span className={createCss.badge!}>{t('promptSectionStale')}</span>}
-      {toggleable && section.proseOnly && <span className={createCss.badge!}>{t('promptSectionNoSignal')}</span>}
+      {!section.isProtected && !section.stale && section.proseOnly && <span className={createCss.badge!}>{t('promptSectionNoSignal')}</span>}
+      {candidate && <span className={createCss.badge!}>{t('promptSectionUnused')}</span>}
     </li>
   )
 }
 
 /**
  * Durable edit of one Member's custom role paragraph: a fresh
- * memberPromptView read fills the textarea and the section list, and the save
- * commits one echo-complete member update — absent-clears makes echoing the
- * stored model/capabilities/context overrides mandatory, and the other prompt
- * subfields merge from the read plus the section toggles instead of being
- * replaced. A non-enabled Member renders read-only, and a Member without a
- * live session renders no section list at all.
+ * memberPromptView read fills the textarea, the section list, and the
+ * auto-prune switches, and the save commits one echo-complete member update —
+ * absent-clears makes echoing the stored model/capabilities/context overrides
+ * mandatory, and the other prompt subfields merge from the read plus the
+ * section toggles instead of being replaced. The auto-prune confirm surface
+ * (the Host's candidate list) commits through the same payload path, merging
+ * the candidates into the drops. A non-enabled Member renders read-only, and
+ * a Member without a live session renders no section list at all.
  */
 function EditPromptDialog({ memberId, loadPromptView, updateMember, onCommitted, onClose, t }: {
   readonly memberId: AgentTeamMemberId
@@ -368,6 +377,8 @@ function EditPromptDialog({ memberId, loadPromptView, updateMember, onCommitted,
   const [reloadToken, setReloadToken] = useState(0)
   const [text, setText] = useState('')
   const [drops, setDrops] = useState<readonly string[]>([])
+  const [autoPrune, setAutoPrune] = useState(false)
+  const [autoExecutePrune, setAutoExecutePrune] = useState(false)
   useEffect(() => {
     let mounted = true
     setLoadError(undefined)
@@ -378,6 +389,8 @@ function EditPromptDialog({ memberId, loadPromptView, updateMember, onCommitted,
           setView(result.value)
           setText(result.value.prompt?.customPrompt ?? '')
           setDrops(result.value.prompt?.droppedSections ?? [])
+          setAutoPrune(result.value.prompt?.autoPrune ?? false)
+          setAutoExecutePrune(result.value.prompt?.autoExecutePrune ?? false)
         } else {
           setLoadError(result.error.message)
         }
@@ -430,28 +443,33 @@ function EditPromptDialog({ memberId, loadPromptView, updateMember, onCommitted,
   // Merge, never replace: the stored profile's other subfields survive an
   // edit that only touches the paragraph, the toggled section list replaces
   // the stored drops (toggling everything back off stores an absent field),
-  // and a profile left without any field stores as absent on the Host.
-  const mergedPrompt: AgentTeamMemberPromptProfile | undefined = paragraph === undefined && stored === undefined && drops.length === 0
-    ? undefined
-    : {
-      ...(drops.length === 0 ? {} : { droppedSections: drops }),
-      ...(paragraph === undefined ? {} : { customPrompt: paragraph }),
-      ...(stored?.autoPrune === undefined ? {} : { autoPrune: stored.autoPrune }),
-    }
+  // the auto-prune switches echo from local state (an off switch clears a
+  // stored on), and a profile left without any field stores as absent.
+  const buildPrompt = (dropList: readonly string[]): AgentTeamMemberPromptProfile | undefined =>
+    paragraph === undefined && stored === undefined && dropList.length === 0 && !autoPrune && !autoExecutePrune
+      ? undefined
+      : {
+        ...(dropList.length === 0 ? {} : { droppedSections: dropList }),
+        ...(paragraph === undefined ? {} : { customPrompt: paragraph }),
+        ...(autoPrune ? { autoPrune: true } : {}),
+        ...(autoExecutePrune ? { autoExecutePrune: true } : {}),
+      }
+  const mergedPrompt = buildPrompt(drops)
   const storedDrops = stored?.droppedSections ?? []
   const dropsChanged = drops.length !== storedDrops.length || drops.some(name => !storedDrops.includes(name))
   const dirty = paragraph !== stored?.customPrompt || dropsChanged
-  const submit = async (event: React.FormEvent<HTMLFormElement>) => {
-    event.preventDefault()
-    if (saving || readonly || over || !dirty) return
+    || autoPrune !== (stored?.autoPrune ?? false)
+    || autoExecutePrune !== (stored?.autoExecutePrune ?? false)
+  const commit = async (prompt: AgentTeamMemberPromptProfile | undefined): Promise<void> => {
     const payload = {
       requestId: mintRequestId(),
       memberId: view.memberId,
       handle: view.handle,
       description: view.description,
-      ...(mergedPrompt === undefined ? {} : { prompt: mergedPrompt }),
+      ...(prompt === undefined ? {} : { prompt }),
       // Echo the stored overrides: an absent field would clear them, and
-      // this dialog edits the paragraph and the section list only.
+      // this dialog edits the paragraph, the section list, and the
+      // auto-prune switches only.
       ...(view.model === undefined ? {} : { model: view.model }),
       ...(view.capabilities === undefined ? {} : { capabilities: view.capabilities }),
       ...(view.contextStartPolicy === undefined ? {} : { contextStartPolicy: view.contextStartPolicy }),
@@ -463,12 +481,29 @@ function EditPromptDialog({ memberId, loadPromptView, updateMember, onCommitted,
       && (previous.prompt === undefined) === (payload.prompt === undefined)
       && JSON.stringify(previous.prompt?.droppedSections ?? []) === JSON.stringify(payload.prompt?.droppedSections ?? [])
       && previous.prompt?.autoPrune === payload.prompt?.autoPrune
+      && previous.prompt?.autoExecutePrune === payload.prompt?.autoExecutePrune
       && previous.prompt?.customPrompt === payload.prompt?.customPrompt
       && previous.model === payload.model && previous.capabilities === payload.capabilities
       && (previous.contextStartPolicy ?? undefined) === (payload.contextStartPolicy ?? undefined)
       && (previous.contextWindow ?? undefined) === (payload.contextWindow ?? undefined)
-    committedRef.current = mergedPrompt
+    committedRef.current = prompt
     await save(samePending ? previous : payload)
+  }
+  const submit = (event: React.FormEvent<HTMLFormElement>) => {
+    event.preventDefault()
+    if (saving || readonly || over || !dirty) return
+    void commit(mergedPrompt)
+  }
+  // The confirm surface commits the dialog's current profile with the Host's
+  // candidate list merged into the drops (deduped, sorted) — the same
+  // echo-complete shape as the save button, so no second commit path exists.
+  // The upgrade additionally turns both auto-prune switches on in the
+  // committed profile.
+  const confirmPrune = (upgrade: boolean): void => {
+    if (saving || readonly || over || view.pruneCandidates === undefined) return
+    const merged = [...new Set([...drops, ...view.pruneCandidates])].sort()
+    const base = buildPrompt(merged) ?? { autoPrune: true as const }
+    void commit(upgrade ? { ...base, autoPrune: true, autoExecutePrune: true } : base)
   }
   return (
     <Modal
@@ -498,6 +533,7 @@ function EditPromptDialog({ memberId, loadPromptView, updateMember, onCommitted,
                       key={section.name}
                       section={section}
                       dropped={drops.includes(section.name)}
+                      candidate={section.usage === 0 && !section.proseOnly && !section.isProtected && !section.stale && !drops.includes(section.name)}
                       onToggle={toggleDrop}
                       disabled={saving || readonly}
                       t={t}
@@ -505,9 +541,39 @@ function EditPromptDialog({ memberId, loadPromptView, updateMember, onCommitted,
                   ))}
                 </ul>
               )}
+          {view.usagePartial === true && <small className={css.editHint}>{t('promptUsagePartial')}</small>}
           <small className={css.editHint}>{t('promptSectionsHint')}</small>
+          {!readonly && view.pruneCandidates !== undefined && view.pruneCandidates.length > 0 && (
+            <div className={createCss.prunePanel!} data-team-prompt-prune>
+              <span>{t('promptPruneTitle')}</span>
+              <small className={css.editHint}>{t('promptPruneHint')}</small>
+              <ul className={createCss.sectionList!}>
+                {view.pruneCandidates.map(name => <li key={name}>{name}</li>)}
+              </ul>
+              <div className={createCss.pruneActions!}>
+                <Button size="sm" variant="primary" disabled={saving || over} onClick={() => confirmPrune(false)}>{t('promptPruneConfirm')}</Button>
+                <Button size="sm" variant="outline" disabled={saving || over} onClick={() => confirmPrune(true)}>{t('promptPruneConfirmAuto')}</Button>
+              </div>
+            </div>
+          )}
         </div>
         <PromptParagraphField text={text} onTextChange={next => { pendingRequest.current = undefined; setText(next) }} disabled={saving || readonly} t={t} />
+        <div className={createCss.field}>
+          <Checkbox
+            checked={autoPrune}
+            disabled={saving || readonly}
+            label={t('promptAutoPrune')}
+            onChange={next => { pendingRequest.current = undefined; setAutoPrune(next); if (!next) setAutoExecutePrune(false) }}
+          />
+          <small className={css.editHint}>{t('promptAutoPruneHint')}</small>
+          <Checkbox
+            checked={autoExecutePrune}
+            disabled={saving || readonly || !autoPrune}
+            label={t('promptAutoExecutePrune')}
+            onChange={next => { pendingRequest.current = undefined; setAutoExecutePrune(next) }}
+          />
+          <small className={css.editHint}>{t('promptAutoExecutePruneHint')}</small>
+        </div>
         {error !== undefined && <p className={createCss.error} role="alert">{error}</p>}
       </form>
     </Modal>

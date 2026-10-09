@@ -10,9 +10,15 @@ Section 也可以按 Member 移除。ledger 画像的 `droppedSections` 记录 H
 
 listener 以 assembly 的 turn signal 为门：agent loop 是唯一带着 signal 装配的调用方，因此 `memberPromptView` 这类无 signal 的 read-side 装配仍看到完整清单——被 drop 的 section 在对话框中保持可见、可恢复，而不会伪装成 stale。
 
-protected 集合在 `member-runtime.ts` 一处定义（`isProtectedPromptSection`）：段落 section 自身、deployment persona 槽位、以及 Team tools 的 `tool:<name>` guidance sections——对受保护名字的 drop 请求在消费端拒绝，对话框将该行渲染为带受保护标记的不可操作状态。九个 Team tools 目前把 guidance 放在 tool description 而非注册的 prompt section 里，所以 `tool:*` 条目今天是前瞻防御。没有任何 live section 提供的名字照常存储但不起作用——对话框标记为已失效。
+protected 集合在 `member-runtime.ts` 一处定义（`isProtectedPromptSection`）：段落 section 自身、deployment persona 槽位、以及 Team tools 的 `tool:<name>` guidance sections——对受保护名字的 drop 请求在消费端拒绝，对话框将该行渲染为带受保护标记的不可操作状态。九个 Team tools 目前把 guidance 放在 tool description 而非注册的 prompt section 里，所以 `tool:*` 条目今天是前瞻防御：没有任何 live section 携带这些名字，它们不会渲染为对话框的 live 或 stale 行。没有任何 live section 提供的名字照常存储但不起作用——对话框标记为已失效。
 
 `sectionToolMapping` 是对话框「无自动信号」标记背后的共享 primitive：它扫描每个 section 的文本，对 Member scope 工具 schema 名做整词匹配，不匹配任何当前工具名的 section 即为纯散文。
+
+同一份 mapping 还为每个 section 计价用量。`memberPromptView` 把 Member 的候选窗口——最近 20 个已完成回合或 14 天，回溯遍历先到者先关（`member-section-usage.ts`，窗口边界的唯一定义点）——折叠在 Member 跨 rollover 世代自己的 session 日志上，一个 section 的用量即其映射工具在该窗口内的调用数之和。每个世代只贡献自己的事件（fork 继承前缀不计入），归档不可读或血统深过遍历上限时折叠降级为 view 上的 `partial` 标记；计数在读取时计算，从不持久化。
+
+Auto-prune 就骑在这份投影上。画像的 `autoPrune` 开关（默认关）让 Host 在与 fresh-start 策略相同的 Human atomic-start 边界扫描候选——有工具映射、不受保护、仍被保留且窗口内零调用的 section——走同样的 turn-boundary 等待与串行 lifecycle queue。ask 模式（默认，且 partial 折叠下的每次 sweep 一律如此）只发一条点名候选的 `@human` 收件箱通知，把移除留给 Prompt 对话框的 durable member update。
+
+`autoExecutePrune` 升级让 sweep 以 Human actor、同样的 echo 齐全形状自行提交移除，在边界落定后 live 生效，并且仍然发通知——每次自动移除都留在台账里且被广播。纯散文与受保护 section 永远不会成为候选。
 
 九个 model-facing tools 定义在 `packages/tool-agent-team/src/`：六个 Team 工具在 `index.ts`，三个 context 工具在 `context-tools.ts`；实现的 collaboration contract 记录在 [`tools.zh.md`](../team-collaboration/tools.zh.md)。它们挂载在隔离开的 `team-member` preset 下（`cordis.patch.yml` 里的一条 declarative row）。不要为了让测试可用就把 tool package 作为 global row 添加；普通 Sessions 必须保持 Team-free。
 

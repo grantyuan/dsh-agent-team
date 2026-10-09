@@ -40,6 +40,7 @@ import { AGENT_TEAM_PLUGIN_ID, isAgentTeamSource } from './context-source.ts'
 import { boundaryByRef, carriedInputOf, checkpointByRef, checkpointRefFor, createTeamContextProjectionConfig, createTeamContextProjectionDefinition, foldTeamContextProjection, retainedTopicsThrough, TeamContextProjectionHost } from './context-projection.ts'
 import { AGENT_TEAM_HUMAN_MEMBER_ID, AgentTeamLedger, agentTeamHumanActor, type AgentTeamDurableMemberResult } from './ledger.ts'
 import { AGENT_TEAM_TOOL_NAMES, deepCopyCapabilities, deepCopyPrompt, isProtectedPromptSection, memberMemoryDirectoryName, memberMemoryDirectoryPath, MemberRuntime, promptSectionByteLength, sectionToolMapping } from './member-runtime.ts'
+import { PRUNE_WINDOW_DAYS, PRUNE_WINDOW_TURNS, foldLineageUsage, type UsageFold } from './member-section-usage.ts'
 import type { MemberSkillSelectionRef } from './member-skills.ts'
 import { classifyRecoverableError, RecoveryCoordinator, RECOVERY_MAX_CONSECUTIVE_ERRORS } from './recovery.ts'
 import { classifyAssistantResponse, RESPONSE_GUARD_MAX_CONSECUTIVE, RESPONSE_GUARD_NOTICE_SUMMARY, ResponseGuardCoordinator } from './response-guard.ts'
@@ -658,6 +659,8 @@ export default class AgentTeam extends TypertRemoteService {
    * settles (ran, dropped, or failed).
    */
   private readonly pendingPolicyResets = new Set<AgentTeamMemberId>()
+  /** One in-flight auto-prune sweep per Member; the task-start twin of pendingPolicyResets. */
+  private readonly pendingPruneSweeps = new Set<AgentTeamMemberId>()
   /**
    * Presence wake epoch: Agent running/idle/failure is runtime state with no
    * durable fact behind it, so the presence scope counts those edge wakes in
@@ -1017,21 +1020,27 @@ export default class AgentTeam extends TypertRemoteService {
    * Human read behind the Prompt dialog: the stored prompt profile, the
    * lifecycle facts it renders from, and — when the Member has a live
    * session — its actual assembled sections once, with drop/protection/stale
-   * marks the dialog and the runtime listener agree on.
+   * marks the dialog and the runtime listener agree on, the usage projection
+   * folded from the Member's own session logs, and — with the autoPrune switch
+   * on — the zero-use candidate list the confirm surface renders from.
    */
   @Remote('memberPromptView')
   async memberPromptView(request: AgentTeamMemberPromptViewRequest): Promise<AgentTeamMemberPromptView> {
     const member = this.requireLedger().getMember(request.memberId)
     if (member === undefined) throw new Error(`unknown Agent Member '${request.memberId}'`)
     const handle = this.handles.get(request.memberId)
-    const sections = handle === undefined ? undefined : await this.promptSectionEntries(handle, member.prompt)
+    const projection = handle === undefined ? undefined : await this.promptSectionProjection(handle, member.prompt)
     return Object.freeze({
       memberId: member.memberId,
       handle: member.handle,
       description: member.description,
       state: member.state,
       ...(member.prompt === undefined ? {} : { prompt: member.prompt }),
-      ...(sections === undefined ? {} : { sections }),
+      ...(projection === undefined ? {} : { sections: projection.entries }),
+      ...(projection?.usagePartial ? { usagePartial: true } : {}),
+      ...(projection !== undefined && member.prompt?.autoPrune === true && projection.candidates.length > 0
+        ? { pruneCandidates: projection.candidates }
+        : {}),
       ...(member.model === undefined ? {} : { model: member.model }),
       ...(member.capabilities === undefined ? {} : { capabilities: member.capabilities }),
       ...(member.contextStartPolicy === undefined ? {} : { contextStartPolicy: member.contextStartPolicy }),
@@ -1041,36 +1050,96 @@ export default class AgentTeam extends TypertRemoteService {
 
   /**
    * Assemble the Member's scope once (read-only, the same assembly its next
-   * step gets) and derive the dialog's section entries: the stored drop list
-   * provides dropped/stale marks, the shared protection set refuses drops at
-   * consumption and marks them here, and the section→tools mapping flags
-   * prose-only sections ("no automatic signal"). Stored names the current
-   * assembly no longer knows render as inert stale entries; a protected name
-   * renders protected rather than dropped even when the ledger still lists it.
+   * step gets) and derive the dialog's section entries plus the auto-prune
+   * projection: the stored drop list provides dropped/stale marks, the shared
+   * protection set refuses drops at consumption and marks them here, the
+   * section→tools mapping flags prose-only sections and prices each section's
+   * usage from the window fold, and zero-use mapped sections become the
+   * candidates. Stored names the current assembly no longer knows render as
+   * inert stale entries; a protected name renders protected rather than dropped
+   * even when the ledger still lists it. A Member disposed mid-assemble (or any
+   * assemble failure) degrades to no projection — the dialog renders its
+   * no-live-session state and the Host log carries the diagnostic — instead of
+   * a raw throw.
    */
-  private async promptSectionEntries(handle: AgentHandle, prompt: AgentTeamAgentMember['prompt']): Promise<readonly AgentTeamMemberPromptSectionEntry[]> {
-    // A live handle always carries an agent scope; the type cannot know that.
-    const scope = scopeOf(handle.agent.ctx)!
-    const assembly = await this.ctx.systemPrompt.assemble({ scope })
-    const toolNames = this.ctx.tools.schemas(scope).map(tool => tool.name)
-    const mapping = sectionToolMapping(assembly.sections, toolNames)
-    const requested = prompt?.droppedSections ?? []
-    const live = assembly.sections.map(section => {
-      const isProtected = isProtectedPromptSection(section.name)
-      return {
-        name: section.name,
-        chars: promptSectionByteLength(section.text),
-        dropped: !isProtected && requested.includes(section.name),
-        isProtected,
-        stale: false,
-        proseOnly: (mapping.get(section.name) ?? []).length === 0,
+  private async promptSectionProjection(handle: AgentHandle, prompt: AgentTeamAgentMember['prompt']): Promise<{
+    readonly entries: readonly AgentTeamMemberPromptSectionEntry[]
+    readonly candidates: readonly string[]
+    readonly usagePartial: boolean
+  }> {
+    try {
+      // A live handle always carries an agent scope; the type cannot know that.
+      const scope = scopeOf(handle.agent.ctx)!
+      const assembly = await this.ctx.systemPrompt.assemble({ scope })
+      const toolNames = this.ctx.tools.schemas(scope).map(tool => tool.name)
+      const mapping = sectionToolMapping(assembly.sections, toolNames)
+      const fold = await this.memberWindowUsage(handle)
+      const usageOf = (name: string): number => {
+        let total = 0
+        for (const toolName of mapping.get(name) ?? []) total += fold.counts.get(toolName) ?? 0
+        return total
       }
-    })
-    const currentNames = new Set(assembly.sections.map(section => section.name))
-    const stale = requested
-      .filter(name => !currentNames.has(name) && !isProtectedPromptSection(name))
-      .map(name => ({ name, dropped: true, isProtected: false, stale: true, proseOnly: false }))
-    return Object.freeze([...live, ...stale].map(entry => Object.freeze(entry)))
+      const requested = prompt?.droppedSections ?? []
+      const live = assembly.sections.map(section => {
+        const isProtected = isProtectedPromptSection(section.name)
+        return {
+          name: section.name,
+          chars: promptSectionByteLength(section.text),
+          dropped: !isProtected && requested.includes(section.name),
+          isProtected,
+          stale: false,
+          proseOnly: (mapping.get(section.name) ?? []).length === 0,
+          usage: usageOf(section.name),
+        }
+      })
+      const currentNames = new Set(assembly.sections.map(section => section.name))
+      const stale = requested
+        .filter(name => !currentNames.has(name) && !isProtectedPromptSection(name))
+        .map(name => ({ name, dropped: true, isProtected: false, stale: true, proseOnly: false }))
+      const entries = Object.freeze([...live, ...stale].map(entry => Object.freeze(entry)))
+      const liveByName = new Map(live.map(entry => [entry.name, entry]))
+      const candidates = Object.freeze(assembly.sections
+        .map(section => section.name)
+        .filter(name => {
+          const entry = liveByName.get(name)
+          return entry !== undefined && !entry.isProtected && !entry.proseOnly && !entry.dropped && entry.usage === 0
+        }))
+      return { entries, candidates, usagePartial: fold.partial }
+    } catch (error) {
+      this.ctx.logger.warn(`agent-team: prompt section projection for member '${handle.agent.session.id}' failed: ${error instanceof Error ? error.message : String(error)}`)
+      return { entries: [], candidates: [], usagePartial: false }
+    }
+  }
+
+  /**
+   * Fold the Member's candidate window (last 20 completed turns or 14 days,
+   * whichever closes first) from its own session logs across the rollover
+   * lineage: the live generation folds directly, archived ancestors through
+   * the stored-session reader, each contributing only its own events so the
+   * fork-inherited prefix never double counts. An unreadable ancestor or a
+   * lineage deeper than the walk cap degrades the fold to `partial`.
+   */
+  private async memberWindowUsage(handle: AgentHandle): Promise<UsageFold> {
+    const session = handle.agent.session
+    return foldLineageUsage(
+      {
+        ownEvents: session.ownEvents(),
+        ...(session.header.parentSession === undefined ? {} : { parentSession: session.header.parentSession }),
+      },
+      async sessionId => {
+        const read = await this.sessionReader.read(SessionId(sessionId))
+        if (!read.ok) return { ok: false }
+        const inspection = read.inspection
+        return {
+          ok: true,
+          generation: {
+            ownEvents: inspection.events.slice(inspection.inheritedEventCount),
+            ...(inspection.header.parentSession === undefined ? {} : { parentSession: inspection.header.parentSession }),
+          },
+        }
+      },
+      Date.now(),
+    )
   }
 
   /** Emit a current baseline, then coalesced invalidations until canceled. */
@@ -1470,6 +1539,132 @@ export default class AgentTeam extends TypertRemoteService {
       this.ctx.logger.warn(`agent-team: fresh-start context reset for member '${member.handle}' failed: ${error instanceof Error ? error.message : String(error)}`)
     } finally {
       this.pendingPolicyResets.delete(memberId)
+    }
+  }
+
+  /**
+   * Schedule one auto-prune sweep behind a task-start boundary (claim or Human
+   * atomic start), mirroring the fresh-start reset seam: same one-in-flight
+   * dedupe, same turn-boundary wait, same serialized lifecycle body. Only a
+   * Member with the autoPrune switch on sweeps; everyone else pays one ledger
+   * read and never prunes.
+   */
+  private scheduleAutoPruneSweep(memberId: AgentTeamMemberId): void {
+    if (this.pendingPruneSweeps.has(memberId)) return
+    const stored = this.ledger?.getMember(memberId)
+    if (stored?.prompt?.autoPrune !== true) return
+    const active = this.handles.get(memberId)
+    if (active === undefined) return
+    this.pendingPruneSweeps.add(memberId)
+    void this.runAutoPruneSweep(stored, active)
+  }
+
+  /**
+   * Background body of one scheduled auto-prune sweep. Like the fresh-start
+   * reset it waits for the turn boundary, re-reads the Member there (a
+   * concurrent edit may have turned the switch off), and runs inside the
+   * serialized lifecycle queue. Failures are logged, never thrown and never
+   * retried — the next task start schedules its own sweep.
+   */
+  private async runAutoPruneSweep(member: AgentTeamAgentMember, active: AgentHandle): Promise<void> {
+    const memberId = member.memberId
+    try {
+      await this.memberRuntime.awaitTurnBoundary(active)
+      if (this.handles.get(memberId) !== active) return
+      if (this.runningAgents.has(active.agent.id)) await active.agent.whenIdle()
+      if (this.handles.get(memberId) !== active) return
+      const stored = this.ledger?.getMember(memberId)
+      if (stored?.prompt?.autoPrune !== true || stored.state !== 'enabled') return
+      await this.enqueueLifecycle(async () => {
+        this.requireAccepting()
+        // Lifecycle edits and suspensions queue ahead of this body and can
+        // commit after the boundary re-read above; only a still-opted-in,
+        // still-enabled Member sweeps.
+        const current = this.ledger?.getMember(memberId)
+        if (current?.prompt?.autoPrune !== true || current.state !== 'enabled') return
+        const live = this.handles.get(memberId)
+        if (live === undefined) return
+        await this.runAutoPruneBody(current, live)
+      })
+    } catch (error) {
+      this.ctx.logger.warn(`agent-team: auto-prune sweep for member '${member.handle}' failed: ${error instanceof Error ? error.message : String(error)}`)
+    } finally {
+      this.pendingPruneSweeps.delete(memberId)
+    }
+  }
+
+  /**
+   * One sweep's decision body: recompute the candidates from the CURRENT
+   * session logs; with none, do nothing. Ask mode (the default, and the
+   * full-auto mode degraded by a partial usage fold — unreadable history can
+   * only under-count, so a partial fold never drives an automatic drop) posts
+   * the inbox notice and leaves the candidates for the dialog's confirm
+   * surface. Full-auto commits the candidates as one durable member update
+   * through the same echo-complete shape the Human editor uses, live-applies
+   * the drop list at the settled boundary, and still posts the notice naming
+   * what was pruned — every automatic drop stays ledger-recorded and
+   * traceable.
+   */
+  private async runAutoPruneBody(member: AgentTeamAgentMember, active: AgentHandle): Promise<void> {
+    if (this.handles.get(member.memberId) !== active) return
+    const projection = await this.promptSectionProjection(active, member.prompt)
+    if (projection.candidates.length === 0) return
+    const fullAuto = member.prompt?.autoExecutePrune === true && !projection.usagePartial
+    if (!fullAuto) {
+      await this.announceAutoPrune(member, projection.candidates, false)
+      return
+    }
+    const mergedDrops = [...new Set([...(member.prompt?.droppedSections ?? []), ...projection.candidates])].sort()
+    const prior = member.prompt
+    const result = await this.requireLedger().updateMember({
+      requestId: randomUUID() as AgentTeamRequestId,
+      memberId: member.memberId,
+      handle: member.handle,
+      description: member.description,
+      prompt: {
+        droppedSections: mergedDrops,
+        ...(prior?.customPrompt === undefined ? {} : { customPrompt: prior.customPrompt }),
+        autoPrune: true,
+        ...(prior?.autoExecutePrune === undefined ? {} : { autoExecutePrune: prior.autoExecutePrune }),
+      },
+      ...(member.model === undefined ? {} : { model: member.model }),
+      ...(member.capabilities === undefined ? {} : { capabilities: member.capabilities }),
+      ...(member.contextStartPolicy === undefined ? {} : { contextStartPolicy: member.contextStartPolicy }),
+      ...(member.contextWindow === undefined ? {} : { contextWindow: member.contextWindow }),
+      actor: agentTeamHumanActor(),
+    })
+    if (result.committed) this.emitCommitted(result.value.receipt)
+    this.memberRuntime.reapplyMemberSectionDrops(result.value.member)
+    await this.announceAutoPrune(result.value.member, projection.candidates, true)
+  }
+
+  /**
+   * Post one auto-prune notice on every Channel the swept Member belongs to,
+   * addressed to the Human by mention so it lands in the Human inbox. Ask mode
+   * asks for confirmation; full-auto documents what was committed. Member-voiced
+   * like the context-reset notice, and failures are logged, never thrown — the
+   * drop itself is already durable when this runs.
+   */
+  private async announceAutoPrune(member: AgentTeamAgentMember, sections: readonly string[], executed: boolean): Promise<void> {
+    const ledger = this.requireLedger()
+    const named = sections.map(name => `\`${name}\``).join(', ')
+    const body = executed
+      ? `Auto-prune executed: my prompt sections ${named} mapped no tool calls inside my usage window (the last ${PRUNE_WINDOW_TURNS} completed turns or ${PRUNE_WINDOW_DAYS} days, whichever closed first), and my auto-execute upgrade dropped them from my assembly. @human — restore them in my Prompt dialog if they are still needed.`
+      : `Auto-prune notice: my prompt sections ${named} mapped no tool calls inside my usage window (the last ${PRUNE_WINDOW_TURNS} completed turns or ${PRUNE_WINDOW_DAYS} days, whichever closed first). @human — confirm the drop in my Prompt dialog, or ignore this notice to keep them.`
+    const noticeChannels = ledger.workspacesOf(member.memberId)
+      .flatMap(workspaceId => ledger.channelsForMember(member.memberId, workspaceId).map(channelRef => ({ workspaceId, channelRef })))
+    for (const { workspaceId, channelRef } of noticeChannels) {
+      try {
+        await this.sendMessageAs({ kind: 'member', memberId: member.memberId, handle: member.handle }, {
+          requestId: randomUUID() as AgentTeamRequestId,
+          workspaceId,
+          channelRef,
+          body,
+          asTask: false,
+        })
+      } catch (error) {
+        this.ctx.logger.warn(`agent-team: auto-prune notice for member '${member.handle}' failed in channel '${channelRef}': ${error instanceof Error ? error.message : String(error)}`)
+      }
     }
   }
 
@@ -2676,6 +2871,9 @@ export default class AgentTeam extends TypertRemoteService {
     // The claim boundary of a fresh-start Member: the reset schedules behind
     // the Member's own running turn and renews at its idle boundary.
     if (request.action === 'claim' && result.committed) this.scheduleFreshStartReset(actor.memberId)
+    // The same task-start boundary sweeps auto-prune candidates for an
+    // opted-in Member; the switch-off default never schedules.
+    if (request.action === 'claim' && result.committed) this.scheduleAutoPruneSweep(actor.memberId)
     return result.value
   }
 
@@ -3533,6 +3731,9 @@ export default class AgentTeam extends TypertRemoteService {
     const outcome = result.value
     if (actor.kind === 'human' && request.asTask !== false && outcome.kind === 'committed') {
       for (const marker of outcome.directMarkers) this.scheduleFreshStartReset(marker.memberId)
+      // The same atomic-start boundary sweeps auto-prune candidates for every
+      // opted-in Member the task starts; the switch-off default never does.
+      for (const marker of outcome.directMarkers) this.scheduleAutoPruneSweep(marker.memberId)
     }
     return outcome
   }

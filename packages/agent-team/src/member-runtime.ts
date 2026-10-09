@@ -134,6 +134,7 @@ export function deepCopyPrompt(prompt: AgentTeamMemberPromptProfile): AgentTeamM
     ...(prompt.droppedSections === undefined ? {} : { droppedSections: [...prompt.droppedSections] }),
     ...(prompt.customPrompt === undefined ? {} : { customPrompt: prompt.customPrompt }),
     ...(prompt.autoPrune === undefined ? {} : { autoPrune: prompt.autoPrune }),
+    ...(prompt.autoExecutePrune === undefined ? {} : { autoExecutePrune: prompt.autoExecutePrune }),
   }
 }
 

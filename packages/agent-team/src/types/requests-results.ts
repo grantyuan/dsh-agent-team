@@ -170,6 +170,13 @@ export interface AgentTeamMemberPromptSectionEntry {
   readonly stale: boolean
   /** No current tool name maps to this section ("no automatic signal"). */
   readonly proseOnly: boolean
+  /**
+   * Mapped tool calls the Member made within the usage window (the last 20
+   * completed turns or 14 days, whichever closed first), summed over the
+   * section's mapped tools; 0 for prose-only rows. Computed on read, never
+   * persisted; absent when no usage fold ran.
+   */
+  readonly usage?: number
 }
 
 export interface AgentTeamMemberPromptView {
@@ -187,6 +194,19 @@ export interface AgentTeamMemberPromptView {
    * has no live session to assemble from.
    */
   readonly sections?: readonly AgentTeamMemberPromptSectionEntry[]
+  /**
+   * An archived generation could not be read (or the ancestor walk hit its
+   * cap) while the usage window was still open: the usage counts cover the
+   * readable generations only. Present only when a fold ran and degraded.
+   */
+  readonly usagePartial?: boolean
+  /**
+   * Tool-mapped live sections with zero mapped calls inside the usage window —
+   * the auto-prune candidate list. Present only while the Member's autoPrune
+   * switch is on and the list is non-empty; the dialog's confirm surface
+   * renders from it. Prose-only and protected sections never appear here.
+   */
+  readonly pruneCandidates?: readonly string[]
   /** Stored overrides the dialog's edit echoes verbatim, so absence cannot clear them. */
   readonly model?: AgentTeamModelSelection
   readonly capabilities?: AgentTeamMemberCapabilities

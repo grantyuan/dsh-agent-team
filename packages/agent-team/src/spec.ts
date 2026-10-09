@@ -86,6 +86,7 @@ const memberPromptProfileSchema = z.object({
   droppedSections: z.array(z.string().min(1)).optional(),
   customPrompt: z.string().optional(),
   autoPrune: z.boolean().optional(),
+  autoExecutePrune: z.boolean().optional(),
 }).strict().transform(omitUndefined)
 
 const memberSchema = z.object({

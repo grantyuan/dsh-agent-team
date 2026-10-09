@@ -682,6 +682,10 @@ it('drives the complete opt-in Agent Team journey in real Web', async () => {
   await promptParagraphRow.getByText('受保护').waitFor()
   await expect.poll(async () => await promptParagraphRow.getByRole('checkbox').isDisabled()).toBe(true)
   await promptDialog.locator('[data-team-prompt-section="deployment:persona-prefix"]').getByText('受保护').waitFor()
+  // The usage column prices every tool-mapped row inside the rolling window;
+  // with no calls yet the zero-use rows badge as long unused.
+  await promptDialog.locator('[data-team-prompt-section="tool:bash"]').getByText('窗口内 0 次调用').waitFor()
+  await promptDialog.locator('[data-team-prompt-section="tool:bash"]').getByText('长期未用').waitFor()
   await settleAnimations(page)
   await page.screenshot({ path: join(UI04_SHOTS, 'agent-edit-prompt-dialog.png'), fullPage: true })
   await promptField.fill('段'.repeat(2731))
@@ -718,6 +722,32 @@ it('drives the complete opt-in Agent Team journey in real Web', async () => {
   await page.screenshot({ path: join(UI04_SHOTS, 'agent-edit-prompt-dropped.png'), fullPage: true })
   await droppedIdentity.getByRole('checkbox').click()
   await droppedPrompt.getByRole('button', { name: '保存' }).click()
+  await expect.poll(() => page.getByRole('dialog', { name: '自定义角色段落' }).count()).toBe(0)
+  // Auto-prune surfaces: the switches ride the same merged save, and with the
+  // switch on the reopened read carries the Host's candidate list as the
+  // bordered confirm panel with both actions. The switch returns to off so no
+  // later task start ever sweeps this member.
+  await promptEditor.getByRole('button', { name: '编辑段落' }).click()
+  const prunePrompt = page.getByRole('dialog', { name: '自定义角色段落' })
+  const pruneSwitch = prunePrompt.getByRole('checkbox', { name: '任务启动时自动检查未用段落' })
+  await expect.poll(async () => await pruneSwitch.isChecked()).toBe(false)
+  await expect.poll(async () => await prunePrompt.getByRole('checkbox', { name: '自动执行（不再确认）' }).isDisabled()).toBe(true)
+  await expect.poll(() => prunePrompt.locator('[data-team-prompt-prune]').count()).toBe(0)
+  await pruneSwitch.click()
+  await prunePrompt.getByRole('button', { name: '保存' }).click()
+  await expect.poll(() => page.getByRole('dialog', { name: '自定义角色段落' }).count()).toBe(0)
+  await promptEditor.getByRole('button', { name: '编辑段落' }).click()
+  const pruneReady = page.getByRole('dialog', { name: '自定义角色段落' })
+  await expect.poll(async () => await pruneReady.getByRole('checkbox', { name: '任务启动时自动检查未用段落' }).isChecked()).toBe(true)
+  await pruneReady.locator('[data-team-prompt-prune]').getByText('建议移除的段落').waitFor()
+  await pruneReady.locator('[data-team-prompt-prune]').getByText('tool:bash').waitFor()
+  await pruneReady.getByRole('button', { name: '确认移除' }).waitFor()
+  await pruneReady.getByRole('button', { name: '移除并不再确认' }).waitFor()
+  await pruneReady.locator('[data-team-prompt-prune]').scrollIntoViewIfNeeded()
+  await settleAnimations(page)
+  await page.screenshot({ path: join(UI04_SHOTS, 'agent-edit-prompt-prune-panel.png'), fullPage: true })
+  await pruneReady.getByRole('checkbox', { name: '任务启动时自动检查未用段落' }).click()
+  await pruneReady.getByRole('button', { name: '保存' }).click()
   await expect.poll(() => page.getByRole('dialog', { name: '自定义角色段落' }).count()).toBe(0)
   await promptEditor.getByRole('button', { name: '关闭', exact: true }).click()
 

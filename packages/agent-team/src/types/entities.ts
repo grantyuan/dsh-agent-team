@@ -105,6 +105,13 @@ export interface AgentTeamMemberPromptProfile {
   readonly customPrompt?: string
   /** Auto-prune long-unused tool-mapped sections at task start; default off. */
   readonly autoPrune?: boolean
+  /**
+   * Upgrade of `autoPrune`: the Host itself commits the window's zero-use
+   * candidates as a durable member update at the task-start trigger, instead
+   * of only notifying the Human inbox and listing them for confirmation.
+   * Absent (default) is ask mode: candidates wait for Human confirmation.
+   */
+  readonly autoExecutePrune?: boolean
 }
 
 /** Durable identity and lifecycle intent of one team-managed Agent. */

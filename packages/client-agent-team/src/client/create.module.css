@@ -81,9 +81,9 @@
   background: var(--dsw-alias-interactive-bg-hover);
 }
 
-/* One inert mark per row (protected / stale / no automatic signal): a pill
-   that stays secondary even beside a checked toggle, because it describes
-   the section rather than the choice. */
+/* One inert mark per row (protected / stale / no automatic signal / long
+   unused): a pill that stays secondary even beside a checked toggle, because
+   it describes the section rather than the choice. */
 .badge {
   border: 1px solid var(--dsw-alias-border-l2);
   border-radius: 999px;
@@ -93,6 +93,27 @@
   line-height: 14px;
   padding: 0 6px;
   white-space: nowrap;
+}
+
+/* The auto-prune confirm surface: a bordered block that sets the Host's
+   candidate list apart from the editable toggles above — confirming here
+   commits the dialog's own edits plus the candidates in one update. */
+.prunePanel {
+  border: 1px solid var(--dsw-alias-border-l2);
+  border-radius: var(--dsw-radius-sm, 8px);
+  display: grid;
+  gap: 6px;
+  padding: 8px 10px;
+}
+
+.prunePanel > span {
+  color: var(--dsw-alias-label-primary);
+  font-weight: 500;
+}
+
+.pruneActions {
+  display: flex;
+  gap: 8px;
 }
 
 /* Picker lists cap their card and scroll internally so growing model
