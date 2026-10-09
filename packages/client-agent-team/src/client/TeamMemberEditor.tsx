@@ -531,7 +531,10 @@ function EditPromptDialog({ memberId, loadPromptView, curateMemberPrompt, update
     // echo proposes neither. A plain union cannot tell a re-check from an
     // untouched stale row, and would silently undo the restore this dialog
     // exists to perform. A failed re-read saves the local list unchanged; the
-    // update itself surfaces any real failure.
+    // update itself surfaces any real failure. The residual edge is two dialogs
+    // open on the same member at once: each reconciles only against what it
+    // saw, so they remain last-writer-wins — the inherent limit of a diff over
+    // echo-complete reads.
     let reconciled = prompt
     if (prompt !== undefined) {
       const fresh = await loadPromptView({ memberId: view.memberId })

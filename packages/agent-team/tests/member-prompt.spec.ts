@@ -16,7 +16,7 @@ import type { Agent, AgentHandle } from '@deepseek-ai/dsh-agent'
 import AgentLoop from '@deepseek-ai/dsh-agent-loop'
 import AgentPreset from '@deepseek-ai/dsh-agent-preset'
 import AgentPresetRegistry from '@deepseek-ai/dsh-agent-preset-registry'
-import LlmRuntime, { ToolCallId, createUserMessage, LlmAdapter } from '@deepseek-ai/dsh-llm'
+import LlmRuntime, { ToolCallId, createUserMessage, LlmAdapter, LlmError } from '@deepseek-ai/dsh-llm'
 import type { GenerateOptions, StreamChunk } from '@deepseek-ai/dsh-llm'
 import SessionStore, { SessionId } from '@deepseek-ai/dsh-session'
 import JsonlSessionPersistence from '@deepseek-ai/dsh-session-persistence-jsonl'
@@ -783,6 +783,50 @@ describe('Agent Team member prompt LLM curation', () => {
     // No enqueued response: the adapter throws while streaming.
     await expect(ctx.agentTeam.curateMemberPrompt({ memberId: member.memberId, requirements: 'trim it' }))
       .rejects.toThrow('response queue is empty')
+  })
+
+  it('rejects a max-tokens finish with the truncation message instead of parsing the cut reply', async () => {
+    const adapter = new ScriptedAdapter()
+    useAdapter(adapter)
+    const { ctx, workspaceId } = shared
+    const member = await addMember(ctx, workspaceId, 'c6-truncated')
+    adapter.enqueue([
+      { type: 'block-start', index: 0, blockType: 'text' },
+      { type: 'text-delta', index: 0, text: '{"customPrompt": "Cut off mid-sent' },
+      { type: 'usage', usage: { inputTokens: 10, outputTokens: CURATE_MAX_TOKENS } },
+      { type: 'finish', reason: { kind: 'max-tokens' } },
+    ])
+    await expect(ctx.agentTeam.curateMemberPrompt({ memberId: member.memberId, requirements: 'trim it' }))
+      .rejects.toThrow('truncated at the token cap')
+    // The cut reply never becomes a proposal or a stored profile change.
+    const view = await ctx.agentTeam.memberPromptView({ memberId: member.memberId })
+    expect(view.prompt).toBeUndefined()
+  })
+
+  it('wraps an aborted finish into a clean LlmError rejection without a proposal', async () => {
+    const adapter = new ScriptedAdapter()
+    useAdapter(adapter)
+    const { ctx, workspaceId } = shared
+    const member = await addMember(ctx, workspaceId, 'c7-aborted')
+    adapter.enqueue([
+      { type: 'block-start', index: 0, blockType: 'text' },
+      { type: 'text-delta', index: 0, text: '{"customPrompt": "Too late."}' },
+      { type: 'usage', usage: { inputTokens: 10, outputTokens: 4 } },
+      { type: 'finish', reason: { kind: 'aborted', failure: { message: 'provider aborted the stream', code: 'ABORTED' } } },
+    ])
+    // The finish reason's failure facts ride the LlmError verbatim — the exact
+    // message and the provider-neutral code — and the cut reply never parses
+    // into a proposal.
+    const rejection = await ctx.agentTeam.curateMemberPrompt({ memberId: member.memberId, requirements: 'trim it' }).then(
+      () => undefined,
+      (error: unknown) => error,
+    )
+    expect(rejection).toBeInstanceOf(LlmError)
+    const llmFailure = rejection as LlmError
+    expect(llmFailure.message).toBe('provider aborted the stream')
+    expect(llmFailure.code).toBe('ABORTED')
+    const view = await ctx.agentTeam.memberPromptView({ memberId: member.memberId })
+    expect(view.prompt).toBeUndefined()
   })
 })
 

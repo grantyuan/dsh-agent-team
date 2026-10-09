@@ -1,5 +1,6 @@
 import { cp, mkdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
+import { pathToFileURL } from 'node:url'
 import { afterEach, expect, it } from 'vitest'
 import { chromium, type Browser, type Locator, type Page } from 'playwright'
 import { launchWebScaffold, acknowledgeReloadConnectionLoss, watchConsole, type WebScaffold } from './scaffold.ts'
@@ -769,8 +770,11 @@ it('drives the complete opt-in Agent Team journey in real Web', async () => {
   await curateRequirements.fill(curateRequirementsText)
   await expect.poll(async () => await curateButton.isDisabled()).toBe(false)
   let curateCalls = 0
+  // The interception key is the Host's own constant, imported from the freshly
+  // built tree this run stages — a hardcoded copy here would drift silently.
+  const { CURATE_SYSTEM_PREFIX } = await import(pathToFileURL(join(TEAM_ROOT, 'packages/agent-team/lib/member-prompt-curation.js')).href)
   const disposeCurateStream = scaffold.ctx.on('llm/stream', async function* (options, next) {
-    if (typeof options.system !== 'string' || !options.system.startsWith('You curate the system prompt of one AI team member.')) {
+    if (typeof options.system !== 'string' || !options.system.startsWith(CURATE_SYSTEM_PREFIX)) {
       yield* next()
       return
     }

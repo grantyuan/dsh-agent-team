@@ -84,7 +84,7 @@ const PAGE_SETS = [
 // ceiling instead of inheriting an unbounded default.
 const BLOCK_CHARACTER_CEILINGS = {
   'architecture/README.md': [342, 174],
-  'architecture/client-and-remote.md': [602, 586],
+  'architecture/client-and-remote.md': [674, 586],
   'architecture/host-authority.md': [597, 541],
   'architecture/package-ownership.md': [552, 339],
   'architecture/tools-and-preset.md': [616, 540],

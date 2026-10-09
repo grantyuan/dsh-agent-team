@@ -4,7 +4,11 @@
  * prompt surface, private skills catalog, identity, and the Human's free-text
  * requirements, then parses the reply into a propose-only draft. Nothing here
  * touches the ledger — the proposal only ever backfills the dialog form, and
- * the Human commits (or discards) it through the normal member update.
+ * the Human commits (or discards) it through the normal member update. The
+ * inputs are injectable by design: section texts and the requirements are
+ * embedded verbatim, only bounded, so containment is propose-only parsing,
+ * re-validation against the same snapshot, and Human review before anything
+ * durable.
  *
  * @module @wowyuarm/dsh-agent-team/member-prompt-curation
  */
@@ -13,7 +17,9 @@ import type { RequestMessage } from '@deepseek-ai/dsh-llm'
 /**
  * Hard wall-clock bound of the one-shot curation call. The Host races this
  * timeout against the client's cancellation signal so a stuck provider can
- * never pin the dialog (or a remote worker) for longer than one minute.
+ * never pin the dialog (or a remote worker) for longer than one minute. The
+ * clock starts before the input assembly, so the budget covers the skills
+ * catalog read and the section assembly too, not only the model call.
  */
 export const CURATE_TIMEOUT_MS = 60_000
 
@@ -63,8 +69,14 @@ export interface CurateProposal {
   readonly customPrompt?: string
 }
 
+/**
+ * Leading sentence of the curation system line. Exported so the browser e2e
+ * interceptor keys on the Host's own constant instead of a drifting copy.
+ */
+export const CURATE_SYSTEM_PREFIX = 'You curate the system prompt of one AI team member.'
+
 const ROLE_LINE = [
-  'You curate the system prompt of one AI team member. You propose edits only:',
+  `${CURATE_SYSTEM_PREFIX} You propose edits only:`,
   'a human reviews and applies them. Answer with EXACTLY one JSON object and',
   'nothing else — no prose, no code fences.',
 ].join(' ')
