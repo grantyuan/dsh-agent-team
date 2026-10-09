@@ -88,6 +88,7 @@
   border: 1px solid var(--dsw-alias-border-l2);
   border-radius: 999px;
   color: var(--dsw-alias-label-tertiary);
+  corner-shape: round;
   flex: none;
   font-size: 10px;
   line-height: 14px;
