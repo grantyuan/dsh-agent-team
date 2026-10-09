@@ -4,15 +4,15 @@
 
 **Blocked by:** None — can start immediately.
 
-**Status:** ready
+**Status:** done (commits f88e75d, 83cc4d3; spec + quality review passed)
 
-- [ ] `AgentTeamAgentMember` carries the three optional fields from spec D2 (`prompt`, `contextStartPolicy`, `contextWindow`) with validation (positive integer ≥ 8192 for the window; old ledgers without them replay unchanged)
-- [ ] `team/member-updated` accepts and durably replays the new fields; idempotency equality covers them
-- [ ] Typed Remote update request and Client create/edit forms carry the fields; the editor echoes stored intent when a field is absent (same pattern as capabilities)
-- [ ] Effective window = min(setValue, route window) inside the pressure-budget derivation; budgets derive through the existing single translation; a member with no override is unchanged
-- [ ] A member with fresh policy gets its context reset through the existing serialized lifecycle queue at the claim/atomic-start boundary, recorded durably; continue-policy members never trigger it
-- [ ] Unit tests cover ledger round-trip, old-ledger normalization, window validation/clamping, and the fresh-policy reset at the claim boundary; browser test covers the new Context block (desktop + 390×844)
-- [ ] Owning maintained docs updated in the same change (host-authority for budget ownership; client-and-remote for the new fields); CHANGELOG row
+- [x] `AgentTeamAgentMember` carries the three optional fields from spec D2 (`prompt`, `contextStartPolicy`, `contextWindow`) with validation (positive integer ≥ 8192 for the window; old ledgers without them replay unchanged)
+- [x] `team/member-updated` accepts and durably replays the new fields; idempotency equality covers them
+- [x] Typed Remote update request and Client create/edit forms carry the fields; the editor echoes stored intent when a field is absent (same pattern as capabilities)
+- [x] Effective window = min(setValue, route window) inside the pressure-budget derivation; budgets derive through the existing single translation; a member with no override is unchanged
+- [x] A member with fresh policy gets its context reset through the existing serialized lifecycle queue at the claim/atomic-start boundary, recorded durably; continue-policy members never trigger it
+- [x] Unit tests cover ledger round-trip, old-ledger normalization, window validation/clamping, and the fresh-policy reset at the claim boundary; browser test covers the new Context block (desktop + 390×844)
+- [x] Owning maintained docs updated in the same change (host-authority for budget ownership; client-and-remote for the new fields); CHANGELOG row
 
 # 02 — Custom role paragraph end-to-end
 
