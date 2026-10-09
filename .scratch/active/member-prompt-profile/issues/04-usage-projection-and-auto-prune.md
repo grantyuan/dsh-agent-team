@@ -4,11 +4,11 @@
 
 **Blocked by:** 03.
 
-**Status:** ready
+**Status:** done (commits a010a5e, 398351d, d7b0a2d; spec + quality review passed; `autoExecutePrune` added as the D3 full-auto upgrade storage)
 
-- [ ] Section→tools mapping computed from current known tool names; usage counts folded from member session logs; archived-generation read failure degrades to current generation with a visible marker (spec D3)
-- [ ] Candidate window = zero mapped calls within the last 20 completed turns or 14 days (whichever first), constants fixed in one place
-- [ ] autoPrune=false (default): numbers and the "long-unused" badge show, nothing ever prunes automatically
-- [ ] autoPrune=true: task-start trigger produces the inbox notice + dialog candidate list; confirmed drops commit via the durable member update; full-auto upgrade honored; prose-only sections never auto-pruned
-- [ ] Unit tests cover mapping, counting, window edges, and the confirm/full-auto flows; browser test covers the usage column, badges, and confirm surface
-- [ ] Owning maintained docs updated (host-authority for the projection; memory-and-context if it touches member context guidance); CHANGELOG row
+- [x] Section→tools mapping computed from current known tool names; usage counts folded from member session logs; archived-generation read failure degrades to current generation with a visible marker (spec D3)
+- [x] Candidate window = zero mapped calls within the last 20 completed turns or 14 days (whichever first), constants fixed in one place
+- [x] autoPrune=false (default): numbers and the "long-unused" badge show, nothing ever prunes automatically
+- [x] autoPrune=true: task-start trigger produces the inbox notice + dialog candidate list; confirmed drops commit via the durable member update; full-auto upgrade honored; prose-only sections never auto-pruned
+- [x] Unit tests cover mapping, counting, window edges, and the confirm/full-auto flows; browser test covers the usage column, badges, and confirm surface
+- [x] Owning maintained docs updated (host-authority for the projection; memory-and-context if it touches member context guidance); CHANGELOG row
