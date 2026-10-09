@@ -4747,3 +4747,89 @@ describe('Member supervision handover', () => {
     expect(() => ctx.agentTeam.validateLedger()).not.toThrow()
   })
 })
+
+describe('Agent Team member context control (ticket 01)', () => {
+  it('renews a fresh-start Member at the atomic-start and claim boundaries and never renews a continue Member', async () => {
+    const adapter = new ScriptedAdapter()
+    const { ctx, workspaceId, archived } = await realHarness(adapter)
+    const channel = await ctx.agentTeam.createChannel({ requestId: requestId('ctx-channel'), workspaceId, name: 'engineering', description: 'Engineering work' })
+    const fresh = await ctx.agentTeam.addMember({ requestId: requestId('ctx-add-fresh'), workspaceId, handle: 'scout', description: 'Starts fresh per task', presetId: 'team-member', channelRefs: [channel.channel.channelRef], contextStartPolicy: 'fresh' })
+    const steady = await ctx.agentTeam.addMember({ requestId: requestId('ctx-add-steady'), workspaceId, handle: 'keeper', description: 'Continues across tasks', presetId: 'team-member', channelRefs: [channel.channel.channelRef] })
+    const freshId = fresh.status.member.memberId
+    const steadyId = steady.status.member.memberId
+    const freshSession0 = fresh.status.member.sessionId
+    const steadySession0 = steady.status.member.sessionId
+
+    // The mention wake, the reset-notice wake, and the re-notification wake
+    // each consume one scripted turn; the buffer absorbs the scheduling order.
+    for (let turn = 0; turn < 8; turn += 1) adapter.enqueue(textResponse('Acknowledged.'))
+
+    // Atomic start: the Human's taskful message mentioning both Members
+    // renews the fresh-start Member's context and leaves the other alone.
+    const started = await ctx.agentTeam.sendMessage({ requestId: requestId('ctx-start'), workspaceId, channelRef: channel.channel.channelRef, body: 'Investigate the flaky test', recipients: [freshId, steadyId], asTask: true })
+    if (started.kind !== 'committed') throw new Error(`expected committed start, received ${started.kind}`)
+    const taskRef = started.task!.taskRef
+    const freshSession1 = await waitFor(() => {
+      const current = ctx.agentTeam.members().find(status => status.member.memberId === freshId)
+      return current !== undefined && current.member.sessionId !== freshSession0 ? current.member.sessionId : undefined
+    })
+    const freshNext = await waitFor(() => ctx.agents.get(freshSession1)!)
+    await waitForArchived(archived, freshSession0)
+    expect(ctx.agentTeam.members().find(status => status.member.memberId === steadyId)?.member.sessionId).toBe(steadySession0)
+    expect(archived).not.toContain(steadySession0)
+
+    // Claim boundary: the fresh Member's new generation claims through the
+    // ledger, and the scheduled reset waits for its idle boundary.
+    const freshRead = await ctx.agentTeam.readThreadForAgent(freshNext, { requestId: requestId('ctx-fresh-read'), workspaceId, taskRef })
+    const freshClaim = await ctx.agentTeam.changeClaimForAgent(freshNext, { requestId: requestId('ctx-fresh-claim'), workspaceId, taskRef, action: 'claim', baseRevision: freshRead.thread.revision, direction: 'own the fix' })
+    if (freshClaim.kind !== 'committed') throw new Error(`expected committed claim, received ${freshClaim.kind}`)
+    const freshSession2 = await waitFor(() => {
+      const current = ctx.agentTeam.members().find(status => status.member.memberId === freshId)
+      return current !== undefined && current.member.sessionId !== freshSession1 ? current.member.sessionId : undefined
+    })
+    await waitFor(() => ctx.agents.get(freshSession2)!)
+    await waitForArchived(archived, freshSession1)
+
+    // The continue Member runs the same boundaries without any renewal.
+    const steadyStarted = await ctx.agentTeam.sendMessage({ requestId: requestId('ctx-start-2'), workspaceId, channelRef: channel.channel.channelRef, body: 'Polish the docs', recipients: [steadyId], asTask: true })
+    if (steadyStarted.kind !== 'committed') throw new Error(`expected committed start, received ${steadyStarted.kind}`)
+    const steadyLive = ctx.agents.get(steadySession0)!
+    await waitForIdle(ctx, steadyLive)
+    const steadyRead = await ctx.agentTeam.readThreadForAgent(steadyLive, { requestId: requestId('ctx-steady-read'), workspaceId, taskRef: steadyStarted.task!.taskRef })
+    const steadyClaim = await ctx.agentTeam.changeClaimForAgent(steadyLive, { requestId: requestId('ctx-steady-claim'), workspaceId, taskRef: steadyStarted.task!.taskRef, action: 'claim', baseRevision: steadyRead.thread.revision, direction: 'assist the fix' })
+    if (steadyClaim.kind !== 'committed') throw new Error(`expected committed claim, received ${steadyClaim.kind}`)
+    // A wrongly scheduled reset would commit well within this window.
+    await new Promise(resolve => setTimeout(resolve, 500))
+    expect(ctx.agentTeam.members().find(status => status.member.memberId === steadyId)?.member.sessionId).toBe(steadySession0)
+    expect(archived).not.toContain(steadySession0)
+    expect(() => ctx.agentTeam.validateLedger()).not.toThrow()
+  })
+
+  it('clamps the pressure budget to a Member window override without ever raising the route window', async () => {
+    const adapter = new ScriptedAdapter()
+    const { ctx, workspaceId, pressureState } = await realHarness(adapter)
+    const channel = await ctx.agentTeam.createChannel({ requestId: requestId('clamp-channel'), workspaceId, name: 'engineering', description: 'Engineering work' })
+    const lower = await ctx.agentTeam.addMember({ requestId: requestId('clamp-lower'), workspaceId, handle: 'smol', description: 'Small window', presetId: 'team-member', channelRefs: [channel.channel.channelRef], contextWindow: 100_000 })
+    const raised = await ctx.agentTeam.addMember({ requestId: requestId('clamp-raise'), workspaceId, handle: 'greedy', description: 'Big window', presetId: 'team-member', channelRefs: [channel.channel.channelRef], contextWindow: 400_000 })
+    for (let turn = 0; turn < 4; turn += 1) adapter.enqueue(textResponse('Ordinary work.'))
+
+    const noticesIn = (sessionId: SessionId) => ctx.agents.get(sessionId)!.session.ownEvents().filter(event => event.type === 'user/message'
+      && (event.data as { source?: { summary?: string } }).source?.summary === 'Context pressure: prepare a handoff')
+
+    // The 100k override caps the 320k route: usage 80k sits between the
+    // effective handoff budget (84k hard limit − 8k reserve = 76k) and the
+    // hard limit, so the notice fires where the bare route would stay quiet.
+    pressureState.bySession.set(lower.status.member.sessionId, 80_000)
+    ctx.agents.get(lower.status.member.sessionId)!.followup(createUserMessage({ content: [{ type: 'text', text: 'turn one' }], source: { kind: 'user' } }))
+    await waitForIdle(ctx, ctx.agents.get(lower.status.member.sessionId)!)
+    expect(noticesIn(lower.status.member.sessionId)).toHaveLength(1)
+
+    // An override above the route capacity never raises the budget: the same
+    // usage on the 400k-override Member still reads the 320k route (effective
+    // min), so no notice at 80k.
+    pressureState.bySession.set(raised.status.member.sessionId, 80_000)
+    ctx.agents.get(raised.status.member.sessionId)!.followup(createUserMessage({ content: [{ type: 'text', text: 'turn one' }], source: { kind: 'user' } }))
+    await waitForIdle(ctx, ctx.agents.get(raised.status.member.sessionId)!)
+    expect(noticesIn(raised.status.member.sessionId)).toHaveLength(0)
+  })
+})

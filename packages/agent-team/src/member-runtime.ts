@@ -27,6 +27,7 @@ import type {
   AgentTeamCapabilityWarning,
   AgentTeamMemberCapabilities,
   AgentTeamMemberId,
+  AgentTeamMemberPromptProfile,
 } from './types.ts'
 import * as memberSkills from './member-skills.ts'
 import type { MemberSkillSelectionRef } from './member-skills.ts'
@@ -59,6 +60,15 @@ export function deepCopyCapabilities(capabilities: AgentTeamMemberCapabilities):
   return {
     ...(capabilities.tools === undefined ? {} : { tools: copyAllow(capabilities.tools.allow) }),
     ...(capabilities.skills === undefined ? {} : { skills: copyAllow(capabilities.skills.allow) }),
+  }
+}
+
+/** Copy a Remote-supplied prompt profile into owned frozen storage. */
+export function deepCopyPrompt(prompt: AgentTeamMemberPromptProfile): AgentTeamMemberPromptProfile {
+  return {
+    ...(prompt.droppedSections === undefined ? {} : { droppedSections: [...prompt.droppedSections] }),
+    ...(prompt.customPrompt === undefined ? {} : { customPrompt: prompt.customPrompt }),
+    ...(prompt.autoPrune === undefined ? {} : { autoPrune: prompt.autoPrune }),
   }
 }
 

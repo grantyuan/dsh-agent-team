@@ -16,6 +16,7 @@ import type {
   AgentTeamDirectMarker,
   AgentTeamMemberCapabilities,
   AgentTeamMemberId,
+  AgentTeamMemberPromptProfile,
   AgentTeamMessage,
   AgentTeamModelSelection,
   AgentTeamOperationId,
@@ -69,6 +70,12 @@ export interface AgentTeamAddMemberRequest {
   readonly model?: AgentTeamModelSelection
   /** Durable capability intent; see AgentTeamMemberCapabilities. */
   readonly capabilities?: AgentTeamMemberCapabilities
+  /** Durable prompt-shaping intent; see AgentTeamMemberPromptProfile. */
+  readonly prompt?: AgentTeamMemberPromptProfile
+  /** Task-start context policy; absent behaves as `continue`. */
+  readonly contextStartPolicy?: 'continue' | 'fresh'
+  /** Context-window override in tokens; absent follows the route window. */
+  readonly contextWindow?: number
   /** Existing Channels in this Workspace; may be empty — the Member joins Channels later and stays reachable through its DM view. */
   readonly channelRefs: readonly AgentTeamChannelRef[]
 }
@@ -120,6 +127,12 @@ export interface AgentTeamUpdateMemberRequest {
   readonly model?: AgentTeamModelSelection
   /** Absent clears any capability override, matching `model`. */
   readonly capabilities?: AgentTeamMemberCapabilities
+  /** Absent clears any prompt-profile override, matching `model`. */
+  readonly prompt?: AgentTeamMemberPromptProfile
+  /** Absent clears the policy override back to continue behavior, matching `model`. */
+  readonly contextStartPolicy?: 'continue' | 'fresh'
+  /** Absent clears the window override back to route inheritance, matching `model`. */
+  readonly contextWindow?: number
   /**
    * Designate or un-designate this Member as the Team's leader — the Member
    * the idle continuation watcher nudges when every Agent is stopped with

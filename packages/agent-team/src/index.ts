@@ -39,7 +39,7 @@ import { createTeamContextManagement, TEAM_CONTEXT_CODEC } from './context-conti
 import { AGENT_TEAM_PLUGIN_ID, isAgentTeamSource } from './context-source.ts'
 import { boundaryByRef, carriedInputOf, checkpointByRef, checkpointRefFor, createTeamContextProjectionConfig, createTeamContextProjectionDefinition, foldTeamContextProjection, retainedTopicsThrough, TeamContextProjectionHost } from './context-projection.ts'
 import { AGENT_TEAM_HUMAN_MEMBER_ID, AgentTeamLedger, agentTeamHumanActor, type AgentTeamDurableMemberResult } from './ledger.ts'
-import { AGENT_TEAM_TOOL_NAMES, deepCopyCapabilities, memberMemoryDirectoryName, memberMemoryDirectoryPath, MemberRuntime } from './member-runtime.ts'
+import { AGENT_TEAM_TOOL_NAMES, deepCopyCapabilities, deepCopyPrompt, memberMemoryDirectoryName, memberMemoryDirectoryPath, MemberRuntime } from './member-runtime.ts'
 import type { MemberSkillSelectionRef } from './member-skills.ts'
 import { classifyRecoverableError, RecoveryCoordinator, RECOVERY_MAX_CONSECUTIVE_ERRORS } from './recovery.ts'
 import { classifyAssistantResponse, RESPONSE_GUARD_MAX_CONSECUTIVE, RESPONSE_GUARD_NOTICE_SUMMARY, ResponseGuardCoordinator } from './response-guard.ts'
@@ -648,6 +648,13 @@ export default class AgentTeam extends TypertRemoteService {
    */
   private readonly pendingCompactions = new Set<AgentTeamMemberId>()
   /**
+   * Members with one scheduled fresh-start context reset (task-start
+   * policy). Claim and atomic-start boundaries schedule; the dedupe keeps
+   * one in-flight body per Member, and membership clears when the body
+   * settles (ran, dropped, or failed).
+   */
+  private readonly pendingPolicyResets = new Set<AgentTeamMemberId>()
+  /**
    * Presence wake epoch: Agent running/idle/failure is runtime state with no
    * durable fact behind it, so the presence scope counts those edge wakes in
    * process. It never takes part in a projection waiter's comparison.
@@ -1095,6 +1102,9 @@ export default class AgentTeam extends TypertRemoteService {
         presetId: request.presetId,
         ...(request.model === undefined ? {} : { model: Object.freeze({ ...request.model }) }),
         ...(request.capabilities === undefined ? {} : { capabilities: Object.freeze(deepCopyCapabilities(request.capabilities)) }),
+        ...(request.prompt === undefined ? {} : { prompt: Object.freeze(deepCopyPrompt(request.prompt)) }),
+        ...(request.contextStartPolicy === undefined ? {} : { contextStartPolicy: request.contextStartPolicy }),
+        ...(request.contextWindow === undefined ? {} : { contextWindow: request.contextWindow }),
         privateMemoryPath: dshHomePath('agent-team', 'members', memberMemoryDirectoryName(memberId)),
         state: 'enabled',
       })
@@ -1204,16 +1214,17 @@ export default class AgentTeam extends TypertRemoteService {
 
   /**
    * The one context-renewal path shared by every reset caller — the Human
-   * menu's reset row, supervision's forced fallback reset, and the doctor
-   * diagnostic reset: commit the idempotent ledger renewal, retire the previous
-   * generation, activate the fresh Session, and broadcast the reset notice. The
-   * fresh id derives from the requestId, so a retried identical request mints
-   * the same id and the ledger dedupes it instead of colliding; the format
-   * matches addMember's `agent-team-<uuid>`. Callers own their own preconditions
-   * (participation, enabled state, running-turn refusal) — this core only
-   * refuses a Member with no live generation.
+   * menu's reset row, supervision's forced fallback reset, the doctor
+   * diagnostic reset, and the fresh-start task policy: commit the idempotent
+   * ledger renewal, retire the previous generation, activate the fresh
+   * Session, and broadcast the reset notice. The fresh id derives from the
+   * requestId, so a retried identical request mints the same id and the
+   * ledger dedupes it instead of colliding; the format matches addMember's
+   * `agent-team-<uuid>`. Callers own their own preconditions (participation,
+   * enabled state, running-turn refusal) — this core only refuses a Member
+   * with no live generation.
    */
-  private async renewMemberContextNow(memberId: AgentTeamMemberId, requestId: AgentTeamRequestId, resetBy: 'human' | 'supervision' | 'teammate' | 'doctor'): Promise<{ readonly receipt: AgentTeamClearMemberContextResult['receipt']; readonly member: AgentTeamAgentMember }> {
+  private async renewMemberContextNow(memberId: AgentTeamMemberId, requestId: AgentTeamRequestId, resetBy: 'human' | 'supervision' | 'teammate' | 'doctor' | 'policy'): Promise<{ readonly receipt: AgentTeamClearMemberContextResult['receipt']; readonly member: AgentTeamAgentMember }> {
     const ledger = this.requireLedger()
     const stored = ledger.getMember(memberId)
     if (stored === undefined || stored.state !== 'enabled') throw new Error(`Agent Member '${this.memberLabel(memberId)}' is not enabled; only enabled Members can start from a new context`)
@@ -1254,14 +1265,16 @@ export default class AgentTeam extends TypertRemoteService {
    * never thrown: the reset itself is already durable and committed when this
    * runs.
    */
-  private async announceContextReset(member: AgentTeamAgentMember, resetBy: 'human' | 'supervision' | 'teammate' | 'doctor'): Promise<void> {
+  private async announceContextReset(member: AgentTeamAgentMember, resetBy: 'human' | 'supervision' | 'teammate' | 'doctor' | 'policy'): Promise<void> {
     if (resetBy === 'doctor') return
     const ledger = this.requireLedger()
     const resetSource = resetBy === 'human'
       ? 'the Human'
       : resetBy === 'supervision'
         ? 'team supervision after repeated failures'
-        : 'a teammate through team supervision'
+        : resetBy === 'teammate'
+          ? 'a teammate through team supervision'
+          : 'its fresh-start Task policy'
     const noticeBody = [
       `Context reset notice: my Session was just reset by ${resetSource}, and I am starting from an empty context.`,
       `My handle, settings, and private memory are unchanged, and durable Team facts (Tasks, Claims, Channels) are unaffected — but I remember nothing from earlier conversation, including anything we did together.`,
@@ -1340,6 +1353,50 @@ export default class AgentTeam extends TypertRemoteService {
       this.emitAutoCompactionChanged(memberId)
     } finally {
       this.pendingCompactions.delete(memberId)
+    }
+  }
+
+  /**
+   * Schedule the context reset one Member's fresh-start task-start policy
+   * calls for. Claim and Human atomic-start boundaries schedule; continue
+   * policy (the absent default) never does. One in-flight body per Member:
+   * the dedupe lets a claim and its atomic start share a single reset.
+   */
+  private scheduleFreshStartReset(memberId: AgentTeamMemberId): void {
+    if (this.pendingPolicyResets.has(memberId)) return
+    const stored = this.ledger?.getMember(memberId)
+    if (stored?.contextStartPolicy !== 'fresh') return
+    const active = this.handles.get(memberId)
+    if (active === undefined) return
+    this.pendingPolicyResets.add(memberId)
+    void this.runFreshStartReset(stored, active)
+  }
+
+  /**
+   * Background body of one scheduled fresh-start reset. A claim fires inside
+   * the Member's own turn, so the reset waits for the turn boundary and
+   * converges like executeMemberTransition; then it re-reads the Member at
+   * the boundary (a concurrent edit may have changed the policy) and runs
+   * the same durable renewal the Human reset path uses. Failures are logged,
+   * never thrown: the next boundary reschedules.
+   */
+  private async runFreshStartReset(member: AgentTeamAgentMember, active: AgentHandle): Promise<void> {
+    const memberId = member.memberId
+    try {
+      await this.memberRuntime.awaitTurnBoundary(active)
+      if (this.handles.get(memberId) !== active) return
+      if (this.runningAgents.has(active.agent.id)) await active.agent.whenIdle()
+      if (this.handles.get(memberId) !== active) return
+      const stored = this.ledger?.getMember(memberId)
+      if (stored?.contextStartPolicy !== 'fresh' || stored.state !== 'enabled') return
+      await this.enqueueLifecycle(async () => {
+        this.requireAccepting()
+        await this.renewMemberContextNow(memberId, randomUUID() as AgentTeamRequestId, 'policy')
+      })
+    } catch (error) {
+      this.ctx.logger.warn(`agent-team: fresh-start context reset for member '${member.handle}' failed: ${error instanceof Error ? error.message : String(error)}`)
+    } finally {
+      this.pendingPolicyResets.delete(memberId)
     }
   }
 
@@ -2521,6 +2578,9 @@ export default class AgentTeam extends TypertRemoteService {
     const actor = this.memberCall(agent, request.workspaceId)
     const result = await this.requireLedger().changeClaim({ ...request, actor })
     this.emitCommittedOutcome(result)
+    // The claim boundary of a fresh-start Member: the reset schedules behind
+    // the Member's own running turn and renews at its idle boundary.
+    if (request.action === 'claim' && result.committed) this.scheduleFreshStartReset(actor.memberId)
     return result.value
   }
 
@@ -2776,7 +2836,10 @@ export default class AgentTeam extends TypertRemoteService {
       contextWindow = await this.resolvedContextWindow(selection)
     }
     if (contextWindow === undefined) return undefined
-    const { hardLimit, handoffAt } = this.contextLimits(contextWindow)
+    // A Member's durable window override caps — never raises — the routed
+    // model's capacity; the LLM route cannot be widened from Team settings.
+    const effectiveWindow = member.contextWindow === undefined ? contextWindow : Math.min(member.contextWindow, contextWindow)
+    const { hardLimit, handoffAt } = this.contextLimits(effectiveWindow)
     return { usageTokens, hardLimit, handoffAt }
   }
 
@@ -3369,7 +3432,14 @@ export default class AgentTeam extends TypertRemoteService {
       actor,
     })
     this.emitCommittedOutcome(result)
-    return result.value
+    // A Human atomic start is the one creation boundary a fresh-start Member
+    // cannot schedule itself: every mentioned fresh-policy Member resets at
+    // this boundary (teammate sends and taskless messages never do).
+    const outcome = result.value
+    if (actor.kind === 'human' && request.asTask !== false && outcome.kind === 'committed') {
+      for (const marker of outcome.directMarkers) this.scheduleFreshStartReset(marker.memberId)
+    }
+    return outcome
   }
 
   /** Shared existing-Thread reply commit: same upload resolution and outcome emission. */

@@ -167,7 +167,7 @@ export interface AgentTeamChannelUpdatedOperation extends AgentTeamOperationBase
   }
 }
 
-/** Durable Human edit of one Member's mutable facts (handle, description, model). */
+/** Durable Human edit of one Member's mutable facts (handle, description, model, prompt and context control). */
 export interface AgentTeamMemberUpdatedOperation extends AgentTeamOperationBase {
   readonly kind: 'team/member-updated'
   readonly data: { readonly member: AgentTeamAgentMember }

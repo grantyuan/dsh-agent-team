@@ -233,4 +233,82 @@ describe('Agent Team display-fact updates', () => {
     expect(restored?.capabilityWarnings).toBeUndefined()
     expect(() => replayLedger(revived.facility).validate()).not.toThrow()
   })
+
+  it('carries Member prompt profile and context control through lifecycle operations, edits, replay, and Host restart', async () => {
+    const { ctx, facility } = await harness()
+    const created = await ctx.agentTeam.createChannel({ requestId: requestId('channel'), workspaceId: alpha, name: 'engineering', description: 'Engineering work' })
+    const prompt = { droppedSections: ['skills'], customPrompt: 'Prefer exhaustive test coverage.', autoPrune: true } as const
+    const added = await ctx.agentTeam.addMember({
+      requestId: requestId('context-add'), workspaceId: alpha, handle: 'builder', description: 'Builds changes',
+      presetId: 'team-member', channelRefs: [created.channel.channelRef], prompt, contextStartPolicy: 'fresh', contextWindow: 128_000,
+    })
+    const memberId = added.status.member.memberId
+    expect(added.status.member.prompt).toEqual(prompt)
+    expect(added.status.member.contextStartPolicy).toBe('fresh')
+    expect(added.status.member.contextWindow).toBe(128_000)
+
+    // Lifecycle operations carry the context facts verbatim, like capabilities.
+    const suspended = await ctx.agentTeam.suspendMember({ requestId: requestId('suspend'), memberId })
+    expect(suspended.status.member.prompt).toEqual(prompt)
+    expect(suspended.status.member.contextStartPolicy).toBe('fresh')
+    expect(suspended.status.member.contextWindow).toBe(128_000)
+    const resumed = await ctx.agentTeam.resumeMember({ requestId: requestId('resume'), memberId })
+    expect(resumed.status.member.contextStartPolicy).toBe('fresh')
+
+    // An edit echoing the stored facts keeps them; the collision guard
+    // compares them like model drift.
+    const echoed = await ctx.agentTeam.updateMember({ requestId: requestId('echo'), memberId, handle: 'builder', description: 'Still builds', prompt, contextStartPolicy: 'fresh', contextWindow: 128_000 })
+    expect(echoed.status.member.contextWindow).toBe(128_000)
+    await expect(ctx.agentTeam.updateMember({ requestId: requestId('echo'), memberId, handle: 'builder', description: 'Different after commit', contextWindow: 128_000 })).rejects.toThrow(/was reused with a different operation or payload/)
+
+    // Absent fields clear the overrides, mirroring the model semantics.
+    const cleared = await ctx.agentTeam.updateMember({ requestId: requestId('clear'), memberId, handle: 'builder', description: 'Still builds' })
+    expect(cleared.status.member.prompt).toBeUndefined()
+    expect(cleared.status.member.contextStartPolicy).toBeUndefined()
+    expect(cleared.status.member.contextWindow).toBeUndefined()
+
+    // The window override is an integer of at least 8192 tokens.
+    for (const invalid of [0, -16_000, 8191, 8192.5]) {
+      await expect(ctx.agentTeam.updateMember({ requestId: requestId(`window-${invalid}`), memberId, handle: 'builder', description: 'Still builds', contextWindow: invalid })).rejects.toThrow(/context window/)
+    }
+    const floor = await ctx.agentTeam.updateMember({ requestId: requestId('window-floor'), memberId, handle: 'builder', description: 'Still builds', contextWindow: 8192 })
+    expect(floor.status.member.contextWindow).toBe(8192)
+
+    // The start policy is the closed continue/fresh pair.
+    await expect(ctx.agentTeam.updateMember({ requestId: requestId('policy-bad'), memberId, handle: 'builder', description: 'Still builds', contextStartPolicy: 'whenever' as never })).rejects.toThrow(/context start policy/)
+
+    // The prompt profile is shape-checked only at this layer: blank section
+    // names are intent errors, while sizes stay to the prompt ticket.
+    await expect(ctx.agentTeam.updateMember({ requestId: requestId('prompt-blank'), memberId, handle: 'builder', description: 'Still builds', prompt: { droppedSections: ['   '] } })).rejects.toThrow(/must not be empty/)
+
+    // Re-pin for the replay and restart assertions below.
+    await ctx.agentTeam.updateMember({ requestId: requestId('repin'), memberId, handle: 'builder', description: 'Still builds', prompt, contextStartPolicy: 'fresh', contextWindow: 96_000 })
+
+    // A Member written before the fields existed replays without them.
+    const legacy = await seedMember(ctx, created.channel.channelRef, 'legacy')
+    expect(legacy.status.member.prompt).toBeUndefined()
+    expect(legacy.status.member.contextStartPolicy).toBeUndefined()
+    expect(legacy.status.member.contextWindow).toBeUndefined()
+
+    const replayed = replayLedger(facility)
+    expect(() => replayed.validate()).not.toThrow()
+    expect(replayed.getMember(memberId)?.prompt).toEqual(prompt)
+    expect(replayed.getMember(memberId)?.contextStartPolicy).toBe('fresh')
+    expect(replayed.getMember(memberId)?.contextWindow).toBe(96_000)
+    expect(replayed.getMember(legacy.status.member.memberId)?.contextStartPolicy).toBeUndefined()
+
+    // Host restart: a fresh process replays the same ledger and restores the
+    // durable context facts, legacy Member still field-free.
+    const records = [...facility.get('agent_team')!.table('operations').entries()] as Array<[string, unknown]>
+    const revived = await harness(storedPool(records))
+    expect(revived.ctx.agentTeam.status()).toMatchObject({ agentMemberCount: 2 })
+    const restored = revived.ctx.agentTeam.membersForClient({ workspaceId: alpha }).find(status => status.member.memberId === memberId)
+    expect(restored?.member.prompt).toEqual(prompt)
+    expect(restored?.member.contextStartPolicy).toBe('fresh')
+    expect(restored?.member.contextWindow).toBe(96_000)
+    const restoredLegacy = revived.ctx.agentTeam.membersForClient({ workspaceId: alpha }).find(status => status.member.memberId === legacy.status.member.memberId)
+    expect(restoredLegacy?.member.contextStartPolicy).toBeUndefined()
+    expect(restoredLegacy?.member.contextWindow).toBeUndefined()
+    expect(() => replayLedger(revived.facility).validate()).not.toThrow()
+  })
 })

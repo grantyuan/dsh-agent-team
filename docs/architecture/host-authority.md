@@ -72,6 +72,13 @@ When changing a Host capability, read package source/tests first and then the ma
 
   `skills.allow` filters `list()` output through a live selection ref (edits swap the filter and invalidate the catalog at the same turn boundary as tool edits); filtering is a visibility semantic, not a security boundary — both roots stay scanned and watched. Member removal deletes the private directory with its skills; suspend/resume and Host restart restore the identical catalog.
 
+## Member context control
+- Members carry three optional overlay fields beside `model` and `capabilities`: `contextStartPolicy` (`continue` | `fresh`), `contextWindow` (an integer of at least 8192 tokens), and a `prompt` profile (`droppedSections`, `customPrompt`, `autoPrune`) that this round only round-trips through the ledger — commit validation checks its shape and nothing consumes it yet.
+- Add and edit validate at commit, and the record schema mirrors the same floors — a stored record below them would refuse replay. Edits follow the absent-clears semantics of `model`, and ledgers written before the fields existed replay as plain continue/follow-route Members.
+- The window override narrows the pressure budget from the route, never widens it: `routeLimitsForAgent` prices the budget from the smaller of the override and the live route window, so an override beyond the route changes nothing. Members without an override behave exactly as before.
+- The `fresh` policy renews a Member's context at task boundaries: when the Member claims a task, or when a Human atomic start names it among the committed direct mentions, the Host schedules one durable context renewal through the serialized lifecycle queue — the same `renewMemberContextNow` operation the Human reset path uses. The scheduler waits for the Member's turn boundary and converges running Agents like a member transition.
+- Before committing, the scheduler re-reads the stored policy and state: a policy edited away in the meantime, or a Member no longer disposable to its Agent, skips the renewal. The committed reset announces itself as the Member's fresh-start Task policy, and `continue` Members never renew through this path.
+
 ## Composer attachments (cache, not archive)
 
 Attachments live in the bounded cache `$DSH_HOME/agent-team/attachments/v1/<attachmentId>/`, with a sanitized original name and `meta.json`; they are never ledger bytes or an archive. `putAttachment` enforces a 10 MB file cap and sanitizes names; `getAttachment` serves Client display. Messages record metadata while the stored body contains machine-facing `[attachment] <absolute path>` lines. The Client strips those lines and renders thumbnails/chips.

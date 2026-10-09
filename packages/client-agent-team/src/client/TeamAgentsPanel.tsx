@@ -15,7 +15,7 @@ import { mintRequestId } from './requests.ts'
 import { diagnosticText, restartOffered } from './TeamPresenceDot.tsx'
 import { TeamRowMenu } from './TeamRowMenu.tsx'
 import { TeamSidebarSection } from './TeamSidebarSection.tsx'
-import { AgentEditorDialog, ModelPickerField, sameModel, warmModelCatalog } from './TeamMemberEditor.tsx'
+import { AgentEditorDialog, ContextPickerField, ModelPickerField, parseContextWindow, sameModel, warmModelCatalog } from './TeamMemberEditor.tsx'
 import { TeamAgentImport } from './TeamAgentImport.tsx'
 import createCss from './create.module.css'
 import css from './sidebar.module.css'
@@ -50,6 +50,10 @@ export function TeamAgentsPanel({ workspaceId, loadMembers, subscribeChanges, ad
   const [handle, setHandle] = useState('')
   const [description, setDescription] = useState('')
   const [model, setModel] = useState<AgentTeamModelSelection | undefined>(undefined)
+  const [policy, setPolicy] = useState<'continue' | 'fresh'>('continue')
+  const [windowText, setWindowText] = useState('')
+  const parsedWindow = parseContextWindow(windowText)
+  const windowInvalid = Number.isNaN(parsedWindow)
   const [creating, setCreating] = useState(false)
   const [retryRequest, setRetryRequest] = useState<AgentTeamAddMemberRequest>()
   const triggerRef = useRef<HTMLButtonElement>(null)
@@ -183,6 +187,8 @@ export function TeamAgentsPanel({ workspaceId, loadMembers, subscribeChanges, ad
         setHandle('')
         setDescription('')
         setModel(undefined)
+        setPolicy('continue')
+        setWindowText('')
         setFormOpen(false)
         if (result.value.status.presence === 'unavailable') {
           setError(diagnosticText(result.value.status) || t('statusUnavailable'))
@@ -206,10 +212,12 @@ export function TeamAgentsPanel({ workspaceId, loadMembers, subscribeChanges, ad
     event.preventDefault()
     const normalizedHandle = handle.trim()
     const normalizedDescription = description.trim()
-    if (normalizedHandle.length === 0 || creating) return
+    if (normalizedHandle.length === 0 || creating || windowInvalid) return
     const sameRequest = retryRequest !== undefined && retryRequest.workspaceId === workspaceId
       && retryRequest.handle === normalizedHandle && retryRequest.description === normalizedDescription
       && sameModel(retryRequest.model, model)
+      && (retryRequest.contextStartPolicy ?? 'continue') === policy
+      && retryRequest.contextWindow === parsedWindow
       && retryRequest.channelRefs.length === 0
     void provision(sameRequest ? retryRequest : {
       requestId: mintRequestId(),
@@ -221,6 +229,11 @@ export function TeamAgentsPanel({ workspaceId, loadMembers, subscribeChanges, ad
       // the Channel side and stays reachable through its DM view meanwhile.
       channelRefs: [],
       ...(model === undefined ? {} : { model }),
+      // Same absent-clears mapping as the editor: the fresh policy is only
+      // sent when picked, and an empty window input means "follow the route
+      // window".
+      ...(policy === 'fresh' ? { contextStartPolicy: policy } : {}),
+      ...(parsedWindow === undefined ? {} : { contextWindow: parsedWindow }),
     })
   }
 
@@ -232,7 +245,7 @@ export function TeamAgentsPanel({ workspaceId, loadMembers, subscribeChanges, ad
         title={t('addAgent')}
         closeLabel={t('close')}
         contentClassName={createCss.dialogContent!}
-        footer={<><Button variant="outline" disabled={creating} onClick={closeForm}>{t('cancel')}</Button>{!importing && <Button type="submit" form="team-agent-create-form" variant="primary" disabled={creating || handle.trim().length === 0}>{creating ? t('creatingAgent') : t('createAgent')}</Button>}</>}
+        footer={<><Button variant="outline" disabled={creating} onClick={closeForm}>{t('cancel')}</Button>{!importing && <Button type="submit" form="team-agent-create-form" variant="primary" disabled={creating || handle.trim().length === 0 || windowInvalid}>{creating ? t('creatingAgent') : t('createAgent')}</Button>}</>}
       >
         <Button className={createCss.modeSwitch!} variant="outline" disabled={creating} aria-expanded={importing} onClick={() => { setImporting(value => !value); setError(undefined) }}>{importing ? t('createAgent') : t('importAgentTitle')}</Button>
         {formOpen && importing ? <TeamAgentImport workspaceId={workspaceId} loadMembers={loadMembers} joinWorkspace={joinWorkspace} onPending={setCreating} onJoined={async () => { await refresh(); setFormOpen(false); queueMicrotask(() => { triggerRef.current?.focus() }) }} t={t} /> : <form id="team-agent-create-form" className={createCss.form} onSubmit={submit}>
@@ -245,6 +258,15 @@ export function TeamAgentsPanel({ workspaceId, loadMembers, subscribeChanges, ad
             <Input className={createCss.input!} value={description} placeholder={t('agentDescriptionPlaceholder')} onChange={event => { setDescription(event.target.value); setRetryRequest(undefined) }} disabled={creating} />
           </label>
           <ModelPickerField model={model} onModelChange={choice => { setModel(choice); setRetryRequest(undefined) }} loadModels={loadModels} disabled={creating} t={t} />
+          <ContextPickerField
+            policy={policy}
+            onPolicyChange={next => { setPolicy(next); setRetryRequest(undefined) }}
+            windowText={windowText}
+            onWindowTextChange={text => { setWindowText(text); setRetryRequest(undefined) }}
+            invalid={windowInvalid}
+            disabled={creating}
+            t={t}
+          />
           {formOpen && error !== undefined && <p className={createCss.error} role="alert">{error}</p>}
         </form>}
       </Modal>

@@ -92,6 +92,21 @@ export interface AgentTeamMemberCapabilities {
   readonly skills?: { readonly allow?: readonly string[] } | undefined
 }
 
+/**
+ * Durable prompt-shaping intent of one Member, carried verbatim like
+ * capabilities. Pure intent: this layer round-trips the shape through the
+ * ledger only — section filtering, custom-prompt registration, and pruning
+ * are prompt-profile work and must not be derived here.
+ */
+export interface AgentTeamMemberPromptProfile {
+  /** Shared section names to drop from this Member's assembly (default: none). */
+  readonly droppedSections?: readonly string[]
+  /** Bounded custom role paragraph appended to the system prompt (max 8 KiB). */
+  readonly customPrompt?: string
+  /** Auto-prune long-unused tool-mapped sections at task start; default off. */
+  readonly autoPrune?: boolean
+}
+
 /** Durable identity and lifecycle intent of one team-managed Agent. */
 export interface AgentTeamAgentMember {
   readonly memberId: AgentTeamMemberId
@@ -104,6 +119,8 @@ export interface AgentTeamAgentMember {
   readonly model?: AgentTeamModelSelection | undefined
   /** Durable capability intent; see AgentTeamMemberCapabilities. */
   readonly capabilities?: AgentTeamMemberCapabilities | undefined
+  /** Durable prompt-shaping intent; see AgentTeamMemberPromptProfile. */
+  readonly prompt?: AgentTeamMemberPromptProfile | undefined
   /** Host-internal namespace; never exposed through Client projections. */
   readonly privateMemoryPath: string
   /**
@@ -112,6 +129,19 @@ export interface AgentTeamAgentMember {
    * open. Members written before the designation existed omit the field.
    */
   readonly leader?: boolean | undefined
+  /**
+   * Task-start context policy. `fresh` renews the Member's context through
+   * the serialized lifecycle queue at every claim and Human atomic-start
+   * boundary; absent (and `continue`) keeps the current Session across Task
+   * boundaries. Members written before the policy existed omit the field.
+   */
+  readonly contextStartPolicy?: 'continue' | 'fresh' | undefined
+  /**
+   * Per-Member context-window override in tokens (integer, floor 8192). It
+   * caps — never raises — the routed model's capacity inside the pressure
+   * budget derivation; absent follows the route window.
+   */
+  readonly contextWindow?: number | undefined
   /**
    * Durable lifecycle state. `enabled`/`suspended` are the reversible working
    * pair; `archived` hides the Member from every surface while keeping its

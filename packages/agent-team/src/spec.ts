@@ -34,6 +34,9 @@ const claimRefSchema = z.string().regex(/^claim:[^:]+$/).transform(value => valu
 const activityRefSchema = z.string().regex(/^activity:[^:]+$/).transform(value => value as AgentTeamActivityRef)
 const attachmentIdSchema = z.string().min(1).transform(value => value as AgentTeamAttachmentId)
 
+/** Floor for a stored Member context-window override; mirrors the ledger's commit rule. */
+const MEMBER_CONTEXT_WINDOW_FLOOR = 8192
+
 const actorSchema = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('human'), memberId: memberIdSchema, handle: z.string().min(1) }).strict(),
   z.object({ kind: z.literal('member'), memberId: memberIdSchema, handle: z.string().min(1) }).strict(),
@@ -71,6 +74,15 @@ const memberCapabilitiesSchema = z.object({
   ...(skills === undefined ? {} : { skills }),
 }))
 
+// Pure intent like capabilities: section names are plain strings, and the
+// custom prompt's size is the prompt-profile work's rule, not the replay
+// validator's — this layer round-trips the shape only.
+const memberPromptProfileSchema = z.object({
+  droppedSections: z.array(z.string().min(1)).optional(),
+  customPrompt: z.string().optional(),
+  autoPrune: z.boolean().optional(),
+}).strict().transform(omitUndefined)
+
 const memberSchema = z.object({
   memberId: memberIdSchema,
   sessionId: sessionIdSchema,
@@ -84,6 +96,11 @@ const memberSchema = z.object({
   capabilities: memberCapabilitiesSchema.optional(),
   // Ledgers written before the leader designation existed omit the field.
   leader: z.boolean().optional(),
+  // Ledgers written before the prompt profile existed omit the field.
+  prompt: memberPromptProfileSchema.optional(),
+  // Ledgers written before the task-start policy existed omit the field.
+  contextStartPolicy: z.union([z.literal('continue'), z.literal('fresh')]).optional(),
+  contextWindow: z.number().int().min(MEMBER_CONTEXT_WINDOW_FLOOR).optional(),
   privateMemoryPath: z.string().min(1),
   state: z.union([z.literal('enabled'), z.literal('suspended'), z.literal('inactive'), z.literal('archived')]),
 }).strict()

@@ -332,6 +332,28 @@ it('drives the complete opt-in Agent Team journey in real Web', async () => {
       // Selecting the default row closes the menu and keeps the model unset
       // (Escape would bubble to the Modal and close the whole dialog).
       await page.getByRole('menuitem', { name: '跟随全局默认' }).click()
+      // The Context block rides the create form: the policy menu lists both
+      // start policies and the window override validates locally before the
+      // submit can fire.
+      await dialog.getByRole('button', { name: '任务启动上下文' }).click()
+      await page.getByRole('menuitem', { name: '每个任务全新上下文' }).waitFor()
+      await page.screenshot({ path: join(UI03_SHOTS, 'agent-create-context-menu.png'), fullPage: true })
+      await page.getByRole('menuitem', { name: '每个任务全新上下文' }).click()
+      await expect.poll(() => dialog.getByRole('button', { name: '任务启动上下文' }).textContent()).toBe('每个任务全新上下文')
+      const createWindow = dialog.getByLabel('上下文窗口覆盖')
+      await createWindow.fill('100')
+      await dialog.getByText('上下文窗口必须是不小于 8192 的整数。').waitFor()
+      await expect.poll(async () => await dialog.getByRole('button', { name: '创建 Agent' }).isDisabled()).toBe(true)
+      await createWindow.fill('96000')
+      await expect.poll(() => dialog.getByText('上下文窗口必须是不小于 8192 的整数。').count()).toBe(0)
+      await expect.poll(async () => await dialog.getByRole('button', { name: '创建 Agent' }).isEnabled()).toBe(true)
+      // The journey keeps every Member on the continue policy — a fresh Member
+      // renews at claim boundaries and would move Session bindings mid-journey
+      // — so the exercised choices are reverted before creation.
+      await createWindow.fill('')
+      await dialog.getByRole('button', { name: '任务启动上下文' }).click()
+      await page.getByRole('menuitem', { name: '延续当前上下文' }).click()
+      await expect.poll(() => dialog.getByRole('button', { name: '任务启动上下文' }).textContent()).toBe('延续当前上下文')
       // The Input atoms sit evenly inside the dialog card (the lopsided
       // right gutter regression this guard pins).
       const inputBox = await dialog.getByLabel('名称').boundingBox()
@@ -373,6 +395,13 @@ it('drives the complete opt-in Agent Team journey in real Web', async () => {
   await page.getByRole('button', { name: '添加 Agent' }).click()
   const narrowDialog = page.getByRole('dialog', { name: '添加 Agent' })
   await narrowDialog.getByLabel('名称').waitFor()
+  // The Context block rides the narrow create form with the same local
+  // validation: an unparsable window keeps the submit disabled.
+  await narrowDialog.getByRole('button', { name: '任务启动上下文' }).waitFor()
+  await narrowDialog.getByLabel('上下文窗口覆盖').fill('100')
+  await narrowDialog.getByText('上下文窗口必须是不小于 8192 的整数。').waitFor()
+  await expect.poll(async () => await narrowDialog.getByRole('button', { name: '创建 Agent' }).isDisabled()).toBe(true)
+  await narrowDialog.getByLabel('上下文窗口覆盖').fill('')
   const narrowBox = await narrowDialog.boundingBox()
   expect(narrowBox).not.toBeNull()
   expect(narrowBox!.x).toBeGreaterThanOrEqual(0)
@@ -553,8 +582,9 @@ it('drives the complete opt-in Agent Team journey in real Web', async () => {
   await page.getByRole('menuitem', { name: '编辑 Agent' }).click()
   const agentEditor = page.getByRole('dialog', { name: '编辑 Agent' })
   await agentEditor.waitFor()
-  // The Agent editor carries no Channel section anymore: handle,
-  // description, and model only (membership lives on the Channel side).
+  // The Agent editor carries no Channel section anymore: handle, description,
+  // model, and the task-start context control only (membership lives on the
+  // Channel side).
   await expect.poll(() => agentEditor.getByRole('button', { name: '移除' }).count()).toBe(0)
   await expect.poll(() => agentEditor.getByRole('button', { name: '添加' }).count()).toBe(0)
   // The per-Member model picker rides the shared Menu primitive: the trigger
@@ -577,6 +607,34 @@ it('drives the complete opt-in Agent Team journey in real Web', async () => {
   await modelMenu.getByRole('menuitem', { name: '跟随全局默认' }).click()
   await expect.poll(() => page.locator('[role="menu"]').count()).toBe(0)
   await page.screenshot({ path: join(UI04_SHOTS, 'agent-edit-modal.png'), fullPage: true })
+  // The Context block echoes the stored intent: a Member created without
+  // overrides reads the continue policy and an empty window, the menu offers
+  // both policies, and an invalid window gates the save even though the form
+  // is otherwise dirty.
+  const contextTrigger = agentEditor.getByRole('button', { name: '任务启动上下文' })
+  await expect.poll(() => contextTrigger.textContent()).toBe('延续当前上下文')
+  await expect.poll(async () => await agentEditor.getByLabel('上下文窗口覆盖').inputValue()).toBe('')
+  await contextTrigger.click()
+  const contextMenu = page.locator('[role="menu"]').filter({ hasText: '每个任务全新上下文' })
+  await contextMenu.waitFor()
+  await contextMenu.getByRole('menuitem', { name: '每个任务全新上下文' }).click()
+  await expect.poll(() => contextTrigger.textContent()).toBe('每个任务全新上下文')
+  const editWindow = agentEditor.getByLabel('上下文窗口覆盖')
+  const editSave = agentEditor.getByRole('button', { name: '保存' })
+  await editWindow.fill('100')
+  await agentEditor.getByText('上下文窗口必须是不小于 8192 的整数。').waitFor()
+  await expect.poll(async () => await editSave.isDisabled()).toBe(true)
+  await editWindow.fill('96000')
+  await expect.poll(() => agentEditor.getByText('上下文窗口必须是不小于 8192 的整数。').count()).toBe(0)
+  await expect.poll(async () => await editSave.isDisabled()).toBe(false)
+  await page.screenshot({ path: join(UI04_SHOTS, 'agent-edit-context.png'), fullPage: true })
+  // The journey keeps every Member on the continue policy — a fresh Member
+  // renews at claim boundaries and would move Session bindings mid-journey —
+  // so the exercised choices are reverted and the edit closes unsaved.
+  await editWindow.fill('')
+  await contextTrigger.click()
+  await contextMenu.getByRole('menuitem', { name: '延续当前上下文' }).click()
+  await expect.poll(async () => await editSave.isDisabled()).toBe(true)
   await agentEditor.getByRole('button', { name: '关闭', exact: true }).click()
 
   // The manual clear-context entry is retired (ticket 01): Members manage

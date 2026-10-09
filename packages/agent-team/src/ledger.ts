@@ -54,6 +54,7 @@ import type {
   AgentTeamMemberArchivedOperation,
   AgentTeamMemberCapabilities,
   AgentTeamMemberId,
+  AgentTeamMemberPromptProfile,
   AgentTeamMemberRemovedOperation,
   AgentTeamMemberResumedOperation,
   AgentTeamMemberSessionRenewedOperation,
@@ -465,6 +466,14 @@ function boundedThreadTitle(body: string): string {
 const RECENT_INBOX_LIMIT = 10
 
 /**
+ * Floor for one Member's durable context-window override. Small windows
+ * cannot hold a Team turn's fixed prompt assembly, so the override stops
+ * here instead of producing a budget the pressure policy would immediately
+ * fail closed on.
+ */
+const MEMBER_CONTEXT_WINDOW_FLOOR = 8192
+
+/**
  * Whether one operation's Inbox delta would change nothing. A read that finds
  * no unread fact for its reader and no marker to consume produces exactly this
  * delta, which is why such a read is a no-op rather than a durable operation.
@@ -504,6 +513,17 @@ function freezeCapabilities(capabilities: AgentTeamMemberCapabilities | undefine
   }
 }
 
+/** Deep-freeze a Member prompt profile; absent stays absent. */
+function freezePromptProfile(prompt: AgentTeamMemberPromptProfile | undefined): { prompt?: AgentTeamMemberPromptProfile } {
+  if (prompt === undefined) return {}
+  return {
+    prompt: Object.freeze({
+      ...(prompt.droppedSections === undefined ? {} : { droppedSections: Object.freeze([...prompt.droppedSections]) }),
+      ...(prompt.customPrompt === undefined ? {} : { customPrompt: prompt.customPrompt }),
+      ...(prompt.autoPrune === undefined ? {} : { autoPrune: prompt.autoPrune }),
+    }),
+  }
+}
 
 /** Replay and append logic behind the Agent Team service interface. */
 export class AgentTeamLedger {
@@ -676,10 +696,15 @@ export class AgentTeamLedger {
       this.assertHandleAvailable(request.workspaceId, handle)
       this.assertModelSelection(request.member.model)
       this.assertCapabilities(request.member.capabilities)
+      this.assertContextControl(request.member.contextStartPolicy, request.member.contextWindow)
+      this.assertPromptProfile(request.member.prompt)
       const member = Object.freeze({
         ...request.member, handle, description, presetId, state: 'enabled' as const,
         ...(request.member.model === undefined ? {} : { model: Object.freeze({ ...request.member.model }) }),
         ...freezeCapabilities(request.member.capabilities),
+        ...freezePromptProfile(request.member.prompt),
+        ...(request.member.contextStartPolicy === undefined ? {} : { contextStartPolicy: request.member.contextStartPolicy }),
+        ...(request.member.contextWindow === undefined ? {} : { contextWindow: request.member.contextWindow }),
       })
       const operation: AgentTeamMemberAddedOperation = Object.freeze({
         ...this.operationBase(request, this.nextSequence()), kind: 'team/member-added',
@@ -709,14 +734,19 @@ export class AgentTeamLedger {
       if (handle !== prior.handle) for (const workspaceId of this.workspacesOf(prior.memberId)) this.assertHandleAvailable(workspaceId, handle, prior.memberId)
       this.assertModelSelection(request.model)
       this.assertCapabilities(request.capabilities)
+      this.assertContextControl(request.contextStartPolicy, request.contextWindow)
+      this.assertPromptProfile(request.prompt)
       // An absent model or capabilities field must CLEAR any override
       // (inherit the Host default / full standard capability surface);
       // spreading `prior` verbatim would silently keep the pinned value.
-      const { model: _priorModel, capabilities: _priorCapabilities, ...priorWithoutOverlays } = prior
+      const { model: _priorModel, capabilities: _priorCapabilities, prompt: _priorPrompt, contextStartPolicy: _priorPolicy, contextWindow: _priorWindow, ...priorWithoutOverlays } = prior
       const member = Object.freeze({
         ...priorWithoutOverlays, handle, description,
         ...(request.model === undefined ? {} : { model: Object.freeze({ ...request.model }) }),
         ...freezeCapabilities(request.capabilities),
+        ...freezePromptProfile(request.prompt),
+        ...(request.contextStartPolicy === undefined ? {} : { contextStartPolicy: request.contextStartPolicy }),
+        ...(request.contextWindow === undefined ? {} : { contextWindow: request.contextWindow }),
         ...(request.leader === undefined ? {} : { leader: request.leader }),
       })
       const operation: AgentTeamMemberUpdatedOperation = Object.freeze({
@@ -4333,6 +4363,25 @@ export class AgentTeamLedger {
     }
   }
 
+  /** The task-start policy is the closed continue/fresh pair; the window override is an integer floored at 8192 tokens. */
+  private assertContextControl(contextStartPolicy: AgentTeamUpdateMemberRequest['contextStartPolicy'], contextWindow: AgentTeamUpdateMemberRequest['contextWindow']): void {
+    if (contextStartPolicy !== undefined && contextStartPolicy !== 'continue' && contextStartPolicy !== 'fresh') {
+      throw new Error(`member context start policy must be 'continue' or 'fresh', received '${String(contextStartPolicy)}'`)
+    }
+    if (contextWindow !== undefined && (!Number.isInteger(contextWindow) || contextWindow < MEMBER_CONTEXT_WINDOW_FLOOR)) {
+      throw new Error(`member context window override must be an integer of at least ${MEMBER_CONTEXT_WINDOW_FLOOR} tokens`)
+    }
+  }
+
+  /**
+   * Prompt profiles are shape-checked only: names must be non-blank. Sizes
+   * and known-section membership belong to the prompt-profile work, so an
+   * edit can never make an old ledger unreplayable.
+   */
+  private assertPromptProfile(prompt: AgentTeamUpdateMemberRequest['prompt']): void {
+    if (prompt?.droppedSections?.some(name => name.trim() === '')) throw new Error('prompt profile section names must not be empty')
+  }
+
   private initialization(): AgentTeamInitializedOperation {
     const operation = this.state.ordered[0]
     if (operation === undefined) throw new Error('agent-team ledger is not initialized')
@@ -4363,6 +4412,9 @@ export class AgentTeamLedger {
       || operation.data.member.description !== request.description.trim() || operation.data.member.presetId !== request.presetId.trim()
       || !isDeepStrictEqual(operation.data.member.model ?? undefined, request.member.model ?? undefined)
       || !isDeepStrictEqual(operation.data.member.capabilities ?? undefined, request.member.capabilities ?? undefined)
+      || !isDeepStrictEqual(operation.data.member.prompt ?? undefined, request.member.prompt ?? undefined)
+      || (operation.data.member.contextStartPolicy ?? undefined) !== (request.member.contextStartPolicy ?? undefined)
+      || (operation.data.member.contextWindow ?? undefined) !== (request.member.contextWindow ?? undefined)
       || !this.sameList(operation.data.channelRefs, this.normalizeUnique(request.channelRefs, 'initial Member Channels'))) this.throwRequestCollision(request.requestId)
   }
 
@@ -4398,6 +4450,9 @@ export class AgentTeamLedger {
       || operation.data.member.description !== request.description.trim()
       || !isDeepStrictEqual(operation.data.member.model ?? undefined, request.model ?? undefined)
       || !isDeepStrictEqual(operation.data.member.capabilities ?? undefined, request.capabilities ?? undefined)
+      || !isDeepStrictEqual(operation.data.member.prompt ?? undefined, request.prompt ?? undefined)
+      || (operation.data.member.contextStartPolicy ?? undefined) !== (request.contextStartPolicy ?? undefined)
+      || (operation.data.member.contextWindow ?? undefined) !== (request.contextWindow ?? undefined)
       || (operation.data.member.leader ?? undefined) !== (request.leader ?? undefined)) this.throwRequestCollision(request.requestId)
   }
 

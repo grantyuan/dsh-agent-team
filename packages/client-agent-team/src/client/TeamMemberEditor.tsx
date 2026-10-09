@@ -227,9 +227,95 @@ export function ModelPickerField({ model, onModelChange, loadModels, disabled, t
 }
 
 /**
- * Agent editor: handle, description, and per-Member model selection commit
- * through one durable update. Channel membership is managed from the Channel
- * side, not here.
+ * Parses the context-window override text shared by the create and edit
+ * forms: empty means "follow the route window" (an absent field), a whole
+ * number at the 8192 floor is a valid override, and anything else parses to
+ * NaN — the caller's invalid sentinel that blocks submission. NaN stays
+ * typed as a number so the payload spread needs no extra narrowing.
+ */
+export function parseContextWindow(text: string): number | undefined {
+  const trimmed = text.trim()
+  if (trimmed.length === 0) return undefined
+  if (!/^\d+$/.test(trimmed)) return Number.NaN
+  const parsed = Number(trimmed)
+  return Number.isSafeInteger(parsed) && parsed >= 8192 ? parsed : Number.NaN
+}
+
+/**
+ * Shared task-start context block for the create and edit forms: one Menu
+ * row choosing between the continue and fresh start policies plus a numeric
+ * context-window override that can only narrow the route window. An empty
+ * window input means "follow the route window" and maps to an absent field;
+ * an unparsable one renders the invalid alert and keeps the form unsubmitted.
+ */
+export function ContextPickerField({ policy, onPolicyChange, windowText, onWindowTextChange, invalid, disabled, t }: {
+  readonly policy: 'continue' | 'fresh'
+  readonly onPolicyChange: (policy: 'continue' | 'fresh') => void
+  readonly windowText: string
+  readonly onWindowTextChange: (text: string) => void
+  /** Renders the invalid-window alert in place of the hint line. */
+  readonly invalid: boolean
+  readonly disabled: boolean
+  readonly t: TeamSidebarProps['t']
+}) {
+  const [open, setPolicyOpen] = useState(false)
+  const items: MenuEntry[] = [
+    { id: 'continue', label: t('contextPolicyContinue') },
+    { id: 'fresh', label: t('contextPolicyFresh') },
+  ]
+  const triggerLabel = policy === 'fresh' ? t('contextPolicyFresh') : t('contextPolicyContinue')
+  return <div className={createCss.field}>
+    <span>{t('memberContextPolicy')}</span>
+    <Menu
+      open={open}
+      portal
+      className={createCss.menuCap!}
+      items={items}
+      selectedId={policy}
+      onSelect={key => {
+        setPolicyOpen(false)
+        if (key === 'continue' || key === 'fresh') onPolicyChange(key)
+      }}
+      onClose={() => { setPolicyOpen(false) }}
+      anchor={
+        <button
+          type="button"
+          className={createCss.selectTrigger!}
+          aria-label={t('memberContextPolicy')}
+          aria-haspopup="menu"
+          aria-expanded={open}
+          disabled={disabled}
+          onClick={() => { setPolicyOpen(value => !value) }}
+        >
+          <span className={createCss.selectValue}>{triggerLabel}</span>
+          <span className={`${createCss.chevron!} ${open ? createCss.chevronOpen! : ''}`} aria-hidden><IconChevronDownOutlineRegular /></span>
+        </button>
+      }
+    />
+    <small className={css.editHint}>{t('memberContextPolicyHint')}</small>
+    <span>{t('memberContextWindow')}</span>
+    <Input
+      className={createCss.input!}
+      type="number"
+      min={8192}
+      step={1}
+      value={windowText}
+      placeholder={t('contextWindowPlaceholder')}
+      aria-label={t('memberContextWindow')}
+      aria-invalid={invalid || undefined}
+      onChange={event => onWindowTextChange(event.target.value)}
+      disabled={disabled}
+    />
+    {invalid
+      ? <p className={css.editHint} role="alert">{t('contextWindowInvalid')}</p>
+      : <small className={css.editHint}>{t('memberContextWindowHint')}</small>}
+  </div>
+}
+
+/**
+ * Agent editor: handle, description, per-Member model selection, and the
+ * task-start context control commit through one durable update. Channel
+ * membership is managed from the Channel side, not here.
  */
 export function AgentEditorDialog({ status, updateMember, loadModels, onCommitted, onClose, t }: {
   readonly status: AgentTeamClientMemberStatus
@@ -244,19 +330,24 @@ export function AgentEditorDialog({ status, updateMember, loadModels, onCommitte
   const [description, setDescription] = useState(status.member.description)
   const [model, setModel] = useState<AgentTeamModelSelection | undefined>(status.member.model)
   const [leader, setLeader] = useState(status.member.leader === true)
+  const [policy, setPolicy] = useState<'continue' | 'fresh'>(status.member.contextStartPolicy ?? 'continue')
+  const [windowText, setWindowText] = useState(status.member.contextWindow === undefined ? '' : String(status.member.contextWindow))
   const { saving, error, pendingRequest, save } = useEditDialogSave({
     save: updateMember,
     onCommitted,
     onClose,
   })
   const storedLeader = status.member.leader === true
+  const parsedWindow = parseContextWindow(windowText)
+  const windowInvalid = Number.isNaN(parsedWindow)
   const dirty = handle.trim() !== status.member.handle || description.trim() !== status.member.description
     || !sameModel(model, status.member.model) || leader !== storedLeader
+    || policy !== (status.member.contextStartPolicy ?? 'continue') || parsedWindow !== status.member.contextWindow
   const submit = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault()
     const normalizedHandle = handle.trim()
     const normalizedDescription = description.trim()
-    if (saving || !dirty || normalizedHandle.length === 0) return
+    if (saving || !dirty || normalizedHandle.length === 0 || windowInvalid) return
     const payload = {
       memberId,
       handle: normalizedHandle,
@@ -265,13 +356,26 @@ export function AgentEditorDialog({ status, updateMember, loadModels, onCommitte
       // The editor owns no capabilities UI, but an absent field would clear a
       // Remote-written override; echo the stored intent through the edit.
       ...(status.member.capabilities === undefined ? {} : { capabilities: status.member.capabilities }),
+      // Same echo for the prompt profile: this editor has no profile UI yet,
+      // so the stored profile rides the edit instead of being cleared by
+      // omission.
+      ...(status.member.prompt === undefined ? {} : { prompt: status.member.prompt }),
+      // The policy is only sent when fresh: under absent-clears, omitting it
+      // both clears a stored fresh policy and keeps an absent one when the
+      // picker reads continue. An empty window input means the same for the
+      // override.
+      ...(policy === 'fresh' ? { contextStartPolicy: policy } : {}),
+      ...(parsedWindow === undefined ? {} : { contextWindow: parsedWindow }),
       // Absent keeps the stored designation on the Host, so the edit always
       // echoes this checkbox rather than clearing it by omission.
       leader,
     }
     const samePending = pendingRequest.current !== undefined && pendingRequest.current.memberId === payload.memberId
       && pendingRequest.current.handle === payload.handle && pendingRequest.current.description === payload.description
-      && sameModel(pendingRequest.current.model, model) && (pendingRequest.current.leader ?? false) === leader
+      && sameModel(pendingRequest.current.model, model)
+      && (pendingRequest.current.contextStartPolicy ?? 'continue') === policy
+      && pendingRequest.current.contextWindow === parsedWindow
+      && (pendingRequest.current.leader ?? false) === leader
     const request: AgentTeamUpdateMemberRequest = samePending ? pendingRequest.current! : {
       requestId: mintRequestId(),
       ...payload,
@@ -287,7 +391,7 @@ export function AgentEditorDialog({ status, updateMember, loadModels, onCommitte
       description={`@${status.member.handle}`}
       closeLabel={t('close')}
       contentClassName={createCss.dialogContent!}
-      footer={<><Button variant="outline" disabled={saving} onClick={onClose}>{t('cancel')}</Button><Button type="submit" form="team-agent-edit-form" variant="primary" disabled={saving || !dirty || handle.trim().length === 0}>{saving ? t('editSaving') : t('editSave')}</Button></>}
+      footer={<><Button variant="outline" disabled={saving} onClick={onClose}>{t('cancel')}</Button><Button type="submit" form="team-agent-edit-form" variant="primary" disabled={saving || !dirty || handle.trim().length === 0 || windowInvalid}>{saving ? t('editSaving') : t('editSave')}</Button></>}
     >
       <form id="team-agent-edit-form" className={createCss.form} onSubmit={event => { void submit(event) }}>
         <label className={createCss.field}>
@@ -299,6 +403,15 @@ export function AgentEditorDialog({ status, updateMember, loadModels, onCommitte
           <Input className={createCss.input!} value={description} placeholder={t('agentDescriptionPlaceholder')} onChange={event => { setDescription(event.target.value); pendingRequest.current = undefined }} disabled={saving} />
         </label>
         <ModelPickerField model={model} onModelChange={choice => { pendingRequest.current = undefined; setModel(choice) }} loadModels={loadModels} disabled={saving} t={t} />
+        <ContextPickerField
+          policy={policy}
+          onPolicyChange={next => { pendingRequest.current = undefined; setPolicy(next) }}
+          windowText={windowText}
+          onWindowTextChange={text => { pendingRequest.current = undefined; setWindowText(text) }}
+          invalid={windowInvalid}
+          disabled={saving}
+          t={t}
+        />
         <Checkbox checked={leader} onChange={next => { pendingRequest.current = undefined; setLeader(next) }} disabled={saving} label={t('memberLeader')} title={t('memberLeaderHint')} />
         {error !== undefined && <p className={createCss.error} role="alert">{error}</p>}
       </form>

@@ -1,8 +1,8 @@
 // @vitest-environment jsdom
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import type { RemoteResult } from '@deepseek-ai/dsh-typert-protocol'
-import { ModelPickerField } from '../src/client/TeamMemberEditor.tsx'
+import { ContextPickerField, ModelPickerField, parseContextWindow } from '../src/client/TeamMemberEditor.tsx'
 import { zh } from '../src/client/locales.ts'
 import type { TeamModelCatalog } from '../src/client/slots.ts'
 
@@ -94,5 +94,62 @@ describe('ModelPickerField catalog load', () => {
     const alert = await screen.findByRole('alert')
     expect(alert.textContent).toContain('catalog unavailable')
     expect(screen.getByRole('button', { name: '重试' })).toBeTruthy()
+  })
+})
+
+describe('ContextPickerField', () => {
+  it('renders the stored intent and commits the picked policy through the menu', async () => {
+    const onPolicyChange = vi.fn()
+    const onWindowTextChange = vi.fn()
+    render(
+      <ContextPickerField
+        policy="fresh"
+        onPolicyChange={onPolicyChange}
+        windowText="96000"
+        onWindowTextChange={onWindowTextChange}
+        invalid={false}
+        disabled={false}
+        t={t}
+      />,
+    )
+    expect(screen.getByRole('button', { name: '任务启动上下文' }).textContent).toBe('每个任务全新上下文')
+    expect((screen.getByLabelText('上下文窗口覆盖') as HTMLInputElement).value).toBe('96000')
+    expect(screen.queryByRole('alert')).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: '任务启动上下文' }))
+    fireEvent.click(await within(document.body).findByRole('menuitem', { name: '延续当前上下文' }))
+    expect(onPolicyChange).toHaveBeenCalledWith('continue')
+    fireEvent.change(screen.getByLabelText('上下文窗口覆盖'), { target: { value: '128000' } })
+    expect(onWindowTextChange).toHaveBeenCalledWith('128000')
+  })
+
+  it('states the invalid window in place of the hint and marks the field', () => {
+    render(
+      <ContextPickerField
+        policy="continue"
+        onPolicyChange={() => {}}
+        windowText="100"
+        onWindowTextChange={() => {}}
+        invalid
+        disabled={false}
+        t={t}
+      />,
+    )
+    expect(screen.getByRole('alert').textContent).toBe('上下文窗口必须是不小于 8192 的整数。')
+    expect(screen.queryByText('以 token 计；只会收窄模型路由窗口，不会放大（最低 8192）。')).toBeNull()
+    expect(screen.getByLabelText('上下文窗口覆盖').getAttribute('aria-invalid')).toBe('true')
+  })
+})
+
+describe('parseContextWindow', () => {
+  it('maps the empty text to follow-the-route and gates everything below the floor', () => {
+    expect(parseContextWindow('')).toBeUndefined()
+    expect(parseContextWindow('  ')).toBeUndefined()
+    expect(parseContextWindow('8192')).toBe(8192)
+    expect(parseContextWindow('96000')).toBe(96000)
+    expect(parseContextWindow('8191')).toBeNaN()
+    expect(parseContextWindow('8192.5')).toBeNaN()
+    expect(parseContextWindow('-1')).toBeNaN()
+    expect(parseContextWindow('abc')).toBeNaN()
+    expect(parseContextWindow('9'.repeat(400))).toBeNaN()
   })
 })
