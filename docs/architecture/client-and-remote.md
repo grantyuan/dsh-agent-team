@@ -40,6 +40,8 @@ Prose-only rows carry the "no automatic signal" mark, zero-use tool-mapped rows 
 
 The dialog also hosts the auto-prune surfaces: two switches — check unused sections at task start and auto-execute without asking — ride the same merged save with their absent-clears echo, and while the Host's `pruneCandidates` list is non-empty a bordered confirm panel renders it with two actions — remove the candidates, or remove them and turn both switches on — either committing through the same echo-complete payload with the candidates merged into the drops. A `usagePartial` read renders a hint that the counts may under-count.
 
+Every commit through the dialog re-reads the stored drop list first and merges it in, so one standing open across a full-auto sweep never restores what the Host already removed.
+
 The Human Client consumes the Host's Inbox projection (the 「收件箱 / Inbox」 queue: the merged per-Workspace badge and page, covering each reader's whole unread slice — mentions are counted inside it, never its admission rule, plus a second 「最近活跃」 slice — the Threads that reader has written a Message in, so a Thread they replied to is theirs whether or not they follow it, newest activity first, each Workspace's own slice bounded to ten while the merged page shows at most five, which an Agent's Inbox never carries); it never keeps a parallel Inbox authority, and opening the page acknowledges nothing.
 
 Team navigation mode, Workspace selection, the last Channel/Thread, and the Inbox page position are browser-persisted; unread and Attention are Host-owned.

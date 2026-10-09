@@ -61,6 +61,8 @@ UI work 的边界如下：
 
   对话框同时承载 auto-prune 面：两个开关——任务启动时自动检查未用段落与自动执行（不再确认）——随同一次合并保存走 absent-clears 回传；Host 的 `pruneCandidates` 非空时渲染一个带边框的确认面板，两个动作——移除候选，或移除并同时打开两个开关——都走同一条 echo 齐全的 payload，把候选并入 drops。`usagePartial` 读取时渲染「计数可能偏少」提示。
 
+  对话框的每次提交都会先重读存储的 drop 清单并合并进去，因此在 full-auto sweep 期间一直打开的对话框绝不会恢复 Host 已移除的段落。
+
   Human Client 消费 Host 的 Inbox 投影（「收件箱 / Inbox」队列：合并各 Workspace 的徽标与页，覆盖读者的整片未读——mention 只在其中计数，绝不是准入条件——外加该读者写过 Message 的「最近活跃」段（回复过的 Thread 无论是否 follow 都算他的；按最新活跃降序，Host 侧每个 Workspace 上限 10，合并到页面上最多 5 条，永不进入 agent 的 Inbox）），但绝不维护并行 Inbox authority；打开页不确认任何内容。 Thread reads 使用 Host projections（`readThread`、`threadHistory`）和 Host mutations（replies、promotion、Task actions）。 当前 Thread UI 不提供 Attention controls 或 observations；其 Host Remote methods 留给后续自有 UI。 Browser 会持久化 Team navigation mode、Workspace selection、最近选中的 Channel 或 Thread 以及 Inbox 页位置（回到 Team 时恢复位置），但不持久化 unread 或 Attention。
 
   Agent Inbox 仍由 Host 持有，并通过 `team_inbox` 提供。

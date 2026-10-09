@@ -461,12 +461,31 @@ function EditPromptDialog({ memberId, loadPromptView, updateMember, onCommitted,
     || autoPrune !== (stored?.autoPrune ?? false)
     || autoExecutePrune !== (stored?.autoExecutePrune ?? false)
   const commit = async (prompt: AgentTeamMemberPromptProfile | undefined): Promise<void> => {
+    // A full-auto sweep can commit while this dialog stands open; the stale
+    // local echo must never restore what the Host already dropped. Re-read
+    // the stored drop list right before saving and merge it in — Human
+    // additions stay, Host removals stay removed, and the rows re-render the
+    // reconciled state. A failed re-read saves the local list unchanged; the
+    // update itself surfaces any real failure.
+    let reconciled = prompt
+    if (prompt !== undefined) {
+      const fresh = await loadPromptView({ memberId: view.memberId })
+      if (fresh.ok) {
+        const hostDrops = fresh.value.prompt?.droppedSections ?? []
+        const known = new Set(prompt.droppedSections ?? [])
+        if (hostDrops.some(name => !known.has(name))) {
+          const merged = [...new Set([...(prompt.droppedSections ?? []), ...hostDrops])].sort()
+          reconciled = { ...prompt, droppedSections: merged }
+          setDrops(merged)
+        }
+      }
+    }
     const payload = {
       requestId: mintRequestId(),
       memberId: view.memberId,
       handle: view.handle,
       description: view.description,
-      ...(prompt === undefined ? {} : { prompt }),
+      ...(reconciled === undefined ? {} : { prompt: reconciled }),
       // Echo the stored overrides: an absent field would clear them, and
       // this dialog edits the paragraph, the section list, and the
       // auto-prune switches only.
@@ -486,7 +505,7 @@ function EditPromptDialog({ memberId, loadPromptView, updateMember, onCommitted,
       && previous.model === payload.model && previous.capabilities === payload.capabilities
       && (previous.contextStartPolicy ?? undefined) === (payload.contextStartPolicy ?? undefined)
       && (previous.contextWindow ?? undefined) === (payload.contextWindow ?? undefined)
-    committedRef.current = prompt
+    committedRef.current = reconciled
     await save(samePending ? previous : payload)
   }
   const submit = (event: React.FormEvent<HTMLFormElement>) => {
@@ -502,7 +521,10 @@ function EditPromptDialog({ memberId, loadPromptView, updateMember, onCommitted,
   const confirmPrune = (upgrade: boolean): void => {
     if (saving || readonly || over || view.pruneCandidates === undefined) return
     const merged = [...new Set([...drops, ...view.pruneCandidates])].sort()
-    const base = buildPrompt(merged) ?? { autoPrune: true as const }
+    const base = buildPrompt(merged)
+    // Unreachable: the candidate list is non-empty, so the built profile
+    // always carries the merged drops.
+    if (base === undefined) return
     void commit(upgrade ? { ...base, autoPrune: true, autoExecutePrune: true } : base)
   }
   return (
@@ -544,7 +566,7 @@ function EditPromptDialog({ memberId, loadPromptView, updateMember, onCommitted,
           {view.usagePartial === true && <small className={css.editHint}>{t('promptUsagePartial')}</small>}
           <small className={css.editHint}>{t('promptSectionsHint')}</small>
           {!readonly && view.pruneCandidates !== undefined && view.pruneCandidates.length > 0 && (
-            <div className={createCss.prunePanel!} data-team-prompt-prune>
+            <div className={createCss.prunePanel!} data-team-prompt-prune role="group" aria-label={t('promptPruneTitle')}>
               <span>{t('promptPruneTitle')}</span>
               <small className={css.editHint}>{t('promptPruneHint')}</small>
               <ul className={createCss.sectionList!}>

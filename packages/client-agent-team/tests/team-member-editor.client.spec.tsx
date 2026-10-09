@@ -224,6 +224,64 @@ describe('MemberPromptDialog edit mode', () => {
     expect(onCommitted).toHaveBeenCalledWith({ droppedSections: ['skills'], customPrompt: 'New paragraph.', autoPrune: true })
   })
 
+  it('merges drops committed while the dialog stood open instead of restoring them', async () => {
+    // A full-auto sweep commits droppedSections while the dialog stands open:
+    // the open read is stale, so the save re-reads the stored drops first and
+    // merges them in — the stale echo never resurrects what the Host removed.
+    const staleView = promptView({ prompt: { customPrompt: 'Stored paragraph.', autoPrune: true } })
+    const sweptView = promptView({ prompt: { droppedSections: ['tool:bash'], customPrompt: 'Stored paragraph.', autoPrune: true } })
+    const loadPromptView = vi.fn()
+      .mockImplementationOnce(() => viewOk(staleView))
+      .mockImplementation(() => viewOk(sweptView))
+    const updateMember = vi.fn(updateCommit)
+    const onCommitted = vi.fn()
+    render(
+      <MemberPromptDialog
+        mode="edit"
+        memberId={promptMemberId}
+        loadPromptView={loadPromptView}
+        updateMember={updateMember}
+        onCommitted={onCommitted}
+        onClose={() => {}}
+        t={t}
+      />,
+    )
+    const box = await screen.findByRole('textbox', { name: '自定义角色段落' }) as HTMLTextAreaElement
+    fireEvent.change(box, { target: { value: 'New paragraph.' } })
+    fireEvent.click(screen.getByRole('button', { name: '保存' }))
+    await waitFor(() => expect(updateMember).toHaveBeenCalledTimes(1))
+    expect(loadPromptView).toHaveBeenCalledTimes(2)
+    const request = updateMember.mock.calls[0]![0] as AgentTeamUpdateMemberRequest
+    // The Host's sweep drop rides the echo even though the stale dialog never
+    // saw it; the Human's paragraph edit survives alongside it.
+    expect(request.prompt).toEqual({ droppedSections: ['tool:bash'], customPrompt: 'New paragraph.', autoPrune: true })
+    expect(onCommitted).toHaveBeenCalledWith({ droppedSections: ['tool:bash'], customPrompt: 'New paragraph.', autoPrune: true })
+  })
+
+  it('saves the local list unchanged when the pre-save re-read fails', async () => {
+    const loadPromptView = vi.fn()
+      .mockImplementationOnce(() => viewOk(promptView({ prompt: { customPrompt: 'Stored paragraph.' } })))
+      .mockImplementation(() => Promise.resolve({ ok: false, error: { message: 'read refused' } }) as Promise<RemoteResult<AgentTeamMemberPromptView>>)
+    const updateMember = vi.fn(updateCommit)
+    render(
+      <MemberPromptDialog
+        mode="edit"
+        memberId={promptMemberId}
+        loadPromptView={loadPromptView}
+        updateMember={updateMember}
+        onCommitted={() => {}}
+        onClose={() => {}}
+        t={t}
+      />,
+    )
+    const box = await screen.findByRole('textbox', { name: '自定义角色段落' }) as HTMLTextAreaElement
+    fireEvent.change(box, { target: { value: 'New paragraph.' } })
+    fireEvent.click(screen.getByRole('button', { name: '保存' }))
+    await waitFor(() => expect(updateMember).toHaveBeenCalledTimes(1))
+    const request = updateMember.mock.calls[0]![0] as AgentTeamUpdateMemberRequest
+    expect(request.prompt).toEqual({ customPrompt: 'New paragraph.' })
+  })
+
   it('keeps the save disabled while the paragraph is untouched', async () => {
     const loadPromptView = vi.fn(() => viewOk(promptView({ prompt: { customPrompt: 'Stored paragraph.' } })))
     render(
