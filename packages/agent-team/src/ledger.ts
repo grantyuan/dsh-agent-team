@@ -532,7 +532,10 @@ function customPromptByteLength(text: string): number {
  * Normalize one Remote-supplied prompt profile for storage: a whitespace-only
  * custom paragraph is the empty paragraph and stores as an absent field, so
  * "no paragraph" has one durable representation. The other subfields ride
- * verbatim; a profile left without any field stores as absent.
+ * verbatim; a profile left without any field stores as absent. The
+ * whitespace→absent rule is mirrored — never varied — by the runtime
+ * registration guard (member-runtime.ts) and the Client dialog mapping
+ * (TeamMemberEditor.tsx); this ledger rule is the authority.
  */
 function normalizePromptProfile(prompt: AgentTeamMemberPromptProfile | undefined): AgentTeamMemberPromptProfile | undefined {
   if (prompt === undefined) return undefined

@@ -2249,19 +2249,17 @@ export default class AgentTeam extends TypertRemoteService {
    * Live-apply a prompt edit at a turn boundary: while the Agent runs, the
    * current turn keeps its assembled prompt; the swap happens once idle, so
    * the next step assembles with the new custom paragraph, with the same
-   * Session and history surviving. Suspend/remove during the wait cancels
-   * the swap — the disposed scope released the old section already and no
-   * disposer leaks.
+   * Session and history surviving. The handle is re-checked unconditionally
+   * after the wait — the capability edit ahead of this one may have consumed
+   * the wait-ending disposal, or an external Session dispose may have moved
+   * the generation on without the Team queue — and any stale handle bails:
+   * the disposed scope released the old section already, and the ledger
+   * intent applies at the next activation.
    */
   private async applyPromptEdit(active: AgentHandle, stored: AgentTeamAgentMember): Promise<void> {
     const memberId = stored.memberId
-    const waited = await this.memberRuntime.awaitTurnBoundary(active)
-    if (waited && this.handles.get(memberId) !== active) {
-      // The wait resolved because the old generation was disposed, not
-      // because the turn ended; the ledger intent applies at the next
-      // activation instead.
-      return
-    }
+    await this.memberRuntime.awaitTurnBoundary(active)
+    if (this.handles.get(memberId) !== active) return
     this.memberRuntime.reapplyMemberPromptSection(stored)
   }
 

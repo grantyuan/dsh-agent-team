@@ -12,7 +12,7 @@ import Loader from '@deepseek-ai/cordis-plugin-loader'
 import Include from '@deepseek-ai/cordis-plugin-include'
 import Group from '@deepseek-ai/cordis-plugin-group'
 import AgentRegistry from '@deepseek-ai/dsh-agent'
-import type { Agent } from '@deepseek-ai/dsh-agent'
+import type { Agent, AgentHandle } from '@deepseek-ai/dsh-agent'
 import AgentLoop from '@deepseek-ai/dsh-agent-loop'
 import AgentPreset from '@deepseek-ai/dsh-agent-preset'
 import AgentPresetRegistry from '@deepseek-ai/dsh-agent-preset-registry'
@@ -30,7 +30,7 @@ import { WorkspaceId } from '@deepseek-ai/dsh-workspace'
 import AgentTeam from '../src/index.ts'
 import { COMPLETION_MARKER } from '../src/response-guard.ts'
 import { MEMBER_PROMPT_SECTION_NAME } from '../src/member-runtime.ts'
-import type { AgentTeamRequestId } from '../src/types.ts'
+import type { AgentTeamMemberId, AgentTeamRequestId } from '../src/types.ts'
 import { MemoryStorageBackend } from './helpers/memory-backend.ts'
 
 const sharedCleanups: Array<() => Promise<void>> = []
@@ -185,7 +185,7 @@ async function buildSharedHarness(): Promise<{
 }
 
 // Isolation invariant: the shared ledger never forgets, so every handle and
-// every requestId in this file must be unique per test (suffixed t1..t4).
+// every requestId in this file must be unique per test (suffixed t1..t5).
 let shared: Awaited<ReturnType<typeof buildSharedHarness>>
 
 beforeAll(async () => {
@@ -199,7 +199,7 @@ function useAdapter(adapter: LlmAdapter): void {
 }
 
 interface MemberFacts {
-  readonly memberId: string
+  readonly memberId: AgentTeamMemberId
   readonly sessionId: SessionId
   readonly handle: string
 }
@@ -221,7 +221,7 @@ function liveAgent(ctx: Context, facts: MemberFacts): Agent {
 
 /** The prompt assembly as the Member's own scope sees it. */
 async function memberAssembly(ctx: Context, facts: MemberFacts) {
-  return ctx.systemPrompt.assemble({ scope: scopeOf(liveAgent(ctx, facts).ctx) })
+  return ctx.systemPrompt.assemble({ scope: scopeOf(liveAgent(ctx, facts).ctx)! })
 }
 
 function memberSection(assembly: { readonly sections: ReadonlyArray<{ readonly name: string; readonly text: string }> }): { readonly name: string; readonly text: string } | undefined {
@@ -312,5 +312,59 @@ describe('Agent Team member custom role paragraph', () => {
     const blank = await addMember(ctx, workspaceId, 't4-blank', '   ')
     expect(ctx.agentTeam.memberPromptView({ memberId: blank.memberId }).prompt).toBeUndefined()
     expect(memberSection(await memberAssembly(ctx, blank))).toBeUndefined()
+  })
+
+  it('bails the parked swap silently when the handle goes stale during the boundary wait', async () => {
+    const adapter = new GatedAdapter()
+    useAdapter(adapter)
+    const { ctx, workspaceId } = shared
+    const member = await addMember(ctx, workspaceId, 't5-stale', 'First paragraph.')
+    const agent = liveAgent(ctx, member)
+    // The cancel path is reachable only through an external dispose the Team
+    // lifecycle queue never sees, so the test simulates the queue's missing
+    // bookkeeping (the handles entry drop) directly on the service instance.
+    const internals = ctx.agentTeam as unknown as {
+      handles: Map<string, AgentHandle>
+      memberRuntime: { memberPromptSections: Map<string, unknown> }
+    }
+
+    // Open a held turn so the edit parks: capabilities and prompt change
+    // together, so the capability edit owns the boundary wait and the prompt
+    // swap runs against whatever that wait leaves behind.
+    const running = waitForRunning(ctx, agent)
+    agent.followup(createUserMessage({ content: [{ type: 'text', text: 'run' }], source: { kind: 'user' } }))
+    await running
+    const edit = ctx.agentTeam.updateMember({
+      requestId: requestId('stale'), memberId: member.memberId, handle: member.handle, description: 'Prompt member',
+      capabilities: { skills: { allow: ['example'] } },
+      prompt: { customPrompt: 'Second paragraph.' },
+    })
+    const raced = await Promise.race([edit.then(() => 'settled'), new Promise<string>(resolve => { setTimeout(() => resolve('pending'), 50) })])
+    expect(raced).toBe('pending')
+
+    // The out-of-queue destroy: the handles entry goes first (strictly before
+    // any wait can settle), then the held turn ends cleanly — the idle status
+    // event settles the parked wait with the entry already gone.
+    const stale = internals.handles.get(member.memberId)
+    expect(stale).toBeDefined()
+    internals.handles.delete(member.memberId)
+    adapter.enqueue(closingReply('done'))
+    adapter.release()
+
+    // The edit settles without surfacing the stale generation: the prompt swap
+    // bails instead of re-registering over a moved-on handle.
+    const settled = await edit
+    expect(settled.status.member.prompt).toEqual({ customPrompt: 'Second paragraph.' })
+    // The bail left the old generation's own registration untouched — no leak,
+    // no second registration — and the ledger intent is not rolled back.
+    expect(internals.memberRuntime.memberPromptSections.has(member.memberId)).toBe(true)
+    expect(memberSection(await memberAssembly(ctx, member))?.text).toBe('First paragraph.')
+    expect(ctx.agentTeam.memberPromptView({ memberId: member.memberId }).prompt).toEqual({ customPrompt: 'Second paragraph.' })
+
+    // The next activation re-applies the committed paragraph from the ledger.
+    await stale!.dispose()
+    const recovered = await ctx.agentTeam.recoverMember({ requestId: requestId('recover-stale'), memberId: member.memberId, workspaceId })
+    expect(recovered.status.availability).toBe('active')
+    expect(memberSection(await memberAssembly(ctx, member))?.text).toBe('Second paragraph.')
   })
 })
