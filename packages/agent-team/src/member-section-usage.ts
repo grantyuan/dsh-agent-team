@@ -17,6 +17,7 @@
  *
  * @module @wowyuarm/dsh-agent-team/member-section-usage
  */
+import type { SessionEvent } from '@deepseek-ai/dsh-session'
 
 /**
  * Candidate-window turn depth: zero mapped calls within the last 20 completed
@@ -41,12 +42,8 @@ const PRUNE_WINDOW_MS = PRUNE_WINDOW_DAYS * 24 * 60 * 60 * 1000
  */
 export const MAX_USAGE_ANCESTORS = 16
 
-/** One session event, narrowed to the shape the fold reads (mirrors SessionEvent). */
-export interface UsageEvent {
-  readonly type: string
-  readonly time: number
-  readonly data?: unknown
-}
+/** One session event, exactly the Harness shape the session logs carry. */
+export type UsageEvent = SessionEvent
 
 /** One lineage generation's OWN events (the inherited prefix excluded) and its lineage parent, if any. */
 export interface UsageGeneration {
@@ -78,11 +75,6 @@ export function emptyUsageFold(now: number): UsageFold {
   return { counts: new Map(), turnsClosed: 0, closed: false, partial: false, now }
 }
 
-function turnNumberOf(event: UsageEvent): number | undefined {
-  const turn = (event.data as { readonly turn?: unknown } | undefined)?.turn
-  return typeof turn === 'number' && Number.isInteger(turn) ? turn : undefined
-}
-
 /**
  * Fold one generation's own events into the walk. Events arrive in log order
  * (oldest first) and are consumed newest-first, so the window closes at the
@@ -111,20 +103,19 @@ export function foldGenerationUsage(fold: UsageFold, events: readonly UsageEvent
       break
     }
     if (event.type === 'tool/call') {
-      const name = (event.data as { readonly name?: unknown } | undefined)?.name
-      if (typeof name === 'string' && name !== '') counts.set(name, (counts.get(name) ?? 0) + 1)
+      if (event.data.name !== '') counts.set(event.data.name, (counts.get(event.data.name) ?? 0) + 1)
       continue
     }
     if (event.type === 'turn/end') {
-      const turn = turnNumberOf(event)
-      if (turn !== undefined && !seenTurns.has(turn)) {
+      const turn = event.data.turn
+      if (!seenTurns.has(turn)) {
         seenTurns.add(turn)
         turnsClosed += 1
         if (turnsClosed >= PRUNE_WINDOW_TURNS) closingTurn = turn
       }
       continue
     }
-    if (event.type === 'turn/start' && closingTurn !== undefined && turnNumberOf(event) === closingTurn) {
+    if (event.type === 'turn/start' && closingTurn !== undefined && event.data.turn === closingTurn) {
       closed = true
       break
     }

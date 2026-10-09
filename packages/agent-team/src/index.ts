@@ -402,6 +402,13 @@ interface CheckpointSeed {
   readonly prefix: readonly SessionEvent[]
 }
 
+/** One folded prompt-section projection: the dialog entries plus the auto-prune candidates and partial flag. */
+interface PromptSectionProjection {
+  readonly entries: readonly AgentTeamMemberPromptSectionEntry[]
+  readonly candidates: readonly string[]
+  readonly usagePartial: boolean
+}
+
 /**
  * Config of the Team Host row: the Human profile (see human-profile.ts). The
  * settings service derives every form from the owning plugin's Config, so the
@@ -1062,11 +1069,7 @@ export default class AgentTeam extends TypertRemoteService {
    * no-live-session state and the Host log carries the diagnostic — instead of
    * a raw throw.
    */
-  private async promptSectionProjection(handle: AgentHandle, prompt: AgentTeamAgentMember['prompt']): Promise<{
-    readonly entries: readonly AgentTeamMemberPromptSectionEntry[]
-    readonly candidates: readonly string[]
-    readonly usagePartial: boolean
-  }> {
+  private async promptSectionProjection(handle: AgentHandle, prompt: AgentTeamAgentMember['prompt']): Promise<PromptSectionProjection> {
     try {
       // A live handle always carries an agent scope; the type cannot know that.
       const scope = scopeOf(handle.agent.ctx)!
@@ -1575,16 +1578,22 @@ export default class AgentTeam extends TypertRemoteService {
       if (this.handles.get(memberId) !== active) return
       const stored = this.ledger?.getMember(memberId)
       if (stored?.prompt?.autoPrune !== true || stored.state !== 'enabled') return
+      // The usage fold reads up to MAX_USAGE_ANCESTORS whole session files and
+      // re-parses inherited prefixes, so it runs OUTSIDE the serialized
+      // lifecycle queue — folding inside it would block every edit, archive,
+      // and renewal on that I/O. The queued body only re-validates cheaply
+      // (runAutoPruneBody) against the re-read member and this projection.
+      const projection = await this.promptSectionProjection(active, stored.prompt)
       await this.enqueueLifecycle(async () => {
         this.requireAccepting()
         // Lifecycle edits and suspensions queue ahead of this body and can
-        // commit after the boundary re-read above; only a still-opted-in,
+        // commit after the projection folded above; only a still-opted-in,
         // still-enabled Member sweeps.
         const current = this.ledger?.getMember(memberId)
         if (current?.prompt?.autoPrune !== true || current.state !== 'enabled') return
         const live = this.handles.get(memberId)
         if (live === undefined) return
-        await this.runAutoPruneBody(current, live)
+        await this.runAutoPruneBody(current, live, projection)
       })
     } catch (error) {
       this.ctx.logger.warn(`agent-team: auto-prune sweep for member '${member.handle}' failed: ${error instanceof Error ? error.message : String(error)}`)
@@ -1594,27 +1603,34 @@ export default class AgentTeam extends TypertRemoteService {
   }
 
   /**
-   * One sweep's decision body: recompute the candidates from the CURRENT
-   * session logs; with none, do nothing. Ask mode (the default, and the
-   * full-auto mode degraded by a partial usage fold — unreadable history can
-   * only under-count, so a partial fold never drives an automatic drop) posts
-   * the inbox notice and leaves the candidates for the dialog's confirm
-   * surface. Full-auto commits the candidates as one durable member update
-   * through the same echo-complete shape the Human editor uses, live-applies
-   * the drop list at the settled boundary, and still posts the notice naming
-   * what was pruned — every automatic drop stays ledger-recorded and
-   * traceable.
+   * One sweep's decision body, already holding the folded projection (the
+   * fold ran before the queue; whole-file session reads must not block
+   * lifecycle ops). Re-validates each candidate cheaply against the folded
+   * entries — a name that no longer maps to a live, unprotected, tool-mapped
+   * entry is skipped — and, with none left, does nothing. Ask mode (the
+   * default, and the full-auto mode degraded by a partial usage fold —
+   * unreadable history can only under-count, so a partial fold never drives
+   * an automatic drop) posts the inbox notice and leaves the candidates for
+   * the dialog's confirm surface. Full-auto commits the candidates as one
+   * durable member update through the same echo-complete shape the Human
+   * editor uses, live-applies the drop list at the settled boundary, and
+   * still posts the notice naming what was pruned — every automatic drop
+   * stays ledger-recorded and traceable.
    */
-  private async runAutoPruneBody(member: AgentTeamAgentMember, active: AgentHandle): Promise<void> {
+  private async runAutoPruneBody(member: AgentTeamAgentMember, active: AgentHandle, projection: PromptSectionProjection): Promise<void> {
     if (this.handles.get(member.memberId) !== active) return
-    const projection = await this.promptSectionProjection(active, member.prompt)
-    if (projection.candidates.length === 0) return
+    const entryByName = new Map(projection.entries.map(entry => [entry.name, entry]))
+    const candidates = projection.candidates.filter(name => {
+      const entry = entryByName.get(name)
+      return entry !== undefined && !entry.stale && !entry.isProtected && !entry.proseOnly
+    })
+    if (candidates.length === 0) return
     const fullAuto = member.prompt?.autoExecutePrune === true && !projection.usagePartial
     if (!fullAuto) {
-      await this.announceAutoPrune(member, projection.candidates, false)
+      await this.announceAutoPrune(member, candidates, false)
       return
     }
-    const mergedDrops = [...new Set([...(member.prompt?.droppedSections ?? []), ...projection.candidates])].sort()
+    const mergedDrops = [...new Set([...(member.prompt?.droppedSections ?? []), ...candidates])].sort()
     const prior = member.prompt
     const result = await this.requireLedger().updateMember({
       requestId: randomUUID() as AgentTeamRequestId,
@@ -1635,7 +1651,7 @@ export default class AgentTeam extends TypertRemoteService {
     })
     if (result.committed) this.emitCommitted(result.value.receipt)
     this.memberRuntime.reapplyMemberSectionDrops(result.value.member)
-    await this.announceAutoPrune(result.value.member, projection.candidates, true)
+    await this.announceAutoPrune(result.value.member, candidates, true)
   }
 
   /**

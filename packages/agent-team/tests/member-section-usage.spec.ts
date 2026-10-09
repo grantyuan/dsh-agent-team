@@ -1,4 +1,6 @@
 import { describe, expect, it } from 'vitest'
+import type { ToolCallId } from '@deepseek-ai/dsh-llm'
+import type { SessionSeq } from '@deepseek-ai/dsh-session'
 import {
   MAX_USAGE_ANCESTORS,
   foldGenerationUsage,
@@ -13,16 +15,19 @@ const DAY_MS = 24 * 60 * 60 * 1000
 /** Fixed fold origin; the day bound measures backwards from here. */
 const NOW = 1_800_000_000_000
 
+/** Events carry the real log shape: contiguous seqs along with type/time/data. */
+let nextSeq = 0
+
 function turnStart(turn: number, time: number): UsageEvent {
-  return { type: 'turn/start', time, data: { turn } }
+  return { type: 'turn/start', seq: nextSeq++ as SessionSeq, time, data: { turn } }
 }
 
 function turnEnd(turn: number, time: number): UsageEvent {
-  return { type: 'turn/end', time, data: { turn, reason: { kind: 'completed' } } }
+  return { type: 'turn/end', seq: nextSeq++ as SessionSeq, time, data: { turn, reason: { kind: 'completed' } } }
 }
 
 function toolCall(name: string, time: number): UsageEvent {
-  return { type: 'tool/call', time, data: { turn: 0, step: 1, callId: 'call', name, arguments: '{}' } }
+  return { type: 'tool/call', seq: nextSeq++ as SessionSeq, time, data: { turn: 0, step: 1, callId: 'call' as ToolCallId, name, arguments: '{}' } }
 }
 
 /** One completed turn in log order: its start, the named calls, its end. */
@@ -73,12 +78,10 @@ describe('foldGenerationUsage', () => {
     expect(result.partial).toBe(false)
   })
 
-  it('ignores tool/call events without a usable name', () => {
+  it('ignores an empty tool name', () => {
     const events: UsageEvent[] = [
       turnStart(0, NOW - 30_000),
-      { type: 'tool/call', time: NOW - 29_000, data: { turn: 0, step: 1, callId: 'a', arguments: '{}' } },
-      { type: 'tool/call', time: NOW - 28_000, data: { turn: 0, step: 1, callId: 'b', name: '', arguments: '{}' } },
-      { type: 'tool/call', time: NOW - 27_000, data: { turn: 0, step: 1, callId: 'c', name: 42, arguments: '{}' } },
+      { type: 'tool/call', seq: nextSeq++ as SessionSeq, time: NOW - 28_000, data: { turn: 0, step: 1, callId: 'b' as ToolCallId, name: '', arguments: '{}' } },
       turnEnd(0, NOW - 26_000),
     ]
     const result = fold(events)

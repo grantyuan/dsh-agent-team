@@ -62,8 +62,10 @@ Team 是每个 DSH home 内唯一的协作域。append-only operation ledger 是
 - 窗口覆盖只会从路由向下收窄压力预算、绝不放大：`routeLimitsForAgent` 以覆盖值与实时路由窗口的较小者计算预算，超过路由的覆盖值等于没有设置。未设置覆盖的 Member 行为与之前完全一致。
 - `fresh` 策略在任务边界重续 Member 上下文：Member 认领任务时，或 Human 原子开始的 committed 直接提及点名该 Member 时，Host 通过序列化 lifecycle 队列、走 Human 重置路径使用的同一个 `renewMemberContextNow` 持久操作安排一次上下文续期。调度器等待 Member 的 turn 边界，像 member transition 一样收敛运行中的 Agent。
 - 提交前调度器重读存储的策略与状态：期间策略已被改掉、或 Member 已无法对其 Agent 进行 dispose 的情形跳过续期。已提交的重置以该 Member 的 fresh-start Task 策略身份向 Channels 宣告；`continue` Member 从不经此路径续期。
-- `autoPrune` 开关在与 fresh 策略相同的任务边界附加一次用量 sweep。与 fresh 调度器一样，它等待 turn 边界、在那里重读存储的开关与状态（期间被编辑或暂停则跳过），并在串行 lifecycle queue 内执行。ask 模式只发 `@human` 收件箱通知。
+- `autoPrune` 开关在与 fresh 策略相同的任务边界附加一次用量 sweep。与 fresh 调度器一样，它等待 turn 边界、在那里重读存储的开关与状态（期间被编辑或暂停则跳过），并在串行 lifecycle queue 内执行。用量折叠要读整个 session 文件，因此先于队列完成。ask 模式只发 `@human` 收件箱通知。
+- 队列内的 sweep body 只做廉价重验——重读的成员仍开启开关、每个折叠候选仍对应一个 live、不受保护、有工具映射的 section——然后再询问或提交。
 - full-auto（`autoExecutePrune`，partial 用量折叠下永不发生）以 Human actor、一次 echo 齐全的 member update 提交候选移除，在边界落定后 live 生效，并且仍然宣告。用量投影在读取时计算、从不持久化；partial 折叠（归档不可读、血统深过遍历上限）只会让决策降级——不可读历史只会少算，因此绝不驱动自动移除。
+- 窗口计价的是近期工作而非终身闲置：闲置超过 14 天下限的成员折叠出零用量，full-auto 可能在该成员下一次任务启动时清理所有映射 section——这是窗口语义的预期结果，且每次移除都能在 Prompt 对话框恢复。
 
 ## Composer attachments（cache，不是 archive）
 
