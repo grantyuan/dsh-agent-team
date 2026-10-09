@@ -1360,7 +1360,8 @@ export default class AgentTeam extends TypertRemoteService {
    * Schedule the context reset one Member's fresh-start task-start policy
    * calls for. Claim and Human atomic-start boundaries schedule; continue
    * policy (the absent default) never does. One in-flight body per Member:
-   * the dedupe lets a claim and its atomic start share a single reset.
+   * concurrently overlapping claim and atomic-start schedules merge into
+   * a single reset.
    */
   private scheduleFreshStartReset(memberId: AgentTeamMemberId): void {
     if (this.pendingPolicyResets.has(memberId)) return
@@ -1377,8 +1378,11 @@ export default class AgentTeam extends TypertRemoteService {
    * the Member's own turn, so the reset waits for the turn boundary and
    * converges like executeMemberTransition; then it re-reads the Member at
    * the boundary (a concurrent edit may have changed the policy) and runs
-   * the same durable renewal the Human reset path uses. Failures are logged,
-   * never thrown: the next boundary reschedules.
+   * the same durable renewal the Human reset path uses. The queued body
+   * re-checks the policy once more, since lifecycle edits and suspensions
+   * can commit while it waits in the queue. Failures are logged, never
+   * thrown and never retried — the next claim or atomic start schedules
+   * its own reset.
    */
   private async runFreshStartReset(member: AgentTeamAgentMember, active: AgentHandle): Promise<void> {
     const memberId = member.memberId
@@ -1391,6 +1395,11 @@ export default class AgentTeam extends TypertRemoteService {
       if (stored?.contextStartPolicy !== 'fresh' || stored.state !== 'enabled') return
       await this.enqueueLifecycle(async () => {
         this.requireAccepting()
+        // Lifecycle edits and suspensions queue ahead of this body and can
+        // commit after the boundary re-read above; only a still-fresh,
+        // still-enabled Member renews.
+        const current = this.ledger?.getMember(memberId)
+        if (current?.contextStartPolicy !== 'fresh' || current.state !== 'enabled') return
         await this.renewMemberContextNow(memberId, randomUUID() as AgentTeamRequestId, 'policy')
       })
     } catch (error) {

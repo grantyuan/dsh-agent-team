@@ -134,6 +134,7 @@ import type {
   AgentTeamView,
   AgentTeamViewRequest,
 } from './types.ts'
+import { MEMBER_CONTEXT_WINDOW_FLOOR } from './spec.ts'
 import { formatTeamTimestamp } from './time-format.ts'
 import { resolveBodyMentions } from './mentions.ts'
 import type { AgentTeamBodyMentionCandidate } from './mentions.ts'
@@ -464,14 +465,6 @@ function boundedThreadTitle(body: string): string {
  * request field.
  */
 const RECENT_INBOX_LIMIT = 10
-
-/**
- * Floor for one Member's durable context-window override. Small windows
- * cannot hold a Team turn's fixed prompt assembly, so the override stops
- * here instead of producing a budget the pressure policy would immediately
- * fail closed on.
- */
-const MEMBER_CONTEXT_WINDOW_FLOOR = 8192
 
 /**
  * Whether one operation's Inbox delta would change nothing. A read that finds

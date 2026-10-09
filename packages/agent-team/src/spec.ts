@@ -34,8 +34,13 @@ const claimRefSchema = z.string().regex(/^claim:[^:]+$/).transform(value => valu
 const activityRefSchema = z.string().regex(/^activity:[^:]+$/).transform(value => value as AgentTeamActivityRef)
 const attachmentIdSchema = z.string().min(1).transform(value => value as AgentTeamAttachmentId)
 
-/** Floor for a stored Member context-window override; mirrors the ledger's commit rule. */
-const MEMBER_CONTEXT_WINDOW_FLOOR = 8192
+/**
+ * Floor for one Member's durable context-window override. Small windows
+ * cannot hold a Team turn's fixed prompt assembly, so the override stops
+ * here instead of producing a budget the pressure policy would immediately
+ * fail closed on.
+ */
+export const MEMBER_CONTEXT_WINDOW_FLOOR = 8192
 
 const actorSchema = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('human'), memberId: memberIdSchema, handle: z.string().min(1) }).strict(),

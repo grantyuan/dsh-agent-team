@@ -4805,6 +4805,40 @@ describe('Agent Team member context control (ticket 01)', () => {
     expect(() => ctx.agentTeam.validateLedger()).not.toThrow()
   })
 
+  it('does not renew a fresh-start Member whose policy is edited to continue before the boundary reset commits', async () => {
+    const adapter = new GatedAdapter()
+    const { ctx, workspaceId, archived } = await realHarness(adapter)
+    const channel = await ctx.agentTeam.createChannel({ requestId: requestId('edit-channel'), workspaceId, name: 'engineering', description: 'Engineering work' })
+    const added = await ctx.agentTeam.addMember({ requestId: requestId('edit-add'), workspaceId, handle: 'scout', description: 'Starts fresh per task', presetId: 'team-member', channelRefs: [channel.channel.channelRef], contextStartPolicy: 'fresh' })
+    const memberId = added.status.member.memberId
+    const session0 = added.status.member.sessionId
+    const agent = ctx.agents.get(session0)!
+    // A recipients-less taskful message files the claim target without
+    // waking anyone, so the gated call below is the Member's first turn.
+    const started = await ctx.agentTeam.sendMessage({ requestId: requestId('edit-task'), workspaceId, channelRef: channel.channel.channelRef, body: 'Investigate the flaky test', asTask: true })
+    if (started.kind !== 'committed') throw new Error(`expected committed start, received ${started.kind}`)
+
+    // Hold the Member mid-turn and claim inside the running turn: the reset
+    // parks at the turn boundary. Editing the policy to continue before that
+    // boundary commits must leave the reset with nothing to renew — at the
+    // boundary re-read or, should an edit overtake it, inside the queued body.
+    agent.followup(createUserMessage({ content: [{ type: 'text', text: 'work the task' }], source: { kind: 'user' } }))
+    await adapter.started.promise
+    const read = await ctx.agentTeam.readThreadForAgent(agent, { requestId: requestId('edit-read'), workspaceId, taskRef: started.task!.taskRef })
+    const claim = await ctx.agentTeam.changeClaimForAgent(agent, { requestId: requestId('edit-claim'), workspaceId, taskRef: started.task!.taskRef, action: 'claim', baseRevision: read.thread.revision, direction: 'own the fix' })
+    if (claim.kind !== 'committed') throw new Error(`expected committed claim, received ${claim.kind}`)
+    const edited = await ctx.agentTeam.updateMember({ requestId: requestId('edit-policy'), memberId, handle: 'scout', description: 'Starts fresh per task', contextStartPolicy: 'continue' })
+    expect(edited.status.member.contextStartPolicy).toBe('continue')
+
+    adapter.release.resolve()
+    await waitForIdle(ctx, agent)
+    // A wrongly surviving reset would commit well within this window.
+    await new Promise(resolve => setTimeout(resolve, 500))
+    expect(ctx.agentTeam.members().find(status => status.member.memberId === memberId)?.member.sessionId).toBe(session0)
+    expect(archived).not.toContain(session0)
+    expect(() => ctx.agentTeam.validateLedger()).not.toThrow()
+  })
+
   it('clamps the pressure budget to a Member window override without ever raising the route window', async () => {
     const adapter = new ScriptedAdapter()
     const { ctx, workspaceId, pressureState } = await realHarness(adapter)
