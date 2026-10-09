@@ -77,6 +77,8 @@ async function load(pool: MemoryMediaPool): Promise<Context> {
   ctx.provide('agentDefaultModel', { currentSelection: () => ({ provider: 'mock', model: 'mock' }) })
   ctx.provide('agentPresets', { mount: async () => { throw new Error('unused') } })
   ctx.provide('tools', { schemas: () => [] })
+  // Inject-list requirement; the composed rows never assemble a prompt (no live sessions).
+  ctx.provide('systemPrompt', { assemble: async () => ({ sections: [], contexts: [], tools: [], variables: {} }) })
   ctx.provide('sessions', { flush: async () => true })
   ctx.provide('sessionPersistence', { list: async () => [] })
   await ctx.plugin(SessionProjectionRegistry)

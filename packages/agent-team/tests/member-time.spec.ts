@@ -65,6 +65,8 @@ async function harness(pool = new MemoryMediaPool(), workspaceIds = [alpha]): Pr
   ctx.provide('agentDefaultModel', { currentSelection: () => ({ provider: 'mock', model: 'mock' }) })
   ctx.provide('agentPresets', { mount: async () => { throw new Error('unused') } })
   ctx.provide('tools', { schemas: () => [] })
+  // Inject-list requirement; these tests never assemble a prompt (no live sessions).
+  ctx.provide('systemPrompt', { assemble: async () => ({ sections: [], contexts: [], tools: [], variables: {} }) })
   ctx.provide('sessionPersistence', { list: async () => [] })
   await ctx.plugin(SessionProjectionRegistry)
   const fiber = await ctx.plugin(AgentTeam)
