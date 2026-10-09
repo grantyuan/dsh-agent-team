@@ -153,6 +153,25 @@ export interface AgentTeamMemberPromptViewRequest {
  * projection, and curation surfaces join as optional fields when the
  * prompt-profile work lands them; existing consumers stay source-compatible.
  */
+/**
+ * One section of a live Member's assembled prompt, as the Prompt dialog
+ * renders it. Ticket 04's usage counts extend this shape with per-section
+ * fields, so existing consumers stay source-compatible.
+ */
+export interface AgentTeamMemberPromptSectionEntry {
+  readonly name: string
+  /** UTF-8 byte length of the assembled text; absent for stale names (no live text). */
+  readonly chars?: number
+  /** The runtime drop listener removes this section from the Member's next assemblies. */
+  readonly dropped: boolean
+  /** Refuses drops: persona rows, the custom role paragraph, Team tool guidance. */
+  readonly isProtected: boolean
+  /** A stored drop the current assembly no longer knows; renders inert. */
+  readonly stale: boolean
+  /** No current tool name maps to this section ("no automatic signal"). */
+  readonly proseOnly: boolean
+}
+
 export interface AgentTeamMemberPromptView {
   readonly memberId: AgentTeamMemberId
   readonly handle: string
@@ -162,6 +181,12 @@ export interface AgentTeamMemberPromptView {
   readonly state: AgentTeamAgentMember['state']
   /** Stored prompt profile; absent fields are clear. */
   readonly prompt?: AgentTeamMemberPromptProfile
+  /**
+   * The Member's live assembled sections (the same assembly its next step
+   * gets, read-only) plus inert stale drop entries; absent when the Member
+   * has no live session to assemble from.
+   */
+  readonly sections?: readonly AgentTeamMemberPromptSectionEntry[]
   /** Stored overrides the dialog's edit echoes verbatim, so absence cannot clear them. */
   readonly model?: AgentTeamModelSelection
   readonly capabilities?: AgentTeamMemberCapabilities

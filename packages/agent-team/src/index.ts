@@ -39,7 +39,7 @@ import { createTeamContextManagement, TEAM_CONTEXT_CODEC } from './context-conti
 import { AGENT_TEAM_PLUGIN_ID, isAgentTeamSource } from './context-source.ts'
 import { boundaryByRef, carriedInputOf, checkpointByRef, checkpointRefFor, createTeamContextProjectionConfig, createTeamContextProjectionDefinition, foldTeamContextProjection, retainedTopicsThrough, TeamContextProjectionHost } from './context-projection.ts'
 import { AGENT_TEAM_HUMAN_MEMBER_ID, AgentTeamLedger, agentTeamHumanActor, type AgentTeamDurableMemberResult } from './ledger.ts'
-import { AGENT_TEAM_TOOL_NAMES, deepCopyCapabilities, deepCopyPrompt, memberMemoryDirectoryName, memberMemoryDirectoryPath, MemberRuntime } from './member-runtime.ts'
+import { AGENT_TEAM_TOOL_NAMES, deepCopyCapabilities, deepCopyPrompt, isProtectedPromptSection, memberMemoryDirectoryName, memberMemoryDirectoryPath, MemberRuntime, promptSectionByteLength, sectionToolMapping } from './member-runtime.ts'
 import type { MemberSkillSelectionRef } from './member-skills.ts'
 import { classifyRecoverableError, RecoveryCoordinator, RECOVERY_MAX_CONSECUTIVE_ERRORS } from './recovery.ts'
 import { classifyAssistantResponse, RESPONSE_GUARD_MAX_CONSECUTIVE, RESPONSE_GUARD_NOTICE_SUMMARY, ResponseGuardCoordinator } from './response-guard.ts'
@@ -101,6 +101,7 @@ import type {
   AgentTeamMemberActor,
   AgentTeamMessageAttachment,
   AgentTeamMemberId,
+  AgentTeamMemberPromptSectionEntry,
   AgentTeamMemberPromptView,
   AgentTeamMemberPromptViewRequest,
   AgentTeamMemberResult,
@@ -421,6 +422,7 @@ export default class AgentTeam extends TypertRemoteService {
     'agents',
     'agentDefaultModel',
     'agentPresets',
+    'systemPrompt',
     'tools',
     'sessionPersistence',
     'sessionProjections',
@@ -1011,22 +1013,64 @@ export default class AgentTeam extends TypertRemoteService {
       .map(({ member: { privateMemoryPath: _privateMemoryPath, ...member }, ...status }) => Object.freeze({ ...status, member: Object.freeze(member), workspaceIds: ledger.workspacesOf(member.memberId) }))
   }
 
-  /** Human read behind the Prompt dialog: the stored prompt profile plus the lifecycle facts it renders from. */
+  /**
+   * Human read behind the Prompt dialog: the stored prompt profile, the
+   * lifecycle facts it renders from, and — when the Member has a live
+   * session — its actual assembled sections once, with drop/protection/stale
+   * marks the dialog and the runtime listener agree on.
+   */
   @Remote('memberPromptView')
-  memberPromptView(request: AgentTeamMemberPromptViewRequest): AgentTeamMemberPromptView {
+  async memberPromptView(request: AgentTeamMemberPromptViewRequest): Promise<AgentTeamMemberPromptView> {
     const member = this.requireLedger().getMember(request.memberId)
     if (member === undefined) throw new Error(`unknown Agent Member '${request.memberId}'`)
+    const handle = this.handles.get(request.memberId)
+    const sections = handle === undefined ? undefined : await this.promptSectionEntries(handle, member.prompt)
     return Object.freeze({
       memberId: member.memberId,
       handle: member.handle,
       description: member.description,
       state: member.state,
       ...(member.prompt === undefined ? {} : { prompt: member.prompt }),
+      ...(sections === undefined ? {} : { sections }),
       ...(member.model === undefined ? {} : { model: member.model }),
       ...(member.capabilities === undefined ? {} : { capabilities: member.capabilities }),
       ...(member.contextStartPolicy === undefined ? {} : { contextStartPolicy: member.contextStartPolicy }),
       ...(member.contextWindow === undefined ? {} : { contextWindow: member.contextWindow }),
     })
+  }
+
+  /**
+   * Assemble the Member's scope once (read-only, the same assembly its next
+   * step gets) and derive the dialog's section entries: the stored drop list
+   * provides dropped/stale marks, the shared protection set refuses drops at
+   * consumption and marks them here, and the section→tools mapping flags
+   * prose-only sections ("no automatic signal"). Stored names the current
+   * assembly no longer knows render as inert stale entries; a protected name
+   * renders protected rather than dropped even when the ledger still lists it.
+   */
+  private async promptSectionEntries(handle: AgentHandle, prompt: AgentTeamAgentMember['prompt']): Promise<readonly AgentTeamMemberPromptSectionEntry[]> {
+    // A live handle always carries an agent scope; the type cannot know that.
+    const scope = scopeOf(handle.agent.ctx)!
+    const assembly = await this.ctx.systemPrompt.assemble({ scope })
+    const toolNames = this.ctx.tools.schemas(scope).map(tool => tool.name)
+    const mapping = sectionToolMapping(assembly.sections, toolNames)
+    const requested = prompt?.droppedSections ?? []
+    const live = assembly.sections.map(section => {
+      const isProtected = isProtectedPromptSection(section.name)
+      return {
+        name: section.name,
+        chars: promptSectionByteLength(section.text),
+        dropped: !isProtected && requested.includes(section.name),
+        isProtected,
+        stale: false,
+        proseOnly: (mapping.get(section.name) ?? []).length === 0,
+      }
+    })
+    const currentNames = new Set(assembly.sections.map(section => section.name))
+    const stale = requested
+      .filter(name => !currentNames.has(name) && !isProtectedPromptSection(name))
+      .map(name => ({ name, dropped: true, isProtected: false, stale: true, proseOnly: false }))
+    return Object.freeze([...live, ...stale].map(entry => Object.freeze(entry)))
   }
 
   /** Emit a current baseline, then coalesced invalidations until canceled. */
@@ -2261,6 +2305,7 @@ export default class AgentTeam extends TypertRemoteService {
     await this.memberRuntime.awaitTurnBoundary(active)
     if (this.handles.get(memberId) !== active) return
     this.memberRuntime.reapplyMemberPromptSection(stored)
+    this.memberRuntime.reapplyMemberSectionDrops(stored)
   }
 
   /** Irreversibly remove one Member, archive its Session, and delete its private namespace. */
@@ -3595,6 +3640,7 @@ export default class AgentTeam extends TypertRemoteService {
           await this.ctx.agentPresets.mount(agentCtx, member.presetId)
           this.memberRuntime.applyMemberToolPolicy(agentCtx, member)
           this.memberRuntime.applyMemberPromptSection(agentCtx, member)
+          this.memberRuntime.applyMemberSectionDrops(agentCtx, member)
           this.validateMemberPreset(agentCtx)
         } catch (error) {
           // Tag composition failures with their own class: the activation

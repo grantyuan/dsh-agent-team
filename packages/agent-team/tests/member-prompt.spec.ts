@@ -29,7 +29,7 @@ import ToolRuntime from '@deepseek-ai/dsh-tools'
 import { WorkspaceId } from '@deepseek-ai/dsh-workspace'
 import AgentTeam from '../src/index.ts'
 import { COMPLETION_MARKER } from '../src/response-guard.ts'
-import { MEMBER_PROMPT_SECTION_NAME } from '../src/member-runtime.ts'
+import { MEMBER_PROMPT_SECTION_NAME, sectionToolMapping } from '../src/member-runtime.ts'
 import type { AgentTeamMemberId, AgentTeamRequestId } from '../src/types.ts'
 import { MemoryStorageBackend } from './helpers/memory-backend.ts'
 
@@ -185,7 +185,7 @@ async function buildSharedHarness(): Promise<{
 }
 
 // Isolation invariant: the shared ledger never forgets, so every handle and
-// every requestId in this file must be unique per test (suffixed t1..t5).
+// every requestId in this file must be unique per test (suffixed t1..t10).
 let shared: Awaited<ReturnType<typeof buildSharedHarness>>
 
 beforeAll(async () => {
@@ -219,13 +219,22 @@ function liveAgent(ctx: Context, facts: MemberFacts): Agent {
   return agent!
 }
 
-/** The prompt assembly as the Member's own scope sees it. */
+/** The prompt assembly as the Member's own scope sees it (read-side shape: no turn signal). */
 async function memberAssembly(ctx: Context, facts: MemberFacts) {
   return ctx.systemPrompt.assemble({ scope: scopeOf(liveAgent(ctx, facts).ctx)! })
 }
 
+/** The assembly a model turn would get: the loop assembles steps with the turn's signal. */
+async function memberTurnAssembly(ctx: Context, facts: MemberFacts) {
+  return ctx.systemPrompt.assemble({ scope: scopeOf(liveAgent(ctx, facts).ctx)!, signal: new AbortController().signal })
+}
+
 function memberSection(assembly: { readonly sections: ReadonlyArray<{ readonly name: string; readonly text: string }> }): { readonly name: string; readonly text: string } | undefined {
   return assembly.sections.find(section => section.name === MEMBER_PROMPT_SECTION_NAME)
+}
+
+function sectionNames(assembly: { readonly sections: ReadonlyArray<{ readonly name: string }> }): readonly string[] {
+  return assembly.sections.map(section => section.name)
 }
 
 describe('Agent Team member custom role paragraph', () => {
@@ -243,7 +252,7 @@ describe('Agent Team member custom role paragraph', () => {
     expect(renderPrompt(await memberAssembly(ctx, prompted))).toContain('Always answer in Chinese.')
 
     // The stored profile round-trips through the Human read.
-    const view = ctx.agentTeam.memberPromptView({ memberId: prompted.memberId })
+    const view = await ctx.agentTeam.memberPromptView({ memberId: prompted.memberId })
     expect(view.prompt).toEqual({ customPrompt: 'Always answer in Chinese.' })
   })
 
@@ -310,7 +319,7 @@ describe('Agent Team member custom role paragraph', () => {
     // The blank paragraph normalizes to an absent profile on the Host, so the
     // activation sees no customPrompt and registers nothing.
     const blank = await addMember(ctx, workspaceId, 't4-blank', '   ')
-    expect(ctx.agentTeam.memberPromptView({ memberId: blank.memberId }).prompt).toBeUndefined()
+    expect((await ctx.agentTeam.memberPromptView({ memberId: blank.memberId })).prompt).toBeUndefined()
     expect(memberSection(await memberAssembly(ctx, blank))).toBeUndefined()
   })
 
@@ -359,12 +368,157 @@ describe('Agent Team member custom role paragraph', () => {
     // no second registration — and the ledger intent is not rolled back.
     expect(internals.memberRuntime.memberPromptSections.has(member.memberId)).toBe(true)
     expect(memberSection(await memberAssembly(ctx, member))?.text).toBe('First paragraph.')
-    expect(ctx.agentTeam.memberPromptView({ memberId: member.memberId }).prompt).toEqual({ customPrompt: 'Second paragraph.' })
+    expect((await ctx.agentTeam.memberPromptView({ memberId: member.memberId })).prompt).toEqual({ customPrompt: 'Second paragraph.' })
 
     // The next activation re-applies the committed paragraph from the ledger.
     await stale!.dispose()
     const recovered = await ctx.agentTeam.recoverMember({ requestId: requestId('recover-stale'), memberId: member.memberId, workspaceId })
     expect(recovered.status.availability).toBe('active')
     expect(memberSection(await memberAssembly(ctx, member))?.text).toBe('Second paragraph.')
+  })
+
+  it('drops a section for its Member only, flags prose-only sections, and restores on toggle-off', async () => {
+    useAdapter(new EmptyAdapter())
+    const { ctx, workspaceId } = shared
+    const member = await addMember(ctx, workspaceId, 't6-drop', 'Always answer in Chinese.')
+    const sibling = await addMember(ctx, workspaceId, 't6-sibling')
+    const before = await ctx.agentTeam.memberPromptView({ memberId: member.memberId })
+    const identity = before.sections!.find(section => section.name === 'harness:identity')
+    expect(identity).toBeDefined()
+    expect(identity!.dropped).toBe(false)
+    expect(identity!.isProtected).toBe(false)
+    expect(identity!.chars).toBeGreaterThan(0)
+    // The custom paragraph maps to no current tool name: prose-only.
+    expect(before.sections!.find(section => section.name === MEMBER_PROMPT_SECTION_NAME)?.proseOnly).toBe(true)
+
+    const edited = await ctx.agentTeam.updateMember({
+      requestId: requestId('drop'), memberId: member.memberId, handle: member.handle, description: 'Prompt member',
+      prompt: { customPrompt: 'Always answer in Chinese.', droppedSections: ['harness:identity'] },
+    })
+    expect(edited.status.member.prompt).toEqual({ customPrompt: 'Always answer in Chinese.', droppedSections: ['harness:identity'] })
+    // The scoped listener filters the Member's turn assemblies; the sibling
+    // and a scope-less global assemble keep the section, and the Member's own
+    // read-side assembly (the view's shape) still sees it.
+    expect(sectionNames(await memberTurnAssembly(ctx, member))).not.toContain('harness:identity')
+    expect(sectionNames(await memberTurnAssembly(ctx, sibling))).toContain('harness:identity')
+    expect(sectionNames(await ctx.systemPrompt.assemble())).toContain('harness:identity')
+    expect(sectionNames(await memberAssembly(ctx, member))).toContain('harness:identity')
+    // The paragraph rode along untouched.
+    expect(memberSection(await memberAssembly(ctx, member))?.text).toBe('Always answer in Chinese.')
+    // The view read reflects the drop; the sibling's read carries none.
+    const after = await ctx.agentTeam.memberPromptView({ memberId: member.memberId })
+    expect(after.sections!.find(section => section.name === 'harness:identity')?.dropped).toBe(true)
+    const siblingView = await ctx.agentTeam.memberPromptView({ memberId: sibling.memberId })
+    expect(siblingView.sections!.find(section => section.name === 'harness:identity')?.dropped).toBe(false)
+
+    // Toggling back on restores the section and stores an absent drop field.
+    const restored = await ctx.agentTeam.updateMember({
+      requestId: requestId('undrop'), memberId: member.memberId, handle: member.handle, description: 'Prompt member',
+      prompt: { customPrompt: 'Always answer in Chinese.' },
+    })
+    expect(restored.status.member.prompt).toEqual({ customPrompt: 'Always answer in Chinese.' })
+    expect(sectionNames(await memberAssembly(ctx, member))).toContain('harness:identity')
+  })
+
+  it('refuses protected drops at consumption and marks them protected in the view', async () => {
+    useAdapter(new EmptyAdapter())
+    const { ctx, workspaceId } = shared
+    const member = await addMember(ctx, workspaceId, 't7-protect', 'Own paragraph.')
+    // Ledger validation only rejects blank names, so a stale ledger can carry
+    // protected names; the listener must still not drop them.
+    await ctx.agentTeam.updateMember({
+      requestId: requestId('protect'), memberId: member.memberId, handle: member.handle, description: 'Prompt member',
+      prompt: { customPrompt: 'Own paragraph.', droppedSections: ['deployment:persona-prefix', 'harness:identity', MEMBER_PROMPT_SECTION_NAME, 'tool:team_inbox'] },
+    })
+    const names = sectionNames(await memberTurnAssembly(ctx, member))
+    expect(names).toContain('deployment:persona-prefix')
+    expect(names).toContain(MEMBER_PROMPT_SECTION_NAME)
+    expect(names).not.toContain('harness:identity')
+    const view = await ctx.agentTeam.memberPromptView({ memberId: member.memberId })
+    const persona = view.sections!.find(section => section.name === 'deployment:persona-prefix')
+    expect(persona?.isProtected).toBe(true)
+    expect(persona?.dropped).toBe(false)
+    const paragraph = view.sections!.find(section => section.name === MEMBER_PROMPT_SECTION_NAME)
+    expect(paragraph?.isProtected).toBe(true)
+    expect(paragraph?.dropped).toBe(false)
+    // The unprotected request still dropped.
+    expect(view.sections!.find(section => section.name === 'harness:identity')?.dropped).toBe(true)
+  })
+
+  it('keeps stale drop names inert beside the live section list', async () => {
+    useAdapter(new EmptyAdapter())
+    const { ctx, workspaceId } = shared
+    const member = await addMember(ctx, workspaceId, 't8-stale')
+    await ctx.agentTeam.updateMember({
+      requestId: requestId('stale-name'), memberId: member.memberId, handle: member.handle, description: 'Prompt member',
+      prompt: { droppedSections: ['harness:identity', 'gone-section'] },
+    })
+    expect(sectionNames(await memberTurnAssembly(ctx, member))).not.toContain('harness:identity')
+    const view = await ctx.agentTeam.memberPromptView({ memberId: member.memberId })
+    const gone = view.sections!.find(section => section.name === 'gone-section')
+    expect(gone?.stale).toBe(true)
+    expect(gone?.dropped).toBe(true)
+    expect(gone?.chars).toBeUndefined()
+    // The live entry is a normal drop, not a stale one.
+    const identity = view.sections!.find(section => section.name === 'harness:identity')
+    expect(identity?.dropped).toBe(true)
+    expect(identity?.stale).toBe(false)
+    expect(identity?.chars).toBeGreaterThan(0)
+  })
+
+  it('replays the drop list from the ledger across a suspend/resume cycle', async () => {
+    useAdapter(new EmptyAdapter())
+    const { ctx, workspaceId } = shared
+    const member = await addMember(ctx, workspaceId, 't9-replay')
+    await ctx.agentTeam.updateMember({
+      requestId: requestId('drop-replay'), memberId: member.memberId, handle: member.handle, description: 'Prompt member',
+      prompt: { droppedSections: ['harness:identity'] },
+    })
+    expect(sectionNames(await memberTurnAssembly(ctx, member))).not.toContain('harness:identity')
+    // The restart path: the re-activation that backs a resume re-applies the
+    // stored drop list from ledger replay.
+    await ctx.agentTeam.suspendMember({ requestId: requestId('suspend-replay'), memberId: member.memberId })
+    const resumed = await ctx.agentTeam.resumeMember({ requestId: requestId('resume-replay'), memberId: member.memberId })
+    expect(resumed.status.availability).toBe('active')
+    expect(resumed.status.member.sessionId).toBe(member.sessionId)
+    expect(sectionNames(await memberTurnAssembly(ctx, member))).not.toContain('harness:identity')
+  })
+
+  it('swaps the drop list at the turn boundary in the same Session', async () => {
+    const adapter = new GatedAdapter()
+    useAdapter(adapter)
+    const { ctx, workspaceId } = shared
+    const member = await addMember(ctx, workspaceId, 't10-boundary', 'First paragraph.')
+    const agent = liveAgent(ctx, member)
+
+    const running = waitForRunning(ctx, agent)
+    agent.followup(createUserMessage({ content: [{ type: 'text', text: 'run' }], source: { kind: 'user' } }))
+    await running
+    const edit = ctx.agentTeam.updateMember({
+      requestId: requestId('drop-wait'), memberId: member.memberId, handle: member.handle, description: 'Prompt member',
+      prompt: { customPrompt: 'First paragraph.', droppedSections: ['harness:identity'] },
+    })
+    const raced = await Promise.race([edit.then(() => 'settled'), new Promise<string>(resolve => { setTimeout(() => resolve('pending'), 50) })])
+    expect(raced).toBe('pending')
+    // The running turn's next assembly still carries the section.
+    expect(sectionNames(await memberTurnAssembly(ctx, member))).toContain('harness:identity')
+
+    adapter.enqueue(closingReply('done'))
+    adapter.release()
+    const settled = await edit
+    expect(settled.status.member.sessionId).toBe(member.sessionId)
+    expect(sectionNames(await memberTurnAssembly(ctx, member))).not.toContain('harness:identity')
+    expect(memberSection(await memberAssembly(ctx, member))?.text).toBe('First paragraph.')
+  })
+
+  it('maps section text to mentioned tools whole-word for the prose-only mark', () => {
+    const mapping = sectionToolMapping([
+      { name: 'mentions', text: 'use team_inbox to triage arrivals' },
+      { name: 'glued', text: 'the container team_inboxx is not a mention' },
+      { name: 'prose', text: 'plain prose names nothing' },
+    ], ['team_inbox'])
+    expect(mapping.get('mentions')).toEqual(['team_inbox'])
+    expect(mapping.get('glued')).toEqual([])
+    expect(mapping.get('prose')).toEqual([])
   })
 })

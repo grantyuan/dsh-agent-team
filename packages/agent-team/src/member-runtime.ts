@@ -61,6 +61,57 @@ export const AGENT_TEAM_TOOL_NAMES = Object.freeze([
 export const MEMBER_PROMPT_SECTION_NAME = 'team:member-prompt'
 
 /**
+ * Names the section-drop seam refuses, fixed in one place for both the
+ * runtime listener and the view. The custom role paragraph is the paragraph
+ * editor's own authority (a drop toggle must not fight the textarea), and the
+ * Team tools' guidance sections follow the Harness tool convention
+ * (`tool:<name>`) — tool-agent-team registers none today (its guidance rides
+ * tool descriptions in `assembly.tools`), so those entries are a fixed forward
+ * defense should guidance sections ever ship. The deployment persona prefix
+ * is appended at the check, so Harness persona renames stay covered.
+ */
+const PROTECTED_PROMPT_SECTIONS: ReadonlySet<string> = new Set([
+  MEMBER_PROMPT_SECTION_NAME,
+  ...AGENT_TEAM_TOOL_NAMES.map(toolName => `tool:${toolName}`),
+])
+
+/** Whether one section name refuses drops at the seam and renders "protected". */
+export function isProtectedPromptSection(name: string): boolean {
+  return name.startsWith('deployment:persona-') || PROTECTED_PROMPT_SECTIONS.has(name)
+}
+
+const sectionByteEncoder = new TextEncoder()
+
+/** UTF-8 byte length of one prompt section — the same measure the paragraph editor's counter uses. */
+export function promptSectionByteLength(text: string): number {
+  return sectionByteEncoder.encode(text).length
+}
+
+/** Escape one tool name for a whole-word text match; tool names are plain identifiers. */
+function escapeToolName(name: string): string {
+  return name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+}
+
+/**
+ * Map assembled sections to the tool names their text mentions (whole-word
+ * match against one scope's current tool surface). The shared primitive behind
+ * the Prompt dialog's "no automatic signal" badge: a section with no mapped
+ * tool is prose-only. Ticket 04's usage counts extend this mapping, so the
+ * shape (section name → matched tool names) is the contract to keep.
+ */
+export function sectionToolMapping(
+  sections: ReadonlyArray<{ readonly name: string; readonly text: string }>,
+  toolNames: readonly string[],
+): ReadonlyMap<string, readonly string[]> {
+  const matchers = toolNames.map(toolName => ({ toolName, pattern: new RegExp(`\\b${escapeToolName(toolName)}\\b`) }))
+  const mapping = new Map<string, string[]>()
+  for (const section of sections) {
+    mapping.set(section.name, matchers.filter(({ pattern }) => pattern.test(section.text)).map(({ toolName }) => toolName))
+  }
+  return mapping
+}
+
+/**
  * Placement after every harness-owned section: the deployment persona suffix,
  * the last centrally allocated row, sits at 10200, so a human-written role
  * paragraph reads as the Member's own closing word.
@@ -144,6 +195,8 @@ export class MemberRuntime {
   private readonly skillProviderDisposals = new Map<AgentTeamMemberId, () => void>()
   /** Live per-Member custom role paragraph disposers; released with the Member's agent scope. */
   private readonly memberPromptSections = new Map<AgentTeamMemberId, () => void>()
+  /** Live per-Member section-drop waterfall disposers; released with the Member's agent scope. */
+  private readonly memberSectionDrops = new Map<AgentTeamMemberId, () => void>()
 
   constructor(private readonly deps: MemberRuntimeDeps) {}
 
@@ -233,6 +286,46 @@ export class MemberRuntime {
     const dispose = this.memberPromptSections.get(memberId)
     if (dispose !== undefined) {
       this.memberPromptSections.delete(memberId)
+      dispose()
+    }
+  }
+
+  /**
+   * Register one Member's dropped-section filter on the freshly composed agent
+   * scope: a scoped `system-prompt/assemble` waterfall listener that removes
+   * the Member's dropped sections from the authoritative assembly before it
+   * flows on. Scoping is the isolation — siblings and ordinary sessions
+   * assemble untouched. The filter applies only to assemblies that belong to
+   * a turn (the loop assembles every model step with the turn's signal —
+   * `assembleContextFor`'s contract), so read-side assemblies — the Prompt
+   * dialog's view read, diagnostics — see the full list and a dropped section
+   * stays visible and toggleable there. Protected names are refused here at
+   * consumption, so a stale ledger that still carries one can never drop it,
+   * and a stored list that leaves nothing droppable registers nothing.
+   */
+  applyMemberSectionDrops(agentCtx: Context, member: AgentTeamAgentMember): void {
+    const requested = member.prompt?.droppedSections
+    if (requested === undefined || requested.length === 0) return
+    const dropped = new Set(requested.filter(name => !isProtectedPromptSection(name)))
+    if (dropped.size === 0) return
+    this.memberSectionDrops.set(member.memberId, agentCtx.on('system-prompt/assemble', (assembly, context, next) => {
+      if (context.signal === undefined) return next()
+      assembly.sections = assembly.sections.filter(section => !dropped.has(section.name))
+      return next()
+    }))
+  }
+
+  /** Swap a live Member's drop list at a turn boundary: release the old listener, then re-register from the stored profile. */
+  reapplyMemberSectionDrops(member: AgentTeamAgentMember): void {
+    this.releaseMemberSectionDrops(member.memberId)
+    this.applyMemberSectionDrops(this.deps.liveMemberContext(member.memberId), member)
+  }
+
+  /** Release one Member's section-drop disposer; safe to call twice. */
+  releaseMemberSectionDrops(memberId: AgentTeamMemberId): void {
+    const dispose = this.memberSectionDrops.get(memberId)
+    if (dispose !== undefined) {
+      this.memberSectionDrops.delete(memberId)
       dispose()
     }
   }
@@ -397,6 +490,7 @@ export class MemberRuntime {
     }
     this.releaseMemberToolPolicy(memberId)
     this.releaseMemberPromptSection(memberId)
+    this.releaseMemberSectionDrops(memberId)
   }
 
   /** Dispose every registered per-Member seam; service shutdown only. */
@@ -408,6 +502,8 @@ export class MemberRuntime {
     this.memberRestrictions.clear()
     for (const dispose of this.memberPromptSections.values()) dispose()
     this.memberPromptSections.clear()
+    for (const dispose of this.memberSectionDrops.values()) dispose()
+    this.memberSectionDrops.clear()
     this.capabilityWarnings.clear()
   }
 }

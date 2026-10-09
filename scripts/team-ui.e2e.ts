@@ -671,6 +671,17 @@ it('drives the complete opt-in Agent Team journey in real Web', async () => {
   const promptField = promptDialog.getByRole('textbox', { name: '自定义角色段落' })
   await expect.poll(() => promptField.inputValue()).toBe(storedParagraph)
   await promptDialog.getByText(`${Buffer.byteLength(storedParagraph)} / 8192 字节`, { exact: true }).waitFor()
+  // The section list renders the Member's live assembly: the kept identity row
+  // is toggleable, the custom paragraph row refuses drops with the protected
+  // mark, and the persona slot carries the same mark.
+  await promptDialog.getByText('系统提示词段落').waitFor()
+  const identityRow = promptDialog.locator('[data-team-prompt-section="harness:identity"]')
+  await identityRow.waitFor()
+  await expect.poll(async () => await identityRow.getByRole('checkbox').isChecked()).toBe(true)
+  const promptParagraphRow = promptDialog.locator('[data-team-prompt-section="team:member-prompt"]')
+  await promptParagraphRow.getByText('受保护').waitFor()
+  await expect.poll(async () => await promptParagraphRow.getByRole('checkbox').isDisabled()).toBe(true)
+  await promptDialog.locator('[data-team-prompt-section="deployment:persona-prefix"]').getByText('受保护').waitFor()
   await settleAnimations(page)
   await page.screenshot({ path: join(UI04_SHOTS, 'agent-edit-prompt-dialog.png'), fullPage: true })
   await promptField.fill('段'.repeat(2731))
@@ -689,7 +700,24 @@ it('drives the complete opt-in Agent Team journey in real Web', async () => {
   await expect.poll(async () => await reopenedPrompt.getByRole('button', { name: '保存' }).isDisabled()).toBe(true)
   await settleAnimations(page)
   await page.screenshot({ path: join(UI04_SHOTS, 'agent-edit-prompt-committed.png'), fullPage: true })
-  await reopenedPrompt.getByRole('button', { name: '取消' }).click()
+  // Toggle round-trip: the identity section is the only droppable row.
+  // Unchecking it dirties the form, the save persists the drop through the
+  // merged prompt profile, and the reopened read shows the row unchecked
+  // until the toggle is restored.
+  const reopenedIdentity = reopenedPrompt.locator('[data-team-prompt-section="harness:identity"]')
+  await expect.poll(async () => await reopenedIdentity.getByRole('checkbox').isChecked()).toBe(true)
+  await reopenedIdentity.getByRole('checkbox').click()
+  await expect.poll(async () => await reopenedPrompt.getByRole('button', { name: '保存' }).isDisabled()).toBe(false)
+  await reopenedPrompt.getByRole('button', { name: '保存' }).click()
+  await expect.poll(() => page.getByRole('dialog', { name: '自定义角色段落' }).count()).toBe(0)
+  await promptEditor.getByRole('button', { name: '编辑段落' }).click()
+  const droppedPrompt = page.getByRole('dialog', { name: '自定义角色段落' })
+  const droppedIdentity = droppedPrompt.locator('[data-team-prompt-section="harness:identity"]')
+  await expect.poll(async () => await droppedIdentity.getByRole('checkbox').isChecked()).toBe(false)
+  await settleAnimations(page)
+  await page.screenshot({ path: join(UI04_SHOTS, 'agent-edit-prompt-dropped.png'), fullPage: true })
+  await droppedIdentity.getByRole('checkbox').click()
+  await droppedPrompt.getByRole('button', { name: '保存' }).click()
   await expect.poll(() => page.getByRole('dialog', { name: '自定义角色段落' }).count()).toBe(0)
   await promptEditor.getByRole('button', { name: '关闭', exact: true }).click()
 
@@ -707,6 +735,9 @@ it('drives the complete opt-in Agent Team journey in real Web', async () => {
   const narrowPrompt = page.getByRole('dialog', { name: '自定义角色段落' })
   await expect.poll(() => narrowPrompt.getByRole('textbox', { name: '自定义角色段落' }).inputValue()).toBe(editedParagraph)
   await expect.poll(async () => await narrowPrompt.getByRole('button', { name: '保存' }).isDisabled()).toBe(true)
+  // The restored section list rides the narrow dialog too.
+  await narrowPrompt.getByText('系统提示词段落').waitFor()
+  await narrowPrompt.locator('[data-team-prompt-section="harness:identity"]').waitFor()
   const narrowPromptBox = await narrowPrompt.boundingBox()
   expect(narrowPromptBox).not.toBeNull()
   expect(narrowPromptBox!.x).toBeGreaterThanOrEqual(0)

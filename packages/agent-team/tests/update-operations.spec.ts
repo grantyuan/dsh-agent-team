@@ -304,7 +304,7 @@ describe('Agent Team display-fact updates', () => {
 
     // The Human read behind the Prompt dialog mirrors the stored profile plus
     // the echo inputs its durable edit re-commits.
-    const promptView = ctx.agentTeam.memberPromptView({ memberId })
+    const promptView = await ctx.agentTeam.memberPromptView({ memberId })
     expect(promptView.prompt).toEqual(prompt)
     expect(promptView.handle).toBe('builder')
     expect(promptView.description).toBe('Still builds')

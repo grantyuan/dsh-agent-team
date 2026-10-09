@@ -55,6 +55,8 @@ UI work 的边界如下：
 
   Prompt 对话框是该段落的唯一编辑器：每次打开都重新读取专用的 `memberPromptView` Remote——存储画像加 handle、description、state——渲染一个带实时 UTF-8 字节计数器的 textarea（镜像 Host 的 8192 字节上限），并提交一次 echo 齐全的 member update，把段落合并进读到的画像——`droppedSections` 与 `autoPrune` 得以保留，存储的 model/capabilities/context 覆盖也随行回传（缺席即清除）。非启用状态的 Member 只读渲染；创建表单的段落仅本地暂存，直到 member-added commit。
 
+  Member 有活动 Session 时，同一份 view 还携带它装配出的 section 清单：每个 section 一行，带字节大小与一个保留勾选——live section 显示为勾选，取消勾选即把名字移入请求的 `droppedSections`。受保护行（persona 槽位与段落 section）与已失效行以禁用态连同各自标记渲染，纯散文行带"无自动信号"标记；每次切换都是本地状态，合并进同一次非乐观保存；没有活动 Session 的 Member 完全不渲染 section 清单。
+
   Human Client 消费 Host 的 Inbox 投影（「收件箱 / Inbox」队列：合并各 Workspace 的徽标与页，覆盖读者的整片未读——mention 只在其中计数，绝不是准入条件——外加该读者写过 Message 的「最近活跃」段（回复过的 Thread 无论是否 follow 都算他的；按最新活跃降序，Host 侧每个 Workspace 上限 10，合并到页面上最多 5 条，永不进入 agent 的 Inbox）），但绝不维护并行 Inbox authority；打开页不确认任何内容。 Thread reads 使用 Host projections（`readThread`、`threadHistory`）和 Host mutations（replies、promotion、Task actions）。 当前 Thread UI 不提供 Attention controls 或 observations；其 Host Remote methods 留给后续自有 UI。 Browser 会持久化 Team navigation mode、Workspace selection、最近选中的 Channel 或 Thread 以及 Inbox 页位置（回到 Team 时恢复位置），但不持久化 unread 或 Attention。
 
   Agent Inbox 仍由 Host 持有，并通过 `team_inbox` 提供。

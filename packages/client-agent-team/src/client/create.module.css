@@ -56,6 +56,45 @@
   outline: none;
 }
 
+/* The Prompt dialog's section list: roster density inside the dialog's own
+   16px stack rhythm — one row per assembled section with its toggle, size,
+   and badges. */
+.sectionList {
+  display: grid;
+  gap: 2px;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.sectionRow {
+  align-items: center;
+  border-radius: var(--dsw-radius-sm, 6px);
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 8px;
+  min-height: 28px;
+  padding: 2px 4px;
+}
+
+.sectionRow:hover {
+  background: var(--dsw-alias-interactive-bg-hover);
+}
+
+/* One inert mark per row (protected / stale / no automatic signal): a pill
+   that stays secondary even beside a checked toggle, because it describes
+   the section rather than the choice. */
+.badge {
+  border: 1px solid var(--dsw-alias-border-l2);
+  border-radius: 999px;
+  color: var(--dsw-alias-label-tertiary);
+  flex: none;
+  font-size: 10px;
+  line-height: 14px;
+  padding: 0 6px;
+  white-space: nowrap;
+}
+
 /* Picker lists cap their card and scroll internally so growing model
    catalogs cannot stretch the dialog. */
 .menuCap {

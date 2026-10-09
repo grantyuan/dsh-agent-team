@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import type { AgentTeamClientMemberStatus, AgentTeamMemberId, AgentTeamMemberPromptProfile, AgentTeamMemberPromptView, AgentTeamModelSelection, AgentTeamUpdateMemberRequest } from '@wowyuarm/dsh-agent-team/types'
+import type { AgentTeamClientMemberStatus, AgentTeamMemberId, AgentTeamMemberPromptProfile, AgentTeamMemberPromptSectionEntry, AgentTeamMemberPromptView, AgentTeamModelSelection, AgentTeamUpdateMemberRequest } from '@wowyuarm/dsh-agent-team/types'
 import type { RemoteResult } from '@deepseek-ai/dsh-typert-protocol'
 import type { TeamModelCatalog, TeamModelEffortOption, TeamModelProviderGroup, TeamSidebarProps } from './slots.ts'
 import { Button, Checkbox, IconChevronDownOutlineRegular, Input, Menu, Modal } from '@deepseek-ai/dsh-client-ui-primitives'
@@ -313,12 +313,46 @@ function StagePromptDialog({ initialText, onApply, onClose, t }: {
 }
 
 /**
+ * One row of the Prompt dialog's section list: the section's keep/drop toggle
+ * beside its byte size and inert marks. Protected rows refuse drops, stale
+ * rows have no live section to toggle, and prose-only rows carry the "no
+ * automatic signal" badge — a section no current tool name maps to.
+ */
+function PromptSectionRow({ section, dropped, onToggle, disabled, t }: {
+  readonly section: AgentTeamMemberPromptSectionEntry
+  readonly dropped: boolean
+  /** Receives the section name and the requested drop state (true = remove from the next assembly). */
+  readonly onToggle: (name: string, drop: boolean) => void
+  readonly disabled: boolean
+  readonly t: TeamSidebarProps['t']
+}) {
+  const toggleable = !section.isProtected && !section.stale
+  return (
+    <li className={createCss.sectionRow!} data-team-prompt-section={section.name}>
+      {/* The checkbox speaks "kept": a live section renders checked, dropping
+          unchecks it, and a stale row has no live section to keep. */}
+      <Checkbox
+        checked={!section.stale && !dropped}
+        disabled={disabled || !toggleable}
+        label={section.name}
+        onChange={next => onToggle(section.name, !next)}
+      />
+      {section.chars !== undefined && <small className={css.editHint}>{t('promptSectionBytes', { count: section.chars })}</small>}
+      {section.isProtected && <span className={createCss.badge!}>{t('promptSectionProtected')}</span>}
+      {section.stale && <span className={createCss.badge!}>{t('promptSectionStale')}</span>}
+      {toggleable && section.proseOnly && <span className={createCss.badge!}>{t('promptSectionNoSignal')}</span>}
+    </li>
+  )
+}
+
+/**
  * Durable edit of one Member's custom role paragraph: a fresh
- * memberPromptView read fills the textarea, and the save commits one
- * echo-complete member update — absent-clears makes echoing the stored
- * model/capabilities/context overrides mandatory, and the other prompt
- * subfields (droppedSections, autoPrune) merge from the read instead of
- * being replaced. A non-enabled Member renders read-only.
+ * memberPromptView read fills the textarea and the section list, and the save
+ * commits one echo-complete member update — absent-clears makes echoing the
+ * stored model/capabilities/context overrides mandatory, and the other prompt
+ * subfields merge from the read plus the section toggles instead of being
+ * replaced. A non-enabled Member renders read-only, and a Member without a
+ * live session renders no section list at all.
  */
 function EditPromptDialog({ memberId, loadPromptView, updateMember, onCommitted, onClose, t }: {
   readonly memberId: AgentTeamMemberId
@@ -333,6 +367,7 @@ function EditPromptDialog({ memberId, loadPromptView, updateMember, onCommitted,
   const [loadError, setLoadError] = useState<string>()
   const [reloadToken, setReloadToken] = useState(0)
   const [text, setText] = useState('')
+  const [drops, setDrops] = useState<readonly string[]>([])
   useEffect(() => {
     let mounted = true
     setLoadError(undefined)
@@ -342,6 +377,7 @@ function EditPromptDialog({ memberId, loadPromptView, updateMember, onCommitted,
         if (result.ok) {
           setView(result.value)
           setText(result.value.prompt?.customPrompt ?? '')
+          setDrops(result.value.prompt?.droppedSections ?? [])
         } else {
           setLoadError(result.error.message)
         }
@@ -387,17 +423,24 @@ function EditPromptDialog({ memberId, loadPromptView, updateMember, onCommitted,
   const paragraph = text.trim() === '' ? undefined : text
   const over = utf8ByteLength(text) > MEMBER_PROMPT_MAX_BYTES
   const readonly = view.state !== 'enabled'
+  const toggleDrop = (name: string, drop: boolean): void => {
+    pendingRequest.current = undefined
+    setDrops(current => drop ? [...current, name] : current.filter(existing => existing !== name))
+  }
   // Merge, never replace: the stored profile's other subfields survive an
-  // edit that only touches the paragraph, and a profile left without any
-  // field stores as absent on the Host.
-  const mergedPrompt: AgentTeamMemberPromptProfile | undefined = paragraph === undefined && stored === undefined
+  // edit that only touches the paragraph, the toggled section list replaces
+  // the stored drops (toggling everything back off stores an absent field),
+  // and a profile left without any field stores as absent on the Host.
+  const mergedPrompt: AgentTeamMemberPromptProfile | undefined = paragraph === undefined && stored === undefined && drops.length === 0
     ? undefined
     : {
-      ...(stored?.droppedSections === undefined ? {} : { droppedSections: stored.droppedSections }),
+      ...(drops.length === 0 ? {} : { droppedSections: drops }),
       ...(paragraph === undefined ? {} : { customPrompt: paragraph }),
       ...(stored?.autoPrune === undefined ? {} : { autoPrune: stored.autoPrune }),
     }
-  const dirty = paragraph !== stored?.customPrompt
+  const storedDrops = stored?.droppedSections ?? []
+  const dropsChanged = drops.length !== storedDrops.length || drops.some(name => !storedDrops.includes(name))
+  const dirty = paragraph !== stored?.customPrompt || dropsChanged
   const submit = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault()
     if (saving || readonly || over || !dirty) return
@@ -408,7 +451,7 @@ function EditPromptDialog({ memberId, loadPromptView, updateMember, onCommitted,
       description: view.description,
       ...(mergedPrompt === undefined ? {} : { prompt: mergedPrompt }),
       // Echo the stored overrides: an absent field would clear them, and
-      // this dialog edits the paragraph only.
+      // this dialog edits the paragraph and the section list only.
       ...(view.model === undefined ? {} : { model: view.model }),
       ...(view.capabilities === undefined ? {} : { capabilities: view.capabilities }),
       ...(view.contextStartPolicy === undefined ? {} : { contextStartPolicy: view.contextStartPolicy }),
@@ -418,7 +461,7 @@ function EditPromptDialog({ memberId, loadPromptView, updateMember, onCommitted,
     const samePending = previous !== undefined && previous.memberId === payload.memberId
       && previous.handle === payload.handle && previous.description === payload.description
       && (previous.prompt === undefined) === (payload.prompt === undefined)
-      && previous.prompt?.droppedSections === payload.prompt?.droppedSections
+      && JSON.stringify(previous.prompt?.droppedSections ?? []) === JSON.stringify(payload.prompt?.droppedSections ?? [])
       && previous.prompt?.autoPrune === payload.prompt?.autoPrune
       && previous.prompt?.customPrompt === payload.prompt?.customPrompt
       && previous.model === payload.model && previous.capabilities === payload.capabilities
@@ -442,6 +485,28 @@ function EditPromptDialog({ memberId, loadPromptView, updateMember, onCommitted,
     >
       <form id="team-member-prompt-form" className={createCss.form} onSubmit={event => { void submit(event) }}>
         {readonly && <p className={createCss.notice}>{t('promptReadonly')}</p>}
+        <div className={createCss.field}>
+          <span>{t('promptSectionsTitle')}</span>
+          {view.sections === undefined
+            ? <small className={css.editHint}>{t('promptSectionsUnavailable')}</small>
+            : view.sections.length === 0
+              ? <small className={css.editHint}>{t('promptSectionsEmpty')}</small>
+              : (
+                <ul className={createCss.sectionList!}>
+                  {view.sections.map(section => (
+                    <PromptSectionRow
+                      key={section.name}
+                      section={section}
+                      dropped={drops.includes(section.name)}
+                      onToggle={toggleDrop}
+                      disabled={saving || readonly}
+                      t={t}
+                    />
+                  ))}
+                </ul>
+              )}
+          <small className={css.editHint}>{t('promptSectionsHint')}</small>
+        </div>
         <PromptParagraphField text={text} onTextChange={next => { pendingRequest.current = undefined; setText(next) }} disabled={saving || readonly} t={t} />
         {error !== undefined && <p className={createCss.error} role="alert">{error}</p>}
       </form>
