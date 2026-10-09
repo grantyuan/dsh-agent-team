@@ -61,7 +61,11 @@ UI work 的边界如下：
 
   对话框同时承载 auto-prune 面：两个开关——任务启动时自动检查未用段落与自动执行（不再确认）——随同一次合并保存走 absent-clears 回传；Host 的 `pruneCandidates` 非空时渲染一个带边框的确认面板，两个动作——移除候选，或移除并同时打开两个开关——都走同一条 echo 齐全的 payload，把候选并入 drops。`usagePartial` 读取时渲染「计数可能偏少」提示。
 
-  对话框的每次提交都会先重读存储的 drop 清单并合并进去，因此在 full-auto sweep 期间一直打开的对话框绝不会恢复 Host 已移除的段落。
+  对话框的每次提交都会先重读存储的 drop 清单，并以本对话框打开时的读取为基准做差量合并：Human 重新勾选的名字保持恢复，新取消勾选的名字保持移除，打开后才发生的 sweep 保持移除——因此在 full-auto sweep 期间一直打开的对话框绝不会恢复 Host 已移除的段落。
+
+  对话框还提供一次 propose-only 的 LLM 策划：Human 输入自由文本的策划要求，Host 沿成员的有效路由、经由与 compaction summarizer 相同的进程内完成接缝，基于成员的实时装配、私有技能目录、身份与这些要求构造一次有界调用——可取消，硬性限时六十秒，结果在提案旁以 `modelUsed` 给出确切路由。
+
+  解析出的提案——建议移除的段落名、现有目录子集内的技能白名单、自定义角色段落草稿——只回填表单：Human 审阅、编辑后经同一次合并保存提交，失败的调用在对话框内渲染错误，绝不阻塞手动编辑。创建表单不提供策划入口，因为其输入需要暂存表单不具备的实时成员范围。
 
   Human Client 消费 Host 的 Inbox 投影（「收件箱 / Inbox」队列：合并各 Workspace 的徽标与页，覆盖读者的整片未读——mention 只在其中计数，绝不是准入条件——外加该读者写过 Message 的「最近活跃」段（回复过的 Thread 无论是否 follow 都算他的；按最新活跃降序，Host 侧每个 Workspace 上限 10，合并到页面上最多 5 条，永不进入 agent 的 Inbox）），但绝不维护并行 Inbox authority；打开页不确认任何内容。 Thread reads 使用 Host projections（`readThread`、`threadHistory`）和 Host mutations（replies、promotion、Task actions）。 当前 Thread UI 不提供 Attention controls 或 observations；其 Host Remote methods 留给后续自有 UI。 Browser 会持久化 Team navigation mode、Workspace selection、最近选中的 Channel 或 Thread 以及 Inbox 页位置（回到 Team 时恢复位置），但不持久化 unread 或 Attention。
 

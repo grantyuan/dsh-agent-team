@@ -27,6 +27,7 @@ interface TeamAgentsPanelProps {
   readonly addMember: TeamSidebarProps['addMember']
   readonly updateMember: TeamSidebarProps['updateMember']
   readonly loadPromptView: TeamSidebarProps['loadPromptView']
+  readonly curateMemberPrompt: TeamSidebarProps['curateMemberPrompt']
   readonly recoverMember: TeamSidebarProps['recoverMember']
   readonly clearMemberContext: TeamSidebarProps['clearMemberContext']
   readonly compactMemberContext: TeamSidebarProps['compactMemberContext']
@@ -42,7 +43,7 @@ interface TeamAgentsPanelProps {
   readonly t: TeamSidebarProps['t']
 }
 
-export function TeamAgentsPanel({ workspaceId, loadMembers, subscribeChanges, addMember, updateMember, loadPromptView, recoverMember, clearMemberContext, compactMemberContext, diagnoseMember, archiveMember, joinWorkspace, leaveWorkspace, loadModels, memberSessionId, openMemberSession, onCreatingChange, t }: TeamAgentsPanelProps) {
+export function TeamAgentsPanel({ workspaceId, loadMembers, subscribeChanges, addMember, updateMember, loadPromptView, curateMemberPrompt, recoverMember, clearMemberContext, compactMemberContext, diagnoseMember, archiveMember, joinWorkspace, leaveWorkspace, loadModels, memberSessionId, openMemberSession, onCreatingChange, t }: TeamAgentsPanelProps) {
   const [members, setMembers] = useState<readonly AgentTeamClientMemberStatus[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string>()
@@ -312,7 +313,7 @@ export function TeamAgentsPanel({ workspaceId, loadMembers, subscribeChanges, ad
         <div className={css.agentList}>
           {orderedMembers.map(status => (
             <SortableRow key={status.member.memberId} drag={drag} orderKey={status.member.memberId}>
-              <AgentRow workspaceId={workspaceId} leaveWorkspace={leaveWorkspace} status={status} {...(memberSessionId === undefined ? {} : { current: status.member.sessionId === memberSessionId })} updateMember={updateMember} loadPromptView={loadPromptView} recoverMember={recoverMember} clearMemberContext={clearMemberContext} compactMemberContext={compactMemberContext} diagnoseMember={diagnoseMember} archiveMember={archiveMember} loadModels={loadModels} openMemberSession={openMemberSession} onUpdated={refresh} t={t} />
+              <AgentRow workspaceId={workspaceId} leaveWorkspace={leaveWorkspace} status={status} {...(memberSessionId === undefined ? {} : { current: status.member.sessionId === memberSessionId })} updateMember={updateMember} loadPromptView={loadPromptView} curateMemberPrompt={curateMemberPrompt} recoverMember={recoverMember} clearMemberContext={clearMemberContext} compactMemberContext={compactMemberContext} diagnoseMember={diagnoseMember} archiveMember={archiveMember} loadModels={loadModels} openMemberSession={openMemberSession} onUpdated={refresh} t={t} />
             </SortableRow>
           ))}
         </div>
@@ -332,7 +333,7 @@ export function TeamAgentsPanel({ workspaceId, loadMembers, subscribeChanges, ad
  * conversation page, the avatar carries identity plus the presence badge, and
  * the row menu opens the editor.
  */
-function AgentRow({ workspaceId, leaveWorkspace, status, current, updateMember, loadPromptView, recoverMember, clearMemberContext, compactMemberContext, diagnoseMember, archiveMember, loadModels, openMemberSession, onUpdated, t }: {
+function AgentRow({ workspaceId, leaveWorkspace, status, current, updateMember, loadPromptView, curateMemberPrompt, recoverMember, clearMemberContext, compactMemberContext, diagnoseMember, archiveMember, loadModels, openMemberSession, onUpdated, t }: {
   readonly workspaceId: WorkspaceId
   readonly leaveWorkspace: TeamSidebarProps['leaveWorkspace']
   readonly status: AgentTeamClientMemberStatus
@@ -340,6 +341,7 @@ function AgentRow({ workspaceId, leaveWorkspace, status, current, updateMember, 
   readonly current?: boolean
   readonly updateMember: TeamSidebarProps['updateMember']
   readonly loadPromptView: TeamSidebarProps['loadPromptView']
+  readonly curateMemberPrompt: TeamSidebarProps['curateMemberPrompt']
   readonly recoverMember: TeamSidebarProps['recoverMember']
   readonly clearMemberContext: TeamSidebarProps['clearMemberContext']
   readonly compactMemberContext: TeamSidebarProps['compactMemberContext']
@@ -570,6 +572,7 @@ function AgentRow({ workspaceId, leaveWorkspace, status, current, updateMember, 
           status={status}
           updateMember={updateMember}
           loadPromptView={loadPromptView}
+          curateMemberPrompt={curateMemberPrompt}
           loadModels={loadModels}
           onCommitted={onUpdated}
           onClose={() => { setEditing(false) }}

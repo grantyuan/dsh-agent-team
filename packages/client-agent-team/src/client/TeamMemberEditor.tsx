@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import type { AgentTeamClientMemberStatus, AgentTeamMemberId, AgentTeamMemberPromptProfile, AgentTeamMemberPromptSectionEntry, AgentTeamMemberPromptView, AgentTeamModelSelection, AgentTeamUpdateMemberRequest } from '@wowyuarm/dsh-agent-team/types'
+import type { AgentTeamClientMemberStatus, AgentTeamCurateMemberPromptProposal, AgentTeamMemberId, AgentTeamMemberPromptProfile, AgentTeamMemberPromptSectionEntry, AgentTeamMemberPromptView, AgentTeamModelSelection, AgentTeamUpdateMemberRequest } from '@wowyuarm/dsh-agent-team/types'
 import type { RemoteResult } from '@deepseek-ai/dsh-typert-protocol'
 import type { TeamModelCatalog, TeamModelEffortOption, TeamModelProviderGroup, TeamSidebarProps } from './slots.ts'
 import { Button, Checkbox, IconChevronDownOutlineRegular, Input, Menu, Modal } from '@deepseek-ai/dsh-client-ui-primitives'
@@ -363,9 +363,10 @@ function PromptSectionRow({ section, dropped, candidate, onToggle, disabled, t }
  * the candidates into the drops. A non-enabled Member renders read-only, and
  * a Member without a live session renders no section list at all.
  */
-function EditPromptDialog({ memberId, loadPromptView, updateMember, onCommitted, onClose, t }: {
+function EditPromptDialog({ memberId, loadPromptView, curateMemberPrompt, updateMember, onCommitted, onClose, t }: {
   readonly memberId: AgentTeamMemberId
   readonly loadPromptView: TeamSidebarProps['loadPromptView']
+  readonly curateMemberPrompt: TeamSidebarProps['curateMemberPrompt']
   readonly updateMember: TeamSidebarProps['updateMember']
   /** Receives the committed prompt profile (undefined = cleared) once the update lands. */
   readonly onCommitted: (prompt: AgentTeamMemberPromptProfile | undefined) => Promise<void> | void
@@ -379,6 +380,14 @@ function EditPromptDialog({ memberId, loadPromptView, updateMember, onCommitted,
   const [drops, setDrops] = useState<readonly string[]>([])
   const [autoPrune, setAutoPrune] = useState(false)
   const [autoExecutePrune, setAutoExecutePrune] = useState(false)
+  const [requirements, setRequirements] = useState('')
+  const [curating, setCurating] = useState(false)
+  const [curateError, setCurateError] = useState<string>()
+  // The skills allow-list the dialog will save: seeded from the stored
+  // capabilities (reference-equal until a curation backfill replaces it), so
+  // an untouched dialog keeps echoing the stored capabilities verbatim.
+  const [skillsAllow, setSkillsAllow] = useState<readonly string[]>()
+  const curateAbortRef = useRef<AbortController>()
   useEffect(() => {
     let mounted = true
     setLoadError(undefined)
@@ -391,6 +400,7 @@ function EditPromptDialog({ memberId, loadPromptView, updateMember, onCommitted,
           setDrops(result.value.prompt?.droppedSections ?? [])
           setAutoPrune(result.value.prompt?.autoPrune ?? false)
           setAutoExecutePrune(result.value.prompt?.autoExecutePrune ?? false)
+          setSkillsAllow(result.value.capabilities?.skills?.allow)
         } else {
           setLoadError(result.error.message)
         }
@@ -402,6 +412,8 @@ function EditPromptDialog({ memberId, loadPromptView, updateMember, onCommitted,
     )
     return () => { mounted = false }
   }, [loadPromptView, memberId, reloadToken])
+  // A closed or reloaded dialog must not keep an in-flight curation pass alive.
+  useEffect(() => () => curateAbortRef.current?.abort(), [])
   // The profile this dialog's update will have committed, handed to
   // onCommitted after the Host confirms — the still-open editor dialog echoes
   // it instead of a row snapshot that may predate the commit.
@@ -440,6 +452,49 @@ function EditPromptDialog({ memberId, loadPromptView, updateMember, onCommitted,
     pendingRequest.current = undefined
     setDrops(current => drop ? [...current, name] : current.filter(existing => existing !== name))
   }
+  // Propose-only backfill: a finished curation pass fills the form for the
+  // Human's review and edits — nothing persists until the normal save path
+  // runs. Existing drops survive (the proposal adds, never un-drops), and a
+  // proposed drop is applied only for rows this dialog can render as
+  // droppable (present and non-protected — the Host already filtered both,
+  // but this dialog's section snapshot may lag the live assembly).
+  const applyProposal = (proposal: AgentTeamCurateMemberPromptProposal): void => {
+    pendingRequest.current = undefined
+    if (proposal.droppedSectionNames !== undefined) {
+      const droppable = new Set(view.sections?.filter(section => !section.isProtected).map(section => section.name) ?? [])
+      const proposed = proposal.droppedSectionNames.filter(name => droppable.has(name))
+      if (proposed.length > 0) setDrops(current => [...new Set([...current, ...proposed])].sort())
+    }
+    if (proposal.customPrompt !== undefined) setText(proposal.customPrompt)
+    if (proposal.skillsAllow !== undefined) setSkillsAllow(proposal.skillsAllow)
+  }
+  const curate = (): void => {
+    if (curating || saving || readonly) return
+    const controller = new AbortController()
+    curateAbortRef.current = controller
+    setCurating(true)
+    setCurateError(undefined)
+    void curateMemberPrompt({ memberId: view.memberId, requirements }, controller.signal).then(
+      result => {
+        if (controller.signal.aborted) return
+        curateAbortRef.current = undefined
+        setCurating(false)
+        if (result.ok) applyProposal(result.value.proposal)
+        else setCurateError(result.error.message)
+      },
+      (cause: unknown) => {
+        if (controller.signal.aborted) return
+        curateAbortRef.current = undefined
+        setCurating(false)
+        setCurateError(cause instanceof Error ? cause.message : String(cause))
+      },
+    )
+  }
+  const stopCurating = (): void => {
+    curateAbortRef.current?.abort()
+    curateAbortRef.current = undefined
+    setCurating(false)
+  }
   // Merge, never replace: the stored profile's other subfields survive an
   // edit that only touches the paragraph, the toggled section list replaces
   // the stored drops (toggling everything back off stores an absent field),
@@ -457,24 +512,36 @@ function EditPromptDialog({ memberId, loadPromptView, updateMember, onCommitted,
   const mergedPrompt = buildPrompt(drops)
   const storedDrops = stored?.droppedSections ?? []
   const dropsChanged = drops.length !== storedDrops.length || drops.some(name => !storedDrops.includes(name))
+  // Content compare (order included): the stored reference only matches while
+  // the dialog never backfilled, so an equal-list check keeps idempotency.
+  const storedSkillsAllow = view.capabilities?.skills?.allow
+  const skillsAllowChanged = skillsAllow !== storedSkillsAllow
+    && (skillsAllow ?? []).join('\u0000') !== (storedSkillsAllow ?? []).join('\u0000')
   const dirty = paragraph !== stored?.customPrompt || dropsChanged
     || autoPrune !== (stored?.autoPrune ?? false)
     || autoExecutePrune !== (stored?.autoExecutePrune ?? false)
+    || skillsAllowChanged
   const commit = async (prompt: AgentTeamMemberPromptProfile | undefined): Promise<void> => {
     // A full-auto sweep can commit while this dialog stands open; the stale
     // local echo must never restore what the Host already dropped. Re-read
-    // the stored drop list right before saving and merge it in — Human
-    // additions stay, Host removals stay removed, and the rows re-render the
-    // reconciled state. A failed re-read saves the local list unchanged; the
+    // the stored drop list right before saving and merge it in — but as a
+    // diff against this dialog's own open-time read: a name the Human
+    // re-checked stays restored, a newly unchecked name stays dropped, and a
+    // sweep that landed after the read stays dropped because the untouched
+    // echo proposes neither. A plain union cannot tell a re-check from an
+    // untouched stale row, and would silently undo the restore this dialog
+    // exists to perform. A failed re-read saves the local list unchanged; the
     // update itself surfaces any real failure.
     let reconciled = prompt
     if (prompt !== undefined) {
       const fresh = await loadPromptView({ memberId: view.memberId })
       if (fresh.ok) {
-        const hostDrops = fresh.value.prompt?.droppedSections ?? []
-        const known = new Set(prompt.droppedSections ?? [])
-        if (hostDrops.some(name => !known.has(name))) {
-          const merged = [...new Set([...(prompt.droppedSections ?? []), ...hostDrops])].sort()
+        const formDrops = prompt.droppedSections ?? []
+        const removedByHuman = (stored?.droppedSections ?? []).filter(name => !formDrops.includes(name))
+        const merged = [...new Set([...(fresh.value.prompt?.droppedSections ?? []), ...formDrops])]
+          .filter(name => !removedByHuman.includes(name))
+          .sort()
+        if (merged.some(name => !formDrops.includes(name))) {
           reconciled = { ...prompt, droppedSections: merged }
           setDrops(merged)
         }
@@ -486,11 +553,15 @@ function EditPromptDialog({ memberId, loadPromptView, updateMember, onCommitted,
       handle: view.handle,
       description: view.description,
       ...(reconciled === undefined ? {} : { prompt: reconciled }),
-      // Echo the stored overrides: an absent field would clear them, and
-      // this dialog edits the paragraph, the section list, and the
-      // auto-prune switches only.
+      // Echo the stored overrides: an absent field would clear them, and this
+      // dialog edits the paragraph, the section list, the auto-prune switches,
+      // and the curated skills allow-list only. A backfilled allow-list merges
+      // over the stored capabilities — the other subfields (tools.allow)
+      // survive untouched; an untouched list keeps the stored object itself.
       ...(view.model === undefined ? {} : { model: view.model }),
-      ...(view.capabilities === undefined ? {} : { capabilities: view.capabilities }),
+      ...(skillsAllow === undefined || skillsAllow === storedSkillsAllow
+        ? (view.capabilities === undefined ? {} : { capabilities: view.capabilities })
+        : { capabilities: { ...view.capabilities, skills: { allow: skillsAllow } } }),
       ...(view.contextStartPolicy === undefined ? {} : { contextStartPolicy: view.contextStartPolicy }),
       ...(view.contextWindow === undefined ? {} : { contextWindow: view.contextWindow }),
     }
@@ -579,6 +650,46 @@ function EditPromptDialog({ memberId, loadPromptView, updateMember, onCommitted,
             </div>
           )}
         </div>
+        {!readonly && (
+          <div className={createCss.field} data-team-prompt-curate role="group" aria-label={t('promptCurateTitle')}>
+            <span>{t('promptCurateTitle')}</span>
+            <small className={css.editHint}>{t('promptCurateHint')}</small>
+            <textarea
+              className={createCss.textArea!}
+              rows={3}
+              value={requirements}
+              placeholder={t('promptCuratePlaceholder')}
+              aria-label={t('promptCurateRequirements')}
+              onChange={event => { setRequirements(event.target.value); setCurateError(undefined) }}
+              disabled={saving || curating}
+            />
+            <div className={createCss.pruneActions!}>
+              <Button
+                size="sm"
+                variant="outline"
+                disabled={saving || curating || requirements.trim() === '' || view.sections === undefined || view.sections.length === 0}
+                onClick={curate}
+              >
+                {t('promptCurateButton')}
+              </Button>
+              {curating && <Button size="sm" variant="outline" onClick={stopCurating}>{t('promptCurateStop')}</Button>}
+              {curating && <small className={css.editHint}>{t('promptCurateCurating')}</small>}
+            </div>
+            {curateError !== undefined && <p className={createCss.error} role="alert">{t('promptCurateFailed', { message: curateError })}</p>}
+            {skillsAllow !== undefined && skillsAllow !== storedSkillsAllow && (
+              <div className={createCss.prunePanel!} data-team-prompt-curate-skills role="group" aria-label={t('promptCurateSkills')}>
+                <span>{t('promptCurateSkills')}</span>
+                <small className={css.editHint}>{t('promptCurateSkillsHint')}</small>
+                <ul className={createCss.sectionList!}>
+                  {skillsAllow.map(name => <li key={name}>{name}</li>)}
+                </ul>
+                <div className={createCss.pruneActions!}>
+                  <Button size="sm" variant="outline" disabled={saving} onClick={() => setSkillsAllow(storedSkillsAllow)}>{t('promptCurateSkillsRevert')}</Button>
+                </div>
+              </div>
+            )}
+          </div>
+        )}
         <PromptParagraphField text={text} onTextChange={next => { pendingRequest.current = undefined; setText(next) }} disabled={saving || readonly} t={t} />
         <div className={createCss.field}>
           <Checkbox
@@ -620,6 +731,7 @@ export function MemberPromptDialog(props: {
     readonly mode: 'edit'
     readonly memberId: AgentTeamMemberId
     readonly loadPromptView: TeamSidebarProps['loadPromptView']
+    readonly curateMemberPrompt: TeamSidebarProps['curateMemberPrompt']
     readonly updateMember: TeamSidebarProps['updateMember']
     readonly onCommitted: (prompt: AgentTeamMemberPromptProfile | undefined) => Promise<void> | void
   }
@@ -631,6 +743,7 @@ export function MemberPromptDialog(props: {
     <EditPromptDialog
       memberId={props.memberId}
       loadPromptView={props.loadPromptView}
+      curateMemberPrompt={props.curateMemberPrompt}
       updateMember={props.updateMember}
       onCommitted={props.onCommitted}
       onClose={props.onClose}
@@ -715,10 +828,11 @@ export function ContextPickerField({ policy, onPolicyChange, windowText, onWindo
  * task-start context control commit through one durable update. Channel
  * membership is managed from the Channel side, not here.
  */
-export function AgentEditorDialog({ status, updateMember, loadPromptView, loadModels, onCommitted, onClose, t }: {
+export function AgentEditorDialog({ status, updateMember, loadPromptView, curateMemberPrompt, loadModels, onCommitted, onClose, t }: {
   readonly status: AgentTeamClientMemberStatus
   readonly updateMember: TeamSidebarProps['updateMember']
   readonly loadPromptView: TeamSidebarProps['loadPromptView']
+  readonly curateMemberPrompt: TeamSidebarProps['curateMemberPrompt']
   readonly loadModels: TeamSidebarProps['loadModels']
   readonly onCommitted: () => Promise<void> | void
   readonly onClose: () => void
@@ -833,6 +947,7 @@ export function AgentEditorDialog({ status, updateMember, loadPromptView, loadMo
           mode="edit"
           memberId={memberId}
           loadPromptView={loadPromptView}
+          curateMemberPrompt={curateMemberPrompt}
           updateMember={updateMember}
           onCommitted={prompt => {
             setPromptEcho({ prompt })

@@ -13,6 +13,8 @@
  */
 
 import type { Context } from '@deepseek-ai/cordis'
+import { readdir, stat } from 'node:fs/promises'
+import { join } from 'node:path'
 import type { SkillCandidate, SkillProvider, SkillProviderControl, SkillProviderObservation, SkillRegistry } from '@deepseek-ai/dsh-skill'
 import { FileSystemSkillProvider } from '@deepseek-ai/dsh-skill-filesystem'
 
@@ -65,6 +67,36 @@ export function mountMemberSkillProvider(agentCtx: Context, config: MemberSkills
     }
     return provider
   })
+}
+
+/**
+ * Enumerate the Member's private skill catalog NAMES over the two Team-owned
+ * roots (bundled read-only core skills first, then the private directory —
+ * the same order and same-name-first rule the provider ranks by). This is the
+ * curation input and proposal-validation list only: loading stays the
+ * FileSystemSkillProvider's authority, and the live allow-ref filter stays a
+ * visibility semantic — the catalog a proposal may enable is the whole
+ * two-root set, not the currently allowed subset. A missing root reads as an
+ * empty catalog. Layouts: `<root>/<name>/SKILL.md` or flat `<root>/<name>.md`.
+ */
+export async function listPrivateSkillNames(bundledSkillsDirectory: string | undefined, skillsDirectory: string): Promise<readonly string[]> {
+  const names = new Set<string>()
+  for (const root of bundledSkillsDirectory === undefined ? [skillsDirectory] : [bundledSkillsDirectory, skillsDirectory]) {
+    const entries = await readdir(root, { withFileTypes: true }).catch(() => [])
+    for (const entry of entries) {
+      if (entry.isDirectory()) {
+        try {
+          // stat, not readdir: the manifest is a file, and readdir on a file
+          // path fails with ENOTDIR on every platform.
+          await stat(join(root, entry.name, 'SKILL.md'))
+          names.add(entry.name)
+        } catch { /* no SKILL.md — not a skill directory */ }
+      } else if (entry.isFile() && entry.name.endsWith('.md')) {
+        names.add(entry.name.replace(/\.md$/, ''))
+      }
+    }
+  }
+  return [...names].sort()
 }
 
 /** One Member's bundled-plus-private skill roots wrapped as a filtered registry provider. */

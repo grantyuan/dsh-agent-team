@@ -214,6 +214,35 @@ export interface AgentTeamMemberPromptView {
   readonly contextWindow?: number
 }
 
+/** Human intent to have the LLM draft a prompt curation proposal for one Member. */
+export interface AgentTeamCurateMemberPromptRequest {
+  readonly memberId: AgentTeamMemberId
+  /** The Human's free-text requirements the draft must implement. */
+  readonly requirements: string
+}
+
+/**
+ * The one-shot call's proposed prompt edits. Propose-only: the Host never
+ * persists this shape — the dialog backfills from it and the Human commits
+ * (or discards) through the normal member update. Names are already
+ * Host-validated against the Member's live data (protected sections and
+ * unknown skills removed).
+ */
+export interface AgentTeamCurateMemberPromptProposal {
+  /** Live, non-protected sections the LLM proposes removing from the next assemblies. */
+  readonly droppedSectionNames?: readonly string[]
+  /** A subset of the Member's private skills catalog the LLM proposes enabling. */
+  readonly skillsAllow?: readonly string[]
+  /** A rewritten custom role paragraph within the durable byte cap. */
+  readonly customPrompt?: string
+}
+
+export interface AgentTeamCurateMemberPromptResult {
+  readonly proposal: AgentTeamCurateMemberPromptProposal
+  /** The effective route (pinned model or Host default) the call used. */
+  readonly modelUsed: AgentTeamModelSelection
+}
+
 /** Human intent to suspend or resume one Agent Member. */
 export interface AgentTeamSetMemberStateRequest {
   readonly requestId: AgentTeamRequestId

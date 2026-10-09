@@ -39,8 +39,11 @@ import { createTeamContextManagement, TEAM_CONTEXT_CODEC } from './context-conti
 import { AGENT_TEAM_PLUGIN_ID, isAgentTeamSource } from './context-source.ts'
 import { boundaryByRef, carriedInputOf, checkpointByRef, checkpointRefFor, createTeamContextProjectionConfig, createTeamContextProjectionDefinition, foldTeamContextProjection, retainedTopicsThrough, TeamContextProjectionHost } from './context-projection.ts'
 import { AGENT_TEAM_HUMAN_MEMBER_ID, AgentTeamLedger, agentTeamHumanActor, type AgentTeamDurableMemberResult } from './ledger.ts'
-import { AGENT_TEAM_TOOL_NAMES, deepCopyCapabilities, deepCopyPrompt, isProtectedPromptSection, memberMemoryDirectoryName, memberMemoryDirectoryPath, MemberRuntime, promptSectionByteLength, sectionToolMapping } from './member-runtime.ts'
+import { AGENT_TEAM_TOOL_NAMES, BUNDLED_SKILLS_DIRECTORY, deepCopyCapabilities, deepCopyPrompt, isProtectedPromptSection, memberMemoryDirectoryName, memberMemoryDirectoryPath, MemberRuntime, promptSectionByteLength, sectionToolMapping } from './member-runtime.ts'
 import { PRUNE_WINDOW_DAYS, PRUNE_WINDOW_TURNS, foldLineageUsage, type UsageFold } from './member-section-usage.ts'
+import { CURATE_MAX_TOKENS, CURATE_TIMEOUT_MS, buildCurateMessages, parseCurateProposal, type CuratePromptInput } from './member-prompt-curation.ts'
+import { listPrivateSkillNames } from './member-skills.ts'
+import { BlockAssembler, LlmError } from '@deepseek-ai/dsh-llm'
 import type { MemberSkillSelectionRef } from './member-skills.ts'
 import { classifyRecoverableError, RecoveryCoordinator, RECOVERY_MAX_CONSECUTIVE_ERRORS } from './recovery.ts'
 import { classifyAssistantResponse, RESPONSE_GUARD_MAX_CONSECUTIVE, RESPONSE_GUARD_NOTICE_SUMMARY, ResponseGuardCoordinator } from './response-guard.ts'
@@ -105,6 +108,9 @@ import type {
   AgentTeamMemberPromptSectionEntry,
   AgentTeamMemberPromptView,
   AgentTeamMemberPromptViewRequest,
+  AgentTeamCurateMemberPromptRequest,
+  AgentTeamCurateMemberPromptResult,
+  AgentTeamCurateMemberPromptProposal,
   AgentTeamMemberResult,
   AgentTeamMembersRequest,
   AgentTeamResolveTaskRefsRequest,
@@ -1052,6 +1058,102 @@ export default class AgentTeam extends TypertRemoteService {
       ...(member.capabilities === undefined ? {} : { capabilities: member.capabilities }),
       ...(member.contextStartPolicy === undefined ? {} : { contextStartPolicy: member.contextStartPolicy }),
       ...(member.contextWindow === undefined ? {} : { contextWindow: member.contextWindow }),
+    })
+  }
+
+  /**
+   * One-shot LLM curation for the Prompt dialog, propose-only. The call rides
+   * the Host context's public `llm.stream()` seam (the same in-process path
+   * compaction summarizers use) on the Member's effective route, races the
+   * client's cancellation signal against a fixed timeout, and returns a
+   * validated proposal. It never commits anything: the only durable prompt
+   * paths stay member-updated (edit) and member-added (create), and the
+   * proposal only ever backfills the dialog form for the Human to review.
+   * Input covers the live assembled sections (name, bounded text, protected
+   * and prose marks), the private skills catalog names, the member identity,
+   * and the Human's requirements; the reply is parsed defensively and every
+   * proposed name is re-validated against the live section set and catalog
+   * before it reaches the dialog. Requires an enabled Member with a live
+   * session — the section input IS the live assembly.
+   */
+  @Remote('curateMemberPrompt')
+  async curateMemberPrompt(request: AgentTeamCurateMemberPromptRequest, signal?: AbortSignal): Promise<AgentTeamCurateMemberPromptResult> {
+    this.requireAccepting()
+    const member = this.requireLedger().getMember(request.memberId)
+    if (member === undefined) throw new Error(`unknown Agent Member '${request.memberId}'`)
+    if (member.state !== 'enabled') throw new Error(`Agent Member '${member.handle}' is ${member.state}; only enabled Members can curate their prompt`)
+    const active = this.handles.get(request.memberId)
+    if (active === undefined) throw new Error(`Agent Member '${member.handle}' has no active session; curation reads the live prompt assembly`)
+    const requirements = request.requirements.trim()
+    if (requirements === '') throw new Error('curation requirements must not be empty')
+    const modelUsed = this.currentModelSelectionOf(request.memberId)
+    const proposal = await this.curationProposal(active, member, modelUsed, requirements, signal)
+    return Object.freeze({ proposal, modelUsed })
+  }
+
+  /** Build the bounded curation input from one live assembly and catalog. */
+  private curateInput(handle: AgentHandle, member: AgentTeamAgentMember, requirements: string): Promise<CuratePromptInput> {
+    const scope = scopeOf(handle.agent.ctx)!
+    return this.ctx.systemPrompt.assemble({ scope }).then(async assembly => {
+      const toolNames = this.ctx.tools.schemas(scope).map(tool => tool.name)
+      const mapping = sectionToolMapping(assembly.sections, toolNames)
+      return {
+        handle: member.handle,
+        description: member.description,
+        ...(member.prompt?.customPrompt === undefined ? {} : { currentParagraph: member.prompt.customPrompt }),
+        skills: await listPrivateSkillNames(BUNDLED_SKILLS_DIRECTORY, join(memberMemoryDirectoryPath(member), 'skills')),
+        sections: assembly.sections.map(section => ({
+          name: section.name,
+          text: section.text,
+          isProtected: isProtectedPromptSection(section.name),
+          proseOnly: (mapping.get(section.name) ?? []).length === 0,
+        })),
+        requirements,
+      }
+    })
+  }
+
+  /** Run the one-shot completion and parse + re-validate its proposal. */
+  private async curationProposal(handle: AgentHandle, member: AgentTeamAgentMember, selection: AgentTeamModelSelection, requirements: string, signal?: AbortSignal): Promise<AgentTeamCurateMemberPromptProposal> {
+    const llm = this.ctx.get('llm')
+    if (llm === undefined) throw new Error('no LLM service is available for curation')
+    const timeout = AbortSignal.timeout(CURATE_TIMEOUT_MS)
+    const linked = signal === undefined ? timeout : AbortSignal.any([signal, timeout])
+    const input = await this.curateInput(handle, member, requirements)
+    const { system, messages } = buildCurateMessages(input)
+    const assembler = new BlockAssembler()
+    try {
+      for await (const chunk of llm.stream({
+        provider: selection.provider,
+        model: selection.model,
+        messages: [...messages],
+        system,
+        maxTokens: CURATE_MAX_TOKENS,
+        signal: linked,
+      })) assembler.push(chunk)
+    } catch (error) {
+      if (linked.aborted) throw new Error('curation call was cancelled or timed out')
+      throw error
+    }
+    // A cancelled call never produces a proposal, even when a mock or lenient
+    // adapter ignored the signal and streamed to completion.
+    if (linked.aborted) throw new Error('curation call was cancelled or timed out')
+    const finish = assembler.finish
+    if (finish.kind === 'error' || finish.kind === 'aborted') throw new LlmError(finish.failure.message, finish.failure.code, finish.failure)
+    if (finish.kind === 'max-tokens') throw new Error('curation reply was truncated at the token cap')
+    const text = assembler.blocks().filter(block => block.type === 'text').map(block => block.text).join('')
+    const parsed = parseCurateProposal(text, isProtectedPromptSection)
+    // Re-validate every proposed name against the live data the input was
+    // built from: a stale or hallucinated section or skill name never
+    // reaches the dialog.
+    const liveSectionNames = new Set(input.sections.map(section => section.name))
+    const droppedSectionNames = parsed.droppedSectionNames?.filter(name => liveSectionNames.has(name))
+    const catalog = new Set(input.skills)
+    const skillsAllow = parsed.skillsAllow?.filter(name => catalog.has(name))
+    return Object.freeze({
+      ...(droppedSectionNames === undefined || droppedSectionNames.length === 0 ? {} : { droppedSectionNames }),
+      ...(skillsAllow === undefined || skillsAllow.length === 0 ? {} : { skillsAllow }),
+      ...(parsed.customPrompt === undefined ? {} : { customPrompt: parsed.customPrompt }),
     })
   }
 

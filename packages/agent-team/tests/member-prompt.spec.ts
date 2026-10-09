@@ -29,7 +29,8 @@ import ToolRuntime from '@deepseek-ai/dsh-tools'
 import { WorkspaceId } from '@deepseek-ai/dsh-workspace'
 import AgentTeam from '../src/index.ts'
 import { COMPLETION_MARKER } from '../src/response-guard.ts'
-import { MEMBER_PROMPT_SECTION_NAME, sectionToolMapping } from '../src/member-runtime.ts'
+import { CURATE_MAX_TOKENS, CURATE_REQUIREMENTS_CAP, CURATE_SECTION_TEXT_CAP, buildCurateMessages, parseCurateProposal } from '../src/member-prompt-curation.ts'
+import { MEMBER_PROMPT_SECTION_NAME, isProtectedPromptSection, sectionToolMapping } from '../src/member-runtime.ts'
 import type { AgentTeamChannelRef, AgentTeamInboxItem, AgentTeamMemberId, AgentTeamRequestId } from '../src/types.ts'
 import { MemoryStorageBackend } from './helpers/memory-backend.ts'
 
@@ -686,5 +687,159 @@ describe('Agent Team member section usage and auto-prune', () => {
     } finally {
       reader.read = original
     }
+  })
+})
+
+describe('Agent Team member prompt LLM curation', () => {
+  it('builds one bounded call from the live assembly and returns a re-validated, propose-only draft', async () => {
+    const adapter = new ScriptedAdapter()
+    useAdapter(adapter)
+    const { ctx, workspaceId } = shared
+    const member = await addMember(ctx, workspaceId, 'c1-live', 'Stored paragraph.')
+    adapter.enqueue(closingReply(JSON.stringify({
+      droppedSectionNames: ['usage:prose', 'team:member-prompt', 'hallucinated:section'],
+      skillsAllow: ['member-memory-manager', 'not-a-skill', 'member-memory-manager'],
+      customPrompt: '  Curated paragraph.  ',
+      ignoreMe: 42,
+    })))
+
+    const result = await ctx.agentTeam.curateMemberPrompt({ memberId: member.memberId, requirements: 'Focus on code review.' })
+    // No per-Member pin here, so the effective route is the harness default —
+    // the same route the one-shot call must have used.
+    expect(result.modelUsed).toEqual({ provider: 'mock', model: 'mock' })
+    // Host-side re-validation: protected and hallucinated section names never
+    // reach the dialog, off-catalog skills are dropped, the paragraph trims,
+    // and unknown reply fields vanish.
+    expect(result.proposal).toEqual({
+      droppedSectionNames: ['usage:prose'],
+      skillsAllow: ['member-memory-manager'],
+      customPrompt: 'Curated paragraph.',
+    })
+
+    expect(adapter.requests).toHaveLength(1)
+    const request = adapter.requests[0]!
+    expect(request.provider).toBe('mock')
+    expect(request.model).toBe('mock')
+    expect(request.maxTokens).toBe(CURATE_MAX_TOKENS)
+    expect(request.system).toContain('propose edits only')
+    const userText = (request.messages[0]!.content[0] as { readonly text: string }).text
+    expect(userText).toContain('Member handle: c1-live')
+    expect(userText).toContain('Member description: Prompt member')
+    expect(userText).toContain('Current custom role paragraph: Stored paragraph.')
+    expect(userText).toContain('usage:mapped')
+    expect(userText).toContain('usage:prose (prose-only: maps no tool)')
+    expect(userText).toContain('team:member-prompt (protected — never propose dropping)')
+    expect(userText).toContain('member-memory-manager')
+    expect(userText).toContain('member-skill-manager')
+    expect(userText).toContain('Human requirements:')
+    expect(userText).toContain('Focus on code review.')
+
+    // Propose-only: the stored prompt survives the curation call untouched.
+    const view = await ctx.agentTeam.memberPromptView({ memberId: member.memberId })
+    expect(view.prompt).toEqual({ customPrompt: 'Stored paragraph.' })
+  })
+
+  it('surfaces a malformed reply as an error instead of a partial proposal', async () => {
+    const adapter = new ScriptedAdapter()
+    useAdapter(adapter)
+    const { ctx, workspaceId } = shared
+    const member = await addMember(ctx, workspaceId, 'c2-garbage')
+    adapter.enqueue(closingReply('The curated prompt would be shorter, but there is no JSON today.'))
+    await expect(ctx.agentTeam.curateMemberPrompt({ memberId: member.memberId, requirements: 'trim it' }))
+      .rejects.toThrow('no JSON object')
+    // The failed pass left no trace on the stored profile.
+    const view = await ctx.agentTeam.memberPromptView({ memberId: member.memberId })
+    expect(view.prompt).toBeUndefined()
+  })
+
+  it('never returns a proposal once the caller cancelled, even when the stream completed', async () => {
+    const adapter = new ScriptedAdapter()
+    useAdapter(adapter)
+    const { ctx, workspaceId } = shared
+    const member = await addMember(ctx, workspaceId, 'c3-cancel')
+    adapter.enqueue(closingReply(JSON.stringify({ customPrompt: 'Too late.' })))
+    const controller = new AbortController()
+    controller.abort()
+    await expect(ctx.agentTeam.curateMemberPrompt({ memberId: member.memberId, requirements: 'trim it' }, controller.signal))
+      .rejects.toThrow('cancelled or timed out')
+  })
+
+  it('refuses a non-enabled Member before any model call', async () => {
+    const adapter = new ScriptedAdapter()
+    useAdapter(adapter)
+    const { ctx, workspaceId } = shared
+    const member = await addMember(ctx, workspaceId, 'c4-suspended')
+    await ctx.agentTeam.suspendMember({ requestId: requestId('c4-suspend'), memberId: member.memberId })
+    await expect(ctx.agentTeam.curateMemberPrompt({ memberId: member.memberId, requirements: 'trim it' }))
+      .rejects.toThrow('only enabled Members can curate')
+    expect(adapter.requests).toHaveLength(0)
+  })
+
+  it('propagates a mid-call adapter failure as the curation error', async () => {
+    const adapter = new ScriptedAdapter()
+    useAdapter(adapter)
+    const { ctx, workspaceId } = shared
+    const member = await addMember(ctx, workspaceId, 'c5-stream-fail')
+    // No enqueued response: the adapter throws while streaming.
+    await expect(ctx.agentTeam.curateMemberPrompt({ memberId: member.memberId, requirements: 'trim it' }))
+      .rejects.toThrow('response queue is empty')
+  })
+})
+
+describe('member prompt curation input and parsing', () => {
+  it('caps the bounded input pieces and renders absent facts as explicit none markers', () => {
+    const longText = 'x'.repeat(2000)
+    const { system, messages } = buildCurateMessages({
+      handle: 'builder',
+      description: 'Builds changes',
+      skills: [],
+      sections: [{ name: 'section:long', text: longText, isProtected: false, proseOnly: true }],
+      requirements: 'y'.repeat(5000),
+    })
+    expect(system).toContain('propose edits only')
+    expect(system).toContain('"droppedSectionNames"')
+    const userText = (messages[0]!.content[0] as { readonly text: string }).text
+    expect(userText).toContain('Current custom role paragraph: (none)')
+    expect(userText).toContain('Private skills catalog (names only): (none)')
+    // Both caps bite exactly: the truncation ellipsis, never the full text.
+    expect(userText).toContain(`text: ${'x'.repeat(CURATE_SECTION_TEXT_CAP)}…`)
+    expect(userText).not.toContain('x'.repeat(CURATE_SECTION_TEXT_CAP + 1))
+    expect(userText).toContain(`${'y'.repeat(CURATE_REQUIREMENTS_CAP)}…`)
+    expect(userText).not.toContain('y'.repeat(CURATE_REQUIREMENTS_CAP + 1))
+  })
+
+  it('parses a fenced reply, dedupes and sorts the name lists, and filters protected drops', () => {
+    const fenced = '```json\n' + JSON.stringify({
+      droppedSectionNames: ['b:section', 'team:member-prompt', 'a:section', 'b:section'],
+      skillsAllow: ['z-skill', 'a-skill'],
+      customPrompt: '  Kept.  ',
+    }) + '\n```'
+    expect(parseCurateProposal(fenced, isProtectedPromptSection)).toEqual({
+      droppedSectionNames: ['a:section', 'b:section'],
+      skillsAllow: ['a-skill', 'z-skill'],
+      customPrompt: 'Kept.',
+    })
+  })
+
+  it('keeps every list field absent when the reply is empty, and fails loudly on the contract breaks', () => {
+    expect(parseCurateProposal('{}', isProtectedPromptSection)).toEqual({})
+    expect(parseCurateProposal('{"droppedSectionNames": [], "skillsAllow": ["  "], "customPrompt": "   "}', isProtectedPromptSection)).toEqual({})
+    // The parse function runs eagerly, so the failure cases pass thunks.
+    expect(() => parseCurateProposal('no object', isProtectedPromptSection)).toThrowError(/no JSON object/)
+    expect(() => parseCurateProposal('{not json}', isProtectedPromptSection)).toThrowError(/not valid JSON/)
+    expect(() => parseCurateProposal('{"customPrompt": 42}', isProtectedPromptSection)).toThrowError(/customPrompt is not a string/)
+    const oversized = JSON.stringify({ customPrompt: '长'.repeat(3000) })
+    expect(() => parseCurateProposal(oversized, isProtectedPromptSection)).toThrowError(/exceeds the 8192-byte limit/)
+    // A wrong-typed list field drops instead of failing — the model is
+    // unreliable, the dialog stays safe.
+    expect(parseCurateProposal('{"droppedSectionNames": "everything", "skillsAllow": 7}', isProtectedPromptSection)).toEqual({})
+  })
+
+  it('filters deployment persona drops too — any protected name dies at parse time', () => {
+    const parsed = parseCurateProposal(
+      JSON.stringify({ droppedSectionNames: ['deployment:persona-coder', 'usage:prose'] }),
+      isProtectedPromptSection,
+    )
+    expect(parsed.droppedSectionNames).toEqual(['usage:prose'])
   })
 })

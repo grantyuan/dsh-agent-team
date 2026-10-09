@@ -11,6 +11,8 @@ import type {
   AgentTeamClearMemberContextResult,
   AgentTeamCompactMemberContextRequest,
   AgentTeamCompactMemberContextResult,
+  AgentTeamCurateMemberPromptRequest,
+  AgentTeamCurateMemberPromptResult,
   AgentTeamCreateChannelRequest,
   AgentTeamCreateChannelResult,
   AgentTeamDiagnoseMemberRequest,
@@ -147,6 +149,14 @@ export type TeamSidebarProps = PropsRuntime<'sidebar.workspaces'>
      * activity and never blocks later conversation.
      */
     compactMemberContext: (request: AgentTeamCompactMemberContextRequest) => Promise<RemoteResult<AgentTeamCompactMemberContextResult>>
+    /**
+     * One bounded propose-only LLM curation pass behind the Prompt dialog: the
+     * Host assembles the Member's live section input and runs a single
+     * completion with the Member's effective model. The proposal only ever
+     * backfills the dialog's form — nothing persists until the Human saves
+     * through the normal update path. The signal cancels an in-flight pass.
+     */
+    curateMemberPrompt: (request: AgentTeamCurateMemberPromptRequest, signal?: AbortSignal) => Promise<RemoteResult<AgentTeamCurateMemberPromptResult>>
     archiveMember: (request: AgentTeamArchiveMemberRequest) => Promise<RemoteResult<AgentTeamArchiveMemberResult>>
     joinWorkspace: (request: AgentTeamJoinWorkspaceRequest) => Promise<RemoteResult<AgentTeamJoinWorkspaceResult>>
     leaveWorkspace: (request: AgentTeamLeaveWorkspaceRequest) => Promise<RemoteResult<AgentTeamLeaveWorkspaceResult>>

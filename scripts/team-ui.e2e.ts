@@ -749,6 +749,69 @@ it('drives the complete opt-in Agent Team journey in real Web', async () => {
   await pruneReady.getByRole('checkbox', { name: '任务启动时自动检查未用段落' }).click()
   await pruneReady.getByRole('button', { name: '保存' }).click()
   await expect.poll(() => page.getByRole('dialog', { name: '自定义角色段落' }).count()).toBe(0)
+
+  // LLM curation rides the same dialog as a propose-only backfill: the
+  // one-shot call crosses the Host's `llm/stream` waterfall, so the journey
+  // intercepts exactly the curation-shaped request — the only hand-built
+  // request whose system line opens with the curation role sentence, while
+  // loop-built turns leave `system` undefined and stream through untouched.
+  // The first intercept refuses to pin the dialog's error surface, the second
+  // yields a scripted proposal for the form backfill. Nothing is saved here:
+  // a proposal only ever fills the form.
+  await promptEditor.getByRole('button', { name: '编辑段落' }).click()
+  const curatePrompt = page.getByRole('dialog', { name: '自定义角色段落' })
+  const curateGroup = curatePrompt.locator('[data-team-prompt-curate]')
+  await curateGroup.waitFor()
+  const curateRequirements = curateGroup.getByRole('textbox', { name: '策划要求' })
+  const curateButton = curateGroup.getByRole('button', { name: '使用 LLM 策划' })
+  await expect.poll(async () => await curateButton.isDisabled()).toBe(true)
+  const curateRequirementsText = '精简身份段落，聚焦实现与验证；保留协作流程。'
+  await curateRequirements.fill(curateRequirementsText)
+  await expect.poll(async () => await curateButton.isDisabled()).toBe(false)
+  let curateCalls = 0
+  const disposeCurateStream = scaffold.ctx.on('llm/stream', async function* (options, next) {
+    if (typeof options.system !== 'string' || !options.system.startsWith('You curate the system prompt of one AI team member.')) {
+      yield* next()
+      return
+    }
+    curateCalls += 1
+    if (curateCalls === 1) throw new Error('curation provider is offline')
+    const proposal = JSON.stringify({
+      droppedSectionNames: ['tool:bash'],
+      skillsAllow: ['member-memory-manager'],
+      customPrompt: '策划后的角色段落草稿，聚焦实现与验证。',
+    })
+    yield { type: 'block-start', index: 0, blockType: 'text' }
+    yield { type: 'text-delta', index: 0, text: proposal }
+    yield { type: 'block-end', index: 0, block: { type: 'text', text: proposal } }
+    yield { type: 'usage', usage: { inputTokens: 10, outputTokens: 4 } }
+    yield { type: 'finish', reason: { kind: 'stop' } }
+  })
+  try {
+    await curateButton.click()
+    await curateGroup.getByText('策划失败：curation provider is offline').waitFor()
+    // The requirements survive the failure; the retry reuses them unchanged.
+    expect(await curateRequirements.inputValue()).toBe(curateRequirementsText)
+    await curateButton.click()
+    await expect.poll(() => curatePrompt.getByRole('textbox', { name: '自定义角色段落' }).inputValue()).toBe('策划后的角色段落草稿，聚焦实现与验证。')
+    // The checkbox semantics are "keep": the proposed drop unchecks the row.
+    const curateBashRow = curatePrompt.locator('[data-team-prompt-section="tool:bash"]')
+    await expect.poll(async () => await curateBashRow.getByRole('checkbox').isChecked()).toBe(false)
+    const curateSkills = curatePrompt.locator('[data-team-prompt-curate-skills]')
+    await curateSkills.getByText('member-memory-manager', { exact: true }).waitFor()
+    expect(curateCalls).toBe(2)
+    await settleAnimations(page)
+    await page.screenshot({ path: join(UI04_SHOTS, 'agent-edit-prompt-curated.png'), fullPage: true })
+    await curateSkills.getByRole('button', { name: '还原' }).click()
+    await expect.poll(() => curatePrompt.locator('[data-team-prompt-curate-skills]').count()).toBe(0)
+  } finally {
+    disposeCurateStream()
+  }
+  // The proposal is propose-only: the dialog closes unsaved, so the stored
+  // paragraph and section toggles stay exactly as committed above and the
+  // later journeys keep reading the same durable surface.
+  await page.keyboard.press('Escape')
+  await expect.poll(() => page.getByRole('dialog', { name: '自定义角色段落' }).count()).toBe(0)
   await promptEditor.getByRole('button', { name: '关闭', exact: true }).click()
 
   // The Prompt dialog rides the 390 breakpoint: the collapsed rail expands,
@@ -768,6 +831,10 @@ it('drives the complete opt-in Agent Team journey in real Web', async () => {
   // The restored section list rides the narrow dialog too.
   await narrowPrompt.getByText('系统提示词段落').waitFor()
   await narrowPrompt.locator('[data-team-prompt-section="harness:identity"]').waitFor()
+  // The curation group rides the narrow dialog too, gated on its empty
+  // requirements field.
+  await narrowPrompt.locator('[data-team-prompt-curate]').waitFor()
+  await expect.poll(async () => await narrowPrompt.getByRole('button', { name: '使用 LLM 策划' }).isDisabled()).toBe(true)
   const narrowPromptBox = await narrowPrompt.boundingBox()
   expect(narrowPromptBox).not.toBeNull()
   expect(narrowPromptBox!.x).toBeGreaterThanOrEqual(0)

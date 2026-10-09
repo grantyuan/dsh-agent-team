@@ -38,7 +38,7 @@ import type { MemberSkillSelectionRef } from './member-skills.ts'
  * from this module's emitted location so it follows the installed plugin,
  * like the preset roster's own root.
  */
-const BUNDLED_SKILLS_DIRECTORY = resolve(dirname(fileURLToPath(import.meta.url)), '../core-skills')
+export const BUNDLED_SKILLS_DIRECTORY = resolve(dirname(fileURLToPath(import.meta.url)), '../core-skills')
 
 /** Model-facing capabilities every Team-enabled preset must publish. */
 export const AGENT_TEAM_TOOL_NAMES = Object.freeze([
