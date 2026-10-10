@@ -675,6 +675,12 @@ export default class AgentTeam extends TypertRemoteService {
   /** One in-flight auto-prune sweep per Member; the task-start twin of pendingPolicyResets. */
   private readonly pendingPruneSweeps = new Set<AgentTeamMemberId>()
   /**
+   * One in-flight live runtime apply per Member; the edit twin of
+   * pendingPruneSweeps. Concurrent edits coalesce into the one running body,
+   * which re-applies the CURRENT ledger facts, so no edit is lost.
+   */
+  private readonly pendingMemberApplies = new Set<AgentTeamMemberId>()
+  /**
    * Presence wake epoch: Agent running/idle/failure is runtime state with no
    * durable fact behind it, so the presence scope counts those edge wakes in
    * process. It never takes part in a projection waiter's comparison.
@@ -2570,55 +2576,97 @@ export default class AgentTeam extends TypertRemoteService {
         if (selection === undefined) throw new Error(`Agent Member '${stored.handle}' has no live model selection`)
         selection.current = stored.model ?? this.ctx.agentDefaultModel.currentSelection()
       }
-      if (active !== undefined && !isDeepStrictEqual(previous?.capabilities ?? undefined, stored.capabilities ?? undefined)) {
-        await this.applyCapabilityEdit(active, stored)
-      }
-      if (active !== undefined && !isDeepStrictEqual(previous?.prompt ?? undefined, stored.prompt ?? undefined)) {
-        await this.applyPromptEdit(active, stored)
-      }
+      const runtimeSwapNeeded = !isDeepStrictEqual(previous?.capabilities ?? undefined, stored.capabilities ?? undefined)
+        || !isDeepStrictEqual(previous?.prompt ?? undefined, stored.prompt ?? undefined)
+      if (runtimeSwapNeeded) this.scheduleMemberRuntimeApply(stored)
       return Object.freeze({ receipt: result.value.receipt, status: this.memberStatus(stored) })
     })
   }
 
   /**
-   * Live-apply a capability edit at a turn boundary: while the Agent runs, the
-   * current turn keeps its schemas and catalog; the swap happens once idle,
-   * so the next step recomputes schemas from the new restriction and the
-   * durable replacement skill catalog from the new selection, with the same
-   * Session and history surviving. Suspend/remove during the wait cancels
-   * the swap — the disposed handle released the old restriction already and
-   * no disposer leaks.
+   * Schedule the live swap one capability or prompt edit of a Member calls
+   * for, mirroring the fresh-start reset and auto-prune seams: the durable
+   * edit answers immediately and the turn-boundary wait runs OUTSIDE the
+   * serialized lifecycle queue, so a long — or hung — turn never holds the
+   * edit's response, another Member's edit, or the supervision force-reset
+   * behind it. One in-flight body per Member: overlapping edits coalesce,
+   * because the body re-applies the CURRENT ledger facts rather than the
+   * snapshot it was scheduled from. No active handle means nothing to swap:
+   * activation re-applies everything from the ledger. An idle Member has no
+   * boundary to wait for, so its swap stays synchronous inside the edit's own
+   * queue body and the answer already reflects the live surface.
    */
-  private async applyCapabilityEdit(active: AgentHandle, stored: AgentTeamAgentMember): Promise<void> {
-    const memberId = stored.memberId
-    const waited = await this.memberRuntime.awaitTurnBoundary(active)
-    if (waited && this.handles.get(memberId) !== active) {
-      // The wait resolved because the old generation was disposed, not
-      // because the turn ended; the ledger intent applies at the next
-      // activation instead.
+  private scheduleMemberRuntimeApply(member: AgentTeamAgentMember): void {
+    const memberId = member.memberId
+    const active = this.handles.get(memberId)
+    if (active === undefined) return
+    if (!this.runningAgents.has(active.agent.id)) {
+      this.applyMemberRuntime(member)
       return
     }
-    this.memberRuntime.reapplyMemberToolPolicy(stored)
-    this.memberRuntime.swapSkillSelection(memberId, stored.capabilities?.skills?.allow)
+    if (this.pendingMemberApplies.has(memberId)) return
+    this.pendingMemberApplies.add(memberId)
+    void this.runMemberRuntimeApply(member, active)
   }
 
   /**
-   * Live-apply a prompt edit at a turn boundary: while the Agent runs, the
-   * current turn keeps its assembled prompt; the swap happens once idle, so
-   * the next step assembles with the new custom paragraph, with the same
-   * Session and history surviving. The handle is re-checked unconditionally
-   * after the wait — the capability edit ahead of this one may have consumed
-   * the wait-ending disposal, or an external Session dispose may have moved
-   * the generation on without the Team queue — and any stale handle bails:
-   * the disposed scope released the old section already, and the ledger
-   * intent applies at the next activation.
+   * Background body of one scheduled runtime apply. While the Agent runs, the
+   * current turn keeps its schemas, catalog, and assembled prompt; the swap
+   * happens once the turn ends, with the same Session and history surviving.
+   * The handle is re-checked unconditionally after the wait — the wait may
+   * have resolved because the old generation was disposed rather than because
+   * the turn ended, and an external Session dispose can move the generation on
+   * without the Team queue ever seeing it. A stale handle bails: the disposed
+   * scope released the old restriction, section, and drop listener already, no
+   * disposer leaks, and the ledger intent applies at the next activation
+   * instead. Like the sweep, the body re-reads the Member at the boundary and
+   * again inside the queue — lifecycle edits and suspensions can commit while
+   * it waits — and a Member that is no longer stored or no longer enabled
+   * drops. Failures are logged, never thrown and never retried: the durable
+   * edit already landed.
    */
-  private async applyPromptEdit(active: AgentHandle, stored: AgentTeamAgentMember): Promise<void> {
-    const memberId = stored.memberId
-    await this.memberRuntime.awaitTurnBoundary(active)
-    if (this.handles.get(memberId) !== active) return
-    this.memberRuntime.reapplyMemberPromptSection(stored)
-    this.memberRuntime.reapplyMemberSectionDrops(stored)
+  private async runMemberRuntimeApply(member: AgentTeamAgentMember, active: AgentHandle): Promise<void> {
+    const memberId = member.memberId
+    try {
+      await this.memberRuntime.awaitTurnBoundary(active)
+      if (this.handles.get(memberId) !== active) return
+      if (this.runningAgents.has(active.agent.id)) await active.agent.whenIdle()
+      if (this.handles.get(memberId) !== active) return
+      const stored = this.ledger?.getMember(memberId)
+      if (stored === undefined || stored.state !== 'enabled') return
+      await this.enqueueLifecycle(async () => {
+        this.requireAccepting()
+        // Lifecycle edits and suspensions queue ahead of this body and can
+        // commit after the boundary re-read above; only a still-stored,
+        // still-enabled Member with a live session swaps.
+        const current = this.ledger?.getMember(memberId)
+        if (current === undefined || current.state !== 'enabled') return
+        if (this.handles.get(memberId) === undefined) return
+        this.applyMemberRuntime(current)
+      })
+    } catch (error) {
+      this.ctx.logger.warn(`agent-team: live apply of the edit for member '${member.handle}' failed: ${error instanceof Error ? error.message : String(error)}`)
+    } finally {
+      this.pendingMemberApplies.delete(memberId)
+    }
+  }
+
+  /**
+   * Re-apply both live halves — the capability swap (restriction, then the
+   * skill-selection filter) and the prompt swap (custom section, then the drop
+   * listener) — from the Member's current ledger facts. Both halves always
+   * run, whichever one the edit touched: each primitive is release-then-apply,
+   * every release is a no-op when nothing was ever registered, and every apply
+   * registers nothing when the stored field is absent (an absent allow-list, a
+   * blank paragraph, an empty drop list). Re-applying an unchanged half is
+   * therefore an idempotent swap of the same surface, and the coalesced body
+   * stays correct for whichever halves the edits in flight actually changed.
+   */
+  private applyMemberRuntime(member: AgentTeamAgentMember): void {
+    this.memberRuntime.reapplyMemberToolPolicy(member)
+    this.memberRuntime.swapSkillSelection(member.memberId, member.capabilities?.skills?.allow)
+    this.memberRuntime.reapplyMemberPromptSection(member)
+    this.memberRuntime.reapplyMemberSectionDrops(member)
   }
 
   /** Irreversibly remove one Member, archive its Session, and delete its private namespace. */

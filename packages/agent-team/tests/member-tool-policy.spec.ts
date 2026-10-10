@@ -135,6 +135,20 @@ function waitForRunning(ctx: Context, agent: Agent): Promise<void> {
 }
 
 /**
+ * `'settled'` once the promise resolves, `'pending'` if it still has not after
+ * the budget. The durable edit must answer at the commit while its live swap
+ * parks behind a running turn, so each 'settled' here is the queue-is-free
+ * contract; the budget is generous because a slow lane never turns a parked
+ * swap into a fast one.
+ */
+async function settles(promise: Promise<unknown>, withinMs = 500): Promise<'settled' | 'pending'> {
+  return Promise.race([
+    promise.then((): 'settled' => 'settled'),
+    new Promise<'pending'>(resolve => { setTimeout(() => resolve('pending'), withinMs) }),
+  ])
+}
+
+/**
  * File-shared harness: booted once in `beforeAll`, torn down once in
  * `afterAll`. Previously every test paid the full boot (temp tree, preset
  * file, a dozen plugin installs with disk reads through the loader) and the
@@ -342,11 +356,12 @@ describe('Agent Team member tool policy', () => {
     expect(lastRequest?.tools?.map(tool => tool.name)).toContain('spare_tool')
   })
 
-  it('waits for a running turn, then applies the swap in the same Session while later lifecycle operations queue behind it', async () => {
+  it('answers the capability edit while a turn runs and swaps at the boundary without holding the queue', async () => {
     const adapter = new GatedAdapter()
     useAdapter(adapter)
     const { ctx, workspaceId } = shared
     const narrow = await addMember(ctx, workspaceId, 't5-narrow', { tools: { allow: ['ordinary_tool'] } })
+    const sibling = await addMember(ctx, workspaceId, 't5-sibling')
     const agent = liveAgent(ctx, narrow)
 
     // Open a held turn so the edit lands while the agent is running.
@@ -359,28 +374,36 @@ describe('Agent Team member tool policy', () => {
       requestId: requestId('narrow-wait'), memberId: narrow.memberId, handle: 't5-narrow', description: 'Policy member',
       capabilities: { tools: { allow: ['ordinary_tool', 'spare_tool'] } },
     })
-    // The edit is parked behind the running turn: it cannot resolve while the
-    // agent is still working, and lifecycle operations queue behind the edit.
-    const suspending = ctx.agentTeam.suspendMember({ requestId: requestId('suspend-after-edit'), memberId: narrow.memberId })
-    const raced = await Promise.race([edit.then(() => 'settled'), new Promise<string>(resolve => { setTimeout(() => resolve('pending'), 50) })])
-    expect(raced).toBe('pending')
-
-    // Release the turn: the boundary applies the swap in the same Session,
-    // then the queued suspend runs after it.
-    adapter.release()
+    // The durable edit answers at the commit and leaves the serialized
+    // lifecycle queue free; only the live swap waits for the turn boundary.
+    expect(await settles(edit)).toBe('settled')
     const settled = await edit
     expect(settled.status.availability).toBe('active')
     expect(settled.status.member.sessionId).toBe(narrow.sessionId)
     expect(settled.status.member.capabilities).toEqual({ tools: { allow: ['ordinary_tool', 'spare_tool'] } })
-    expect(toolNames(ctx, agent)).toEqual([...AGENT_TEAM_TOOL_NAMES, 'ordinary_tool', 'spare_tool'].sort())
-    const suspended = await suspending
-    expect(suspended.status.availability).toBe('suspended')
-    await turnDone
+    // The running turn keeps its schemas until the boundary.
+    expect(toolNames(ctx, agent)).toEqual([...AGENT_TEAM_TOOL_NAMES, 'ordinary_tool'].sort())
 
-    // Resume applies the stored intent at the next activation.
-    const resumed = await ctx.agentTeam.resumeMember({ requestId: requestId('resume-after-wait'), memberId: narrow.memberId })
-    expect(resumed.status.availability).toBe('active')
-    expect(toolNames(ctx, liveAgent(ctx, narrow))).toEqual([...AGENT_TEAM_TOOL_NAMES, 'ordinary_tool', 'spare_tool'].sort())
+    // A sibling's lifecycle call is no longer parked behind that wait.
+    const suspending = ctx.agentTeam.suspendMember({ requestId: requestId('suspend-sibling'), memberId: sibling.memberId })
+    expect(await settles(suspending, 2_000)).toBe('settled')
+    expect((await suspending).status.availability).toBe('suspended')
+
+    // Release the turn: the scheduled apply swaps in the same Session.
+    adapter.enqueue([
+      { type: 'block-start', index: 0, blockType: 'text' },
+      { type: 'text-delta', index: 0, text: `done${COMPLETION_MARKER}` },
+      { type: 'block-end', index: 0, block: { type: 'text', text: `done${COMPLETION_MARKER}` } },
+      { type: 'usage', usage: { inputTokens: 10, outputTokens: 4 } },
+      { type: 'finish', reason: { kind: 'stop' } },
+    ])
+    adapter.release()
+    await turnDone
+    await vi.waitFor(() => {
+      expect(toolNames(ctx, agent)).toEqual([...AGENT_TEAM_TOOL_NAMES, 'ordinary_tool', 'spare_tool'].sort())
+    }, { timeout: 10_000 })
+    // The Session survived the swap: the same live Agent carries the new face.
+    expect(liveAgent(ctx, narrow)).toBe(agent)
   })
 
   it('keeps Team tools hidden from ordinary sessions outside the preset', async () => {

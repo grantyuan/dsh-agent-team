@@ -186,8 +186,22 @@ async function buildSharedHarness(): Promise<{
   return { ctx, workspaceId, teamFiber }
 }
 
+/**
+ * `'settled'` once the promise resolves, `'pending'` if it still has not after
+ * the budget. The durable edit must answer at the commit while a live swap
+ * parks behind a running turn, so every 'settled' here is the user-facing
+ * dialog contract; the budget is generous because a slow lane never turns a
+ * parked swap into a fast one.
+ */
+async function settles(promise: Promise<unknown>, withinMs = 500): Promise<'settled' | 'pending'> {
+  return Promise.race([
+    promise.then((): 'settled' => 'settled'),
+    new Promise<'pending'>(resolve => { setTimeout(() => resolve('pending'), withinMs) }),
+  ])
+}
+
 // Isolation invariant: the shared ledger never forgets, so every handle and
-// every requestId in this file must be unique per test (suffixed t1..t10).
+// every requestId in this file must be unique per test (suffixed t1..t11).
 let shared: Awaited<ReturnType<typeof buildSharedHarness>>
 
 beforeAll(async () => {
@@ -282,7 +296,7 @@ describe('Agent Team member custom role paragraph', () => {
     expect(renderPrompt(await memberAssembly(ctx, member))).not.toContain('Second paragraph.')
   })
 
-  it('waits for a running turn, then swaps the paragraph in the same Session', async () => {
+  it('answers the edit while a turn runs, then swaps the paragraph at the boundary in the same Session', async () => {
     const adapter = new GatedAdapter()
     useAdapter(adapter)
     const { ctx, workspaceId } = shared
@@ -299,20 +313,21 @@ describe('Agent Team member custom role paragraph', () => {
       requestId: requestId('swap-wait'), memberId: member.memberId, handle: member.handle, description: 'Prompt member',
       prompt: { customPrompt: 'Second paragraph.' },
     })
-    // The edit is parked behind the running turn: it cannot resolve while the
-    // agent is still working.
-    const raced = await Promise.race([edit.then(() => 'settled'), new Promise<string>(resolve => { setTimeout(() => resolve('pending'), 50) })])
-    expect(raced).toBe('pending')
+    // The durable edit answers at the commit — the boundary swap became a
+    // background scheduled apply, so the dialog leaves 保存中 immediately.
+    expect(await settles(edit)).toBe('settled')
+    // The running turn keeps its assembled prompt: the swap stays gated.
+    expect(memberSection(await memberAssembly(ctx, member))?.text).toBe('First paragraph.')
 
-    // Release the turn: the boundary applies the swap in the same Session,
-    // and the closing reply needs its queued response.
-    adapter.release()
+    // Release the turn: the scheduled apply swaps at the boundary in the same
+    // Session, and the closing reply needs its queued response.
     adapter.enqueue(closingReply('done'))
+    adapter.release()
     const settled = await edit
     expect(settled.status.availability).toBe('active')
     expect(settled.status.member.sessionId).toBe(member.sessionId)
-    expect(memberSection(await memberAssembly(ctx, member))?.text).toBe('Second paragraph.')
     await turnDone
+    await untilTrue(async () => memberSection(await memberAssembly(ctx, member))?.text === 'Second paragraph.', 'scheduled paragraph swap')
   })
 
   it('adds no section for a whitespace-only paragraph and never registers an empty text', async () => {
@@ -325,7 +340,7 @@ describe('Agent Team member custom role paragraph', () => {
     expect(memberSection(await memberAssembly(ctx, blank))).toBeUndefined()
   })
 
-  it('bails the parked swap silently when the handle goes stale during the boundary wait', async () => {
+  it('bails the scheduled swap silently when the handle goes stale during the boundary wait', async () => {
     const adapter = new GatedAdapter()
     useAdapter(adapter)
     const { ctx, workspaceId } = shared
@@ -339,9 +354,10 @@ describe('Agent Team member custom role paragraph', () => {
       memberRuntime: { memberPromptSections: Map<string, unknown> }
     }
 
-    // Open a held turn so the edit parks: capabilities and prompt change
-    // together, so the capability edit owns the boundary wait and the prompt
-    // swap runs against whatever that wait leaves behind.
+    // Open a held turn so the swap parks: capabilities and prompt change
+    // together, so one scheduled apply carries both halves and waits on the
+    // same boundary.
+    const turnDone = waitForIdle(ctx, agent)
     const running = waitForRunning(ctx, agent)
     agent.followup(createUserMessage({ content: [{ type: 'text', text: 'run' }], source: { kind: 'user' } }))
     await running
@@ -350,8 +366,8 @@ describe('Agent Team member custom role paragraph', () => {
       capabilities: { skills: { allow: ['example'] } },
       prompt: { customPrompt: 'Second paragraph.' },
     })
-    const raced = await Promise.race([edit.then(() => 'settled'), new Promise<string>(resolve => { setTimeout(() => resolve('pending'), 50) })])
-    expect(raced).toBe('pending')
+    // The edit answers at the commit; only the live swap stays parked.
+    expect(await settles(edit)).toBe('settled')
 
     // The out-of-queue destroy: the handles entry goes first (strictly before
     // any wait can settle), then the held turn ends cleanly — the idle status
@@ -361,13 +377,17 @@ describe('Agent Team member custom role paragraph', () => {
     internals.handles.delete(member.memberId)
     adapter.enqueue(closingReply('done'))
     adapter.release()
+    await turnDone
+    // A grace macrotask so the parked body has provably run to its bail before
+    // the negative assertions below.
+    await new Promise(resolve => setTimeout(resolve, 50))
 
-    // The edit settles without surfacing the stale generation: the prompt swap
-    // bails instead of re-registering over a moved-on handle.
+    // The scheduled swap bails instead of re-registering over a moved-on
+    // handle, and the ledger intent is not rolled back.
     const settled = await edit
     expect(settled.status.member.prompt).toEqual({ customPrompt: 'Second paragraph.' })
     // The bail left the old generation's own registration untouched — no leak,
-    // no second registration — and the ledger intent is not rolled back.
+    // no second registration.
     expect(internals.memberRuntime.memberPromptSections.has(member.memberId)).toBe(true)
     expect(memberSection(await memberAssembly(ctx, member))?.text).toBe('First paragraph.')
     expect((await ctx.agentTeam.memberPromptView({ memberId: member.memberId })).prompt).toEqual({ customPrompt: 'Second paragraph.' })
@@ -486,13 +506,14 @@ describe('Agent Team member custom role paragraph', () => {
     expect(sectionNames(await memberTurnAssembly(ctx, member))).not.toContain('harness:identity')
   })
 
-  it('swaps the drop list at the turn boundary in the same Session', async () => {
+  it('answers the drop edit while a turn runs, then swaps the drop list at the boundary', async () => {
     const adapter = new GatedAdapter()
     useAdapter(adapter)
     const { ctx, workspaceId } = shared
     const member = await addMember(ctx, workspaceId, 't10-boundary', 'First paragraph.')
     const agent = liveAgent(ctx, member)
 
+    const turnDone = waitForIdle(ctx, agent)
     const running = waitForRunning(ctx, agent)
     agent.followup(createUserMessage({ content: [{ type: 'text', text: 'run' }], source: { kind: 'user' } }))
     await running
@@ -500,8 +521,8 @@ describe('Agent Team member custom role paragraph', () => {
       requestId: requestId('drop-wait'), memberId: member.memberId, handle: member.handle, description: 'Prompt member',
       prompt: { customPrompt: 'First paragraph.', droppedSections: ['harness:identity'] },
     })
-    const raced = await Promise.race([edit.then(() => 'settled'), new Promise<string>(resolve => { setTimeout(() => resolve('pending'), 50) })])
-    expect(raced).toBe('pending')
+    // The durable drop answers at the commit; only its live application waits.
+    expect(await settles(edit)).toBe('settled')
     // The running turn's next assembly still carries the section.
     expect(sectionNames(await memberTurnAssembly(ctx, member))).toContain('harness:identity')
 
@@ -509,8 +530,50 @@ describe('Agent Team member custom role paragraph', () => {
     adapter.release()
     const settled = await edit
     expect(settled.status.member.sessionId).toBe(member.sessionId)
-    expect(sectionNames(await memberTurnAssembly(ctx, member))).not.toContain('harness:identity')
+    await turnDone
+    await untilTrue(async () => !sectionNames(await memberTurnAssembly(ctx, member)).includes('harness:identity'), 'scheduled drop-list swap')
     expect(memberSection(await memberAssembly(ctx, member))?.text).toBe('First paragraph.')
+  })
+
+  it('answers a running Member edit without holding the lifecycle queue behind its boundary wait', async () => {
+    const adapter = new GatedAdapter()
+    useAdapter(adapter)
+    const { ctx, workspaceId } = shared
+    const busy = await addMember(ctx, workspaceId, 't11-queue-busy', 'First paragraph.')
+    const sibling = await addMember(ctx, workspaceId, 't11-queue-sibling')
+    const agent = liveAgent(ctx, busy)
+
+    const turnDone = waitForIdle(ctx, agent)
+    const running = waitForRunning(ctx, agent)
+    agent.followup(createUserMessage({ content: [{ type: 'text', text: 'run' }], source: { kind: 'user' } }))
+    await running
+
+    const busyEdit = ctx.agentTeam.updateMember({
+      requestId: requestId('t11-busy-edit'), memberId: busy.memberId, handle: busy.handle, description: 'Prompt member',
+      prompt: { customPrompt: 'Second paragraph.' },
+    })
+    // The user-facing defect: the dialog used to sit in 保存中 for the whole
+    // turn (and forever for a hung Member) because the response — and the
+    // serialized queue behind it — waited on the boundary.
+    expect(await settles(busyEdit)).toBe('settled')
+    expect(memberSection(await memberAssembly(ctx, busy))?.text).toBe('First paragraph.')
+
+    // A different Member's durable work is not blocked behind that wait: the
+    // busy Member's turn is still held, and the queue answers promptly.
+    const siblingEdit = ctx.agentTeam.updateMember({
+      requestId: requestId('t11-sibling-edit'), memberId: sibling.memberId, handle: sibling.handle, description: 'Prompt member',
+      prompt: { customPrompt: 'Sibling paragraph.' },
+    })
+    expect(await settles(siblingEdit, 2_000)).toBe('settled')
+    expect(memberSection(await memberAssembly(ctx, sibling))?.text).toBe('Sibling paragraph.')
+    const suspended = await ctx.agentTeam.suspendMember({ requestId: requestId('t11-suspend-sibling'), memberId: sibling.memberId })
+    expect(suspended.status.availability).toBe('suspended')
+
+    // Release the turn: the parked apply still lands in the same Session.
+    adapter.enqueue(closingReply('done'))
+    adapter.release()
+    await turnDone
+    await untilTrue(async () => memberSection(await memberAssembly(ctx, busy))?.text === 'Second paragraph.', 'scheduled swap after the queue stayed free')
   })
 
   it('maps section text to mentioned tools whole-word for the prose-only mark', () => {
@@ -534,6 +597,20 @@ async function until<T>(probe: () => T | undefined, label: string, timeoutMs = 1
   for (;;) {
     const value = probe()
     if (value !== undefined) return value
+    if (Date.now() > deadline) throw new Error(`not observed before deadline: ${label}`)
+    await new Promise(resolve => setTimeout(resolve, 100))
+  }
+}
+
+/**
+ * Async twin of `until` for probes that must read the live assembly: the
+ * scheduled boundary swap is a fire-and-forget background body, so tests wait
+ * for its effect instead of for the (already answered) edit.
+ */
+async function untilTrue(probe: () => Promise<boolean>, label: string, timeoutMs = 10_000): Promise<void> {
+  const deadline = Date.now() + timeoutMs
+  for (;;) {
+    if (await probe()) return
     if (Date.now() > deadline) throw new Error(`not observed before deadline: ${label}`)
     await new Promise(resolve => setTimeout(resolve, 100))
   }
