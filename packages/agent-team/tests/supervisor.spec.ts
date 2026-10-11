@@ -241,6 +241,28 @@ describe('MemberSupervisor failure streaks', () => {
   })
 })
 
+describe('MemberSupervisor blocked stops', () => {
+  it('starts the coercion chain on the spot instead of spending bring-ups on nudges', () => {
+    const { supervisor, restarts, replacements } = harness({ states: { [builder]: 'stopped' } })
+    supervisor.onBlockedStop(builder)
+    expect(restarts).toEqual([])
+    expect(replacements).toEqual([{ memberId: builder, trigger: 'context-oversize', restartAttempts: 0 }])
+  })
+
+  it('counts the bring-ups a Member already spent into its blocked-stop record', async () => {
+    const { supervisor, replacements } = harness({ states: { [builder]: 'stopped' } })
+    await supervisor.runPass()
+    supervisor.onBlockedStop(builder)
+    expect(replacements).toEqual([{ memberId: builder, trigger: 'context-oversize', restartAttempts: 1 }])
+  })
+
+  it('ignores blocked stops from Members nobody is watching', () => {
+    const { supervisor, replacements } = harness({ candidates: [] })
+    supervisor.onBlockedStop(builder)
+    expect(replacements).toEqual([])
+  })
+})
+
 describe('MemberSupervisor lifecycle', () => {
   beforeEach(() => {
     vi.useFakeTimers()
@@ -300,5 +322,20 @@ describe('handover notice', () => {
     })
     expect(body).toContain('failed 3 turns in a row without finishing any of them')
     expect(body).toContain('- none (its Claims were already released)')
+  })
+
+  it('names the context-policy block as the cause when that is what replaced the Member', () => {
+    const body = supervisionHandoffText({
+      failedHandle: 'builder',
+      replacementHandle: 'builder-2',
+      trigger: 'context-oversize',
+      restartAttempts: 0,
+      maxRestartAttempts: SUPERVISION_MAX_RESTART_ATTEMPTS,
+      maxConsecutiveFailures: SUPERVISION_MAX_CONSECUTIVE_FAILURES,
+      maxWindowFailures: SUPERVISION_WINDOW_FAILURES,
+      maxFailureWindowMs: SUPERVISION_FAILURE_WINDOW_MS,
+      releasedClaims: [],
+    })
+    expect(body).toContain('`builder` kept having every model request blocked by its own context pressure policy')
   })
 })

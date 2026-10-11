@@ -26,6 +26,8 @@ cursor 只延续 Thread 行；continuation 页只渲染 Threads，翻页可达�
 
 history 页渲染历史结果与 Thread 身份，首页给 full anchor、continuation 页给 bounded subject，选中 facts 与 cursor/hasMore 页脚——绝无当前 Claims 或 advice。每条 activity fact 都是结构化的——actor、Task ref，以及该 activity claim、完成、接受或 release 的 Claim refs——绝不是裸 kind。当一次 `read` 确认的是一个仍处于 done 状态 Task 的未读验收时，结果附带一段 `contextAdvice`：读取 Member 的实测用量、当前路由的预算、任务边界阈值 `min(128_000, effective handoffAt)`，以及唯一动作——保留当前上下文、验收收尾后 fresh rollover、或已达 handoff 预算时立即换窗。建议只是推荐：Host 绝不在验收时自动 checkpoint、rollover 或 compact，测量失败降级为显式 `unavailable` 文案而不会反转已提交的 read。history 与重复 read 不带建议。
 
+`fresh` Member 把任务边界档读作 keep：它的下一次分配本来就会换新上下文，此刻 rollover 只会把完成总结从 live 日志中抹掉。
+
 ## `team_message`
 
 `team_message.start` 创建 Channel 顶层 Thread；默认 taskless，也接受明确 task intent 以原子创建 Task。 `team_message.reply` 向既有 Thread 追加明确的 reply。 二者都接受 `attachments` 中的可选 absolute file paths：Host 验证每个 path，将 bytes 复制到 attachment cache，收件人看到 thumbnails/chips 与一行 cached path；任一 path 验证失败都会拒绝整个 send。 commit 的 start/reply 渲染一个 committed-verb 结果——Thread created 或 reply added——携带 Message ref、新 Thread ref（taskful 时含 Task ref），以及恰好一个 next-write token hand-off，新建 Thread 立即可寻址、下一次变更也拿到了基础。
@@ -44,7 +46,9 @@ taskful 的 start 还可传 `parentTaskRef`，把新 Task 归档为同 Channel �
 
 ## `team_supervise`
 
-`team_supervise` 以周期监督 pass 所依据的同一证据读取并修复其他 Member 的健康状态。`status` 报告一个 Member 的 pass 状态——`healthy`、`settling` 或 `stopped`——它的 presence、已记录的失败诊断，以及二十分钟窗口内的失败次数；它是纯读操作，不写任何 operation。`reset` 强制一个异常 Member——stopped 且带错误、反复失败、或卡死——进入与 Human 菜单相同的 fresh-context 重置：Session 从空重开，身份、设置与私有记忆保留，旧日志归档，团队照常收到重置通知。healthy 的 Member 会拒绝重置——监督只修复真正异常的对象——且调用者不能重置自己。重置后，向该 Member 重新交代被打断的工作并派发新任务。
+`team_supervise` 以周期监督 pass 所依据的同一证据读取并修复其他 Member 的健康状态。`status` 报告一个 Member 的 pass 状态——`healthy`、`settling` 或 `stopped`——它的 presence、已记录的失败诊断，以及二十分钟窗口内的失败次数；它是纯读操作，不写任何 operation。`reset` 强制一个异常 Member——stopped 且带错误、反复失败、或卡死——进入与 Human 菜单相同的 fresh-context 重置：Session 从空重开，身份、设置与私有记忆保留，旧日志归档。healthy 的 Member 会拒绝重置——监督只修复真正异常的对象——且调用者不能重置自己。
+
+重置后 Host 只私下提示被重置的 Member：凭私有记忆与最近的团队沟通历史重新定位，仍不清楚的向队友发消息询问——直接派发新任务即可，无需重新同步上下文。
 
 ## `context_rollover`
 

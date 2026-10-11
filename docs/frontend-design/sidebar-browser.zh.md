@@ -24,6 +24,8 @@ Workspace 概览是当前页时它携带 `aria-current='page'`，与原先被选
 
 活跃成员（availability active）另有两个上下文动作：「重置」经 `clearMemberContext` 换新 Member Session（破坏性确认后执行，嵌入的会话页重绑到新 Session）；「压缩」经 `compactMemberContext` 调度一次 context 压缩，可在编辑器同款模型选择器中指定摘要 LLM——弹层在提交即确认，Host 把压缩排在成员当前动作之后执行。Member 依旧可经 `context_rollover` 工具自管上下文。
 
+每一行还有「历史会话」：只读弹层按新旧排列成员的 Session 世代（当前世代带标记），经 `memberSessions` 与 `memberSessionTranscript` 分页展示所选世代的有界转录；它从不激活或写入 Session，归档日志因此可直读。
+
 频道编辑器（`编辑频道`）：名称/说明输入框 + 成员增删字段集。保存钮无改动即禁用（dirty 门），提交走 `updateChannel` Remote（幂等 request 同载荷复用），成功后由投影刷新回填行文案——不做乐观行内改名；成员增删仍走既有 join/remove Remote（request 按 方向+成员+频道 键复用）。
 
 Agent 编辑器（`编辑 Agent`）：名称/说明输入框 + 模型选择。模型选择复用公共 `Menu` 原语：触发钮呈 Input 形态（当前值 + 旋转 chevron），选项首行「跟随全局默认」，其后按 provider 分组标题 + 模型行、选中尾勾；目录经宿主级 `llm.models` 取得，不依赖任何活跃会话。提交走 `updateMember` Remote：缺省模型即清除覆盖（回到 Host 默认继承）；改模型对活跃成员原地更新 live model selection，保持 Agent 与 Session 身份不变，后续请求使用新选择；纯展示编辑不重启。

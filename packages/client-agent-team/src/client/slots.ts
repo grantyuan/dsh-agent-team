@@ -32,6 +32,10 @@ import type {
   AgentTeamMemberResult,
   AgentTeamMemberPromptView,
   AgentTeamMemberPromptViewRequest,
+  AgentTeamMemberSessionsRequest,
+  AgentTeamMemberSessionSummary,
+  AgentTeamMemberSessionTranscript,
+  AgentTeamMemberSessionTranscriptRequest,
   AgentTeamAddMemberResult,
   AgentTeamRecoverMemberRequest,
   AgentTeamRecoverMemberResult,
@@ -149,6 +153,19 @@ export type TeamSidebarProps = PropsRuntime<'sidebar.workspaces'>
      * activity and never blocks later conversation.
      */
     compactMemberContext: (request: AgentTeamCompactMemberContextRequest) => Promise<RemoteResult<AgentTeamCompactMemberContextResult>>
+  /**
+   * Host read behind the session-history dialog: every Session generation the
+   * Member has run, newest first, folded from the stored `parentSession`
+   * lineage. An unreadable ancestor rides as a metadata-less entry and ends
+   * the walk.
+   */
+  loadMemberSessions: (request: AgentTeamMemberSessionsRequest) => Promise<RemoteResult<readonly AgentTeamMemberSessionSummary[]>>
+  /**
+   * One bounded transcript page of one lineage generation: the generation's
+   * own events, newest tail first, older pages reached through the returned
+   * cursor. Reads are Team-owned and never activate or write the Session.
+   */
+  loadMemberSessionTranscript: (request: AgentTeamMemberSessionTranscriptRequest) => Promise<RemoteResult<AgentTeamMemberSessionTranscript>>
     /**
      * One bounded propose-only LLM curation pass behind the Prompt dialog: the
      * Host assembles the Member's live section input and runs a single

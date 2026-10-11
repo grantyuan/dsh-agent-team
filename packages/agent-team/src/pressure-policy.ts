@@ -33,6 +33,31 @@ import { advanceOwnedSessionEventCursor, type OwnedSessionEventCursor, type Sess
 export const CONTEXT_PRESSURE_NOTICE_SUMMARY = 'Context pressure: prepare a handoff'
 
 /**
+ * Stable prefix of every hard-limit block diagnostic this policy records as a
+ * Member failure. The policy is the only writer of these texts; the read-side
+ * classifier below shares the constants so a consumer recognizes the class
+ * without re-deriving the wording.
+ */
+const HARD_LIMIT_BLOCK_PREFIX = 'context hard limit'
+
+/** Stable prefix of the capacity-unknown block diagnostic; same single-writer rule as {@link HARD_LIMIT_BLOCK_PREFIX}. */
+const POLICY_BLOCK_PREFIX = 'context pressure policy'
+
+/**
+ * Whether one Member failure diagnostic is a pressure-policy request block:
+ * the policy itself refused the model request — an unknown route capacity, a
+ * failed or refused hard-limit compaction, a spent forced-compaction budget,
+ * or an unproven reduction. A Member carrying such a diagnostic has every
+ * later turn refused before any model call, so continuation nudging cannot
+ * make progress; only a fresh context generation (the supervision reset) or a
+ * changed route can. The manual compaction path's failures do not block
+ * requests and do not classify.
+ */
+export function isPressureRequestBlockDiagnostic(diagnostic: string): boolean {
+  return diagnostic.startsWith(HARD_LIMIT_BLOCK_PREFIX) || diagnostic.startsWith(POLICY_BLOCK_PREFIX)
+}
+
+/**
  * Whether this Session's own span already carries the pressure notice: either
  * surfaced as a `user/message` or still queued in a durable
  * `agent/inbox/spliced` insert. Expressed as a fold rather than a scan because
@@ -88,6 +113,12 @@ export interface PressurePolicyOptions {
   readonly runningJobLabels: (memberId: AgentTeamMemberId) => readonly string[]
   /** Report a Member failure with a recoverable diagnostic. */
   readonly failed: (memberId: AgentTeamMemberId, sessionId: Agent['id'], diagnostic: string) => void
+  /**
+   * Report that a recorded request block has ended: a pre-step proved the
+   * pressure receded below the hard limit, so a hard-limit block no longer
+   * describes this Member's live Session. Absent, stale block records persist.
+   */
+  readonly healed?: (memberId: AgentTeamMemberId) => void
   /**
    * The other-LLM summarizer fallback, run when the Member-scoped engine's
    * forced reduction throws: tries the Host catalog's other configured routes
@@ -186,7 +217,7 @@ export class PressurePolicyCoordinator {
     if (limits === undefined) {
       // A missing route capacity must be explicit, never an accidental
       // unlimited policy: reject the step with a recoverable diagnostic.
-      const diagnostic = 'context pressure policy: the routed model capacity is unknown; refusing to forward a request without a bounded context budget'
+      const diagnostic = `${POLICY_BLOCK_PREFIX}: the routed model capacity is unknown; refusing to forward a request without a bounded context budget`
       this.options.failed(member.memberId, member.sessionId, diagnostic)
       return { kind: 'reject' }
     }
@@ -196,8 +227,10 @@ export class PressurePolicyCoordinator {
       return outcome ? { kind: 'continue' } : { kind: 'reject' }
     }
     // Pressure receded below the hard limit: whatever reduced it (compaction,
-    // rollover, manual action) closed the current recovery chain.
+    // rollover, manual action) closed the current recovery chain — and proved
+    // any recorded hard-limit block stale for this generation.
     this.forcedCompactions.delete(agent)
+    this.options.healed?.(member.memberId)
     if (usageTokens >= handoffAt && !this.noticeDelivered(agent, member.memberId)) {
       const notice = createUserMessage({
         content: [{ type: 'text', text: contextPressureNoticeText({
@@ -272,12 +305,12 @@ export class PressurePolicyCoordinator {
   private async enforceHardLimit(agent: Agent, memberId: AgentTeamMemberId, sessionId: Agent['id'], hardLimit: number, signal: AbortSignal): Promise<boolean> {
     const engine = this.options.compactionForAgent(agent)
     if (engine === undefined) {
-      const diagnostic = 'context hard limit reached and compaction is unavailable in the Member scope; the request was blocked'
+      const diagnostic = `${HARD_LIMIT_BLOCK_PREFIX} reached and compaction is unavailable in the Member scope; the request was blocked`
       this.options.failed(memberId, sessionId, diagnostic)
       return false
     }
     if ((this.forcedCompactions.get(agent) ?? 0) >= 1) {
-      const diagnostic = 'context hard limit reached and the forced-compaction budget for this recovery chain is already spent; the request was blocked'
+      const diagnostic = `${HARD_LIMIT_BLOCK_PREFIX} reached and the forced-compaction budget for this recovery chain is already spent; the request was blocked`
       this.options.failed(memberId, sessionId, diagnostic)
       return false
     }
@@ -286,14 +319,14 @@ export class PressurePolicyCoordinator {
     try {
       await engine.compactIfNeeded(agent, 'context-overflow', signal)
     } catch (error) {
-      this.options.log(`context hard limit compaction failed: ${error instanceof Error ? error.message : String(error)}; trying fallback LLM routes (member ${memberId})`)
+      this.options.log(`${HARD_LIMIT_BLOCK_PREFIX} compaction failed: ${error instanceof Error ? error.message : String(error)}; trying fallback LLM routes (member ${memberId})`)
       // Last resort before failing closed: the other configured LLM routes. A
       // fallback that advanced the surface still has to pass the same measured
       // below-limit proof every continuing request needs.
       const fell = !signal.aborted && this.options.compactWithFallback !== undefined
         && await this.options.compactWithFallback(agent, memberId, signal)
       if (!fell) {
-        const diagnostic = `context hard limit compaction failed: ${error instanceof Error ? error.message : String(error)}; the request was blocked`
+        const diagnostic = `${HARD_LIMIT_BLOCK_PREFIX} compaction failed: ${error instanceof Error ? error.message : String(error)}; the request was blocked`
         this.options.failed(memberId, sessionId, diagnostic)
         return false
       }
@@ -304,8 +337,8 @@ export class PressurePolicyCoordinator {
       // No meter or an unproven reduction: fail closed rather than knowingly
       // submit over the Team limit.
       const diagnostic = after === undefined
-        ? 'context hard limit compaction left the context pressure unmeasurable; the request was blocked'
-        : `context hard limit compaction left ${after} tokens at or above the ${hardLimit} hard limit; the request was blocked`
+        ? `${HARD_LIMIT_BLOCK_PREFIX} compaction left the context pressure unmeasurable; the request was blocked`
+        : `${HARD_LIMIT_BLOCK_PREFIX} compaction left ${after} tokens at or above the ${hardLimit} hard limit; the request was blocked`
       this.options.failed(memberId, sessionId, diagnostic)
       return false
     }

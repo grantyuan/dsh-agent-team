@@ -33,7 +33,7 @@ import { reportEnvironment } from './environment-check.ts'
 import { HUMAN_PROFILE_DEFAULT_NAME, HUMAN_PROFILE_REPO_URL, HUMAN_PROFILE_SETTINGS_NAMESPACE, HUMAN_PROFILE_SETTINGS_SCHEMA, HUMAN_PROFILE_VERSION, assertValidHumanName, normalizeHumanName, parseLegacyHumanProfile, planLegacyAdoption, type LegacyHumanProfileFields } from './human-profile.ts'
 import { humanAvatarsRoot, readHumanAvatar, removeHumanAvatar, writeHumanAvatar } from './human-avatar.ts'
 import { createHumanUpdateChecker } from './human-update-check.ts'
-import { PressurePolicyCoordinator } from './pressure-policy.ts'
+import { isPressureRequestBlockDiagnostic, PressurePolicyCoordinator } from './pressure-policy.ts'
 import { CONTEXT_CONTINUITY_PROJECTION_KEY, readContextTimeline, type ContextProjectionConfig, type ContextTimelineItem, type ContextTimelineSource, type TransitionPlan } from '@wowyuarm/dsh-context-continuity'
 import { createTeamContextManagement, TEAM_CONTEXT_CODEC } from './context-continuity-host.ts'
 import { AGENT_TEAM_PLUGIN_ID, isAgentTeamSource } from './context-source.ts'
@@ -47,10 +47,10 @@ import { BlockAssembler, LlmError } from '@deepseek-ai/dsh-llm'
 import type { MemberSkillSelectionRef } from './member-skills.ts'
 import { classifyRecoverableError, RecoveryCoordinator, RECOVERY_MAX_CONSECUTIVE_ERRORS } from './recovery.ts'
 import { classifyAssistantResponse, RESPONSE_GUARD_MAX_CONSECUTIVE, RESPONSE_GUARD_NOTICE_SUMMARY, ResponseGuardCoordinator } from './response-guard.ts'
-import { MemberSupervisor, nextReplacementHandle, supervisionAlertText, supervisionHandoffText, SUPERVISION_FAILURE_WINDOW_MS, SUPERVISION_HUNG_MS, SUPERVISION_MAX_CONSECUTIVE_FAILURES, SUPERVISION_MAX_RESTART_ATTEMPTS, SUPERVISION_WINDOW_FAILURES, type MemberSupervisionState, type SupervisionTrigger } from './supervisor.ts'
-import { TaskContinuationWatcher, continuationNudgeText, type ContinuationLeader, type ContinuationTask } from './continuation-watcher.ts'
+import { MemberSupervisor, nextReplacementHandle, supervisionHandoffText, SUPERVISION_FAILURE_WINDOW_MS, SUPERVISION_HUNG_MS, SUPERVISION_MAX_CONSECUTIVE_FAILURES, SUPERVISION_MAX_RESTART_ATTEMPTS, SUPERVISION_WINDOW_FAILURES, type MemberSupervisionState, type SupervisionTrigger } from './supervisor.ts'
+import { CONTINUATION_NUDGE_MARKER, TaskContinuationWatcher, continuationNudgeText, type ContinuationLeader, type ContinuationTask } from './continuation-watcher.ts'
 import { StoredSessionReadError, StoredSessionReader, sessionFailureOf } from './stored-session-reader.ts'
-import { doctorAnalysisPrompt, renderFailureTranscript, type TranscriptEvent } from './failure-transcript.ts'
+import { doctorAnalysisPrompt, renderFailureTranscript, transcriptEntryOf, type TranscriptEvent } from './failure-transcript.ts'
 import { agentTeamDomainSpec } from './spec.ts'
 import { formatTeamTimestamp } from './time-format.ts'
 import type {
@@ -108,6 +108,10 @@ import type {
   AgentTeamMemberPromptSectionEntry,
   AgentTeamMemberPromptView,
   AgentTeamMemberPromptViewRequest,
+  AgentTeamMemberSessionsRequest,
+  AgentTeamMemberSessionSummary,
+  AgentTeamMemberSessionTranscriptRequest,
+  AgentTeamMemberSessionTranscript,
   AgentTeamCurateMemberPromptRequest,
   AgentTeamCurateMemberPromptResult,
   AgentTeamCurateMemberPromptProposal,
@@ -157,8 +161,10 @@ import type {
   AgentTeamThreadAttentionRequest,
   AgentTeamThreadAttentionResult,
   AgentTeamThreadAttentionStatus,
+  AgentTeamThreadFact,
   AgentTeamThreadHistory,
   AgentTeamThreadHistoryRequest,
+  AgentTeamThreadReadFact,
   AgentTeamThreadReadRequest,
   AgentTeamThreadReadResult,
   AgentTeamContextAdvice,
@@ -185,7 +191,20 @@ export const AGENT_TEAM_PRESET_MARKER = Symbol.for('@wowyuarm/dsh-agent-team.pre
 
 const INBOX_NOTICE_SUMMARY = 'Team Inbox has unread work.'
 const RECOVERY_NOTICE_SUMMARY = 'Recovery: continue your interrupted work.'
+const RESET_NOTICE_SUMMARY = 'Context reset: your Session was renewed.'
+/**
+ * The first-line prefix of the retired context-reset Channel broadcast, kept
+ * so the Inbox notification projection still recognizes those ledger Messages
+ * in ledgers that recorded them and folds their stale unread instances.
+ */
+const CONTEXT_RESET_NOTICE_MARKER = 'Context reset notice:'
 const ORPHANED_MEMBER_DIAGNOSTIC = 'Member preset composition was lost after a reload; its tools are unavailable. Resume rebuilds the member in place.'
+
+/** One recorded Member failure and the Session generation it happened in. */
+interface AgentTeamMemberFailureRecord {
+  readonly message: string
+  readonly sessionId?: SessionId
+}
 
 /** Idle-boundary attempts one scheduled background compaction gets before conversation wins and the request is dropped. */
 const MEMBER_COMPACT_BUSY_ATTEMPTS = 3
@@ -234,6 +253,9 @@ export const MAX_TIMELINE_LIMIT = 24
  * disagree about where history ends.
  */
 const MAX_TIMELINE_ANCESTORS = 8
+/** Session-history dialog page budgets: rendered lines and characters per read. */
+const SESSION_TRANSCRIPT_PAGE_ENTRIES = 150
+const SESSION_TRANSCRIPT_PAGE_CHARS = 24_000
 /** Product pressure budget constants (see docs/team-collaboration/README.md). */
 const CONTEXT_HARD_LIMIT_CAP = 256_000
 const CONTEXT_HANDOFF_AT_CAP = 200_000
@@ -475,15 +497,17 @@ export default class AgentTeam extends TypertRemoteService {
    * activation, then runtime, then compaction; slots clear independently, so
    * a recovered runtime error re-reveals an outstanding compaction failure.
    * Keyed by Member rather than Session so a restarted Session cannot leak
-   * stale keys.
+   * stale keys; each runtime/compaction record carries the Session it
+   * happened in, so a record left over from an earlier generation can be
+   * recognized as stale instead of reading as the Member's current state.
    */
   private readonly memberFailures = new Map<AgentTeamMemberId, {
     /** Activation failed; the Member has no live Session to recover into. */
     activation?: AgentTeamMemberDiagnostic
     /** The Member Session reported agent/error. */
-    runtime?: string
+    runtime?: AgentTeamMemberFailureRecord
     /** Last non-busy automatic-compaction failure; entered transactions retain additional Session history. */
-    compaction?: string
+    compaction?: AgentTeamMemberFailureRecord
   }>()
   /**
    * Last durable Session-event timestamp per Member, process-local. Hung
@@ -700,9 +724,12 @@ export default class AgentTeam extends TypertRemoteService {
       limitsForAgent: agent => this.routeLimitsForAgent(agent),
       activeClaimLabels: memberId => this.activeClaimLabels(memberId),
       runningJobLabels: memberId => this.runningJobLabels(memberId),
-      failed: (memberId, _sessionId, diagnostic) => {
-        this.setMemberFailure(memberId, 'compaction', diagnostic)
+      failed: (memberId, sessionId, diagnostic) => {
+        this.setMemberFailure(memberId, 'compaction', diagnostic, sessionId)
         this.emitAutoCompactionChanged(memberId)
+      },
+      healed: memberId => {
+        if (this.clearMemberFailure(memberId, 'compaction')) this.emitAutoCompactionChanged(memberId)
       },
       compactWithFallback: (agent, memberId, signal) => this.policyCompactWithFallback(memberId, agent, signal),
       log: message => { this.ctx.logger.warn(`agent-team: ${message}`) },
@@ -839,7 +866,7 @@ export default class AgentTeam extends TypertRemoteService {
       const member = this.memberForAgent(agent)
       if (member === undefined) return
       const message = error instanceof Error ? error.message : String(error)
-      this.setMemberFailure(member.memberId, 'runtime', message)
+      this.setMemberFailure(member.memberId, 'runtime', message, agent.id)
       const kind = classifyRecoverableError(message)
       if (kind !== undefined) this.ctx.logger.warn(`agent-team: member '${member.handle}' hit a recoverable ${kind} error; recording a consecutive error occurrence`)
       this.recovery.onError(member.memberId, message)
@@ -1065,6 +1092,122 @@ export default class AgentTeam extends TypertRemoteService {
       ...(member.contextStartPolicy === undefined ? {} : { contextStartPolicy: member.contextStartPolicy }),
       ...(member.contextWindow === undefined ? {} : { contextWindow: member.contextWindow }),
     })
+  }
+
+  /**
+   * Human read behind the session-history dialog: every Session generation
+   * this Member has run, newest first. The walk follows the stored
+   * `parentSession` fork lineage from the ledger-bound Session — the live
+   * generation reads through its handle, archived ancestors through the
+   * stored-session reader — capped at the same depth as the timeline and the
+   * usage fold. An unreadable ancestor degrades to a metadata-less entry and
+   * ends the walk; the list never claims depth it could not verify.
+   */
+  @Remote('memberSessions')
+  async memberSessions(request: AgentTeamMemberSessionsRequest): Promise<readonly AgentTeamMemberSessionSummary[]> {
+    const member = this.requireLedger().getMember(request.memberId)
+    if (member === undefined) throw new Error(`unknown Agent Member '${request.memberId}'`)
+    const lineage = await this.memberSessionLineage(member)
+    return Object.freeze(lineage.map(generation => Object.freeze({
+      sessionId: generation.sessionId,
+      isCurrent: generation.isCurrent,
+      ...(generation.createdAt === undefined ? {} : { createdAt: generation.createdAt }),
+      ...(generation.eventCount === undefined ? {} : { eventCount: generation.eventCount }),
+    })))
+  }
+
+  /**
+   * One bounded transcript page of one generation from the same lineage walk:
+   * the generation's OWN events only (the fork-inherited prefix belongs to
+   * the ancestor page), newest tail first, older pages reached through the
+   * returned cursor. A Session outside the Member's lineage is refused —
+   * this read never becomes a general session reader.
+   */
+  @Remote('memberSessionTranscript')
+  async memberSessionTranscript(request: AgentTeamMemberSessionTranscriptRequest): Promise<AgentTeamMemberSessionTranscript> {
+    const member = this.requireLedger().getMember(request.memberId)
+    if (member === undefined) throw new Error(`unknown Agent Member '${request.memberId}'`)
+    const sessionId = SessionId(request.sessionId)
+    const lineage = await this.memberSessionLineage(member)
+    const generation = lineage.find(entry => entry.sessionId === sessionId)
+    if (generation === undefined) throw new Error(`Session '${sessionId}' is not in the lineage of Agent Member '${member.handle}'`)
+    if (generation.events === undefined) throw new Error(`Session '${sessionId}' could not be read: ${generation.unreadableDetail ?? 'unreadable'}`)
+    const rendered: Array<{ seq: number; time: number; role: 'user' | 'assistant' | 'tool-call' | 'tool-result'; text: string }> = []
+    for (const event of generation.events) {
+      if (request.beforeSeq !== undefined && event.seq >= request.beforeSeq) continue
+      const entry = transcriptEntryOf(event)
+      if (entry === undefined) continue
+      rendered.push({ seq: event.seq, time: event.time, role: entry.role, text: entry.text })
+    }
+    let start = rendered.length
+    let chars = 0
+    while (start > 0) {
+      const candidate = rendered[start - 1]!
+      if (start < rendered.length
+        && (rendered.length - start + 1 > SESSION_TRANSCRIPT_PAGE_ENTRIES || chars + candidate.text.length > SESSION_TRANSCRIPT_PAGE_CHARS)) break
+      chars += candidate.text.length + 1
+      start -= 1
+    }
+    const page = rendered.slice(start)
+    return Object.freeze({
+      entries: Object.freeze(page.map(entry => Object.freeze(entry))),
+      hasEarlier: start > 0,
+      ...(start > 0 ? { nextBeforeSeq: page[0]!.seq } : {}),
+    })
+  }
+
+  /** One generation from the lineage walk: metadata when readable, own events for the transcript. */
+  private memberSessionLineage(member: AgentTeamAgentMember): Promise<readonly {
+    readonly sessionId: SessionId
+    readonly isCurrent: boolean
+    readonly createdAt?: number
+    readonly eventCount?: number
+    readonly events?: readonly SessionEvent[]
+    readonly unreadableDetail?: string
+  }[]> {
+    return (async () => {
+      const generations: Array<{
+        readonly sessionId: SessionId
+        readonly isCurrent: boolean
+        readonly createdAt?: number
+        readonly eventCount?: number
+        readonly events?: readonly SessionEvent[]
+        readonly unreadableDetail?: string
+      }> = []
+      const handle = this.handles.get(member.memberId)
+      let sessionId: SessionId | undefined = member.sessionId
+      let guard = 0
+      while (sessionId !== undefined && guard++ <= MAX_TIMELINE_ANCESTORS) {
+        const isCurrent = generations.length === 0
+        if (isCurrent && handle !== undefined && handle.agent.session.id === sessionId) {
+          const session = handle.agent.session
+          generations.push({
+            sessionId,
+            isCurrent,
+            createdAt: session.header.createdAt,
+            eventCount: session.snapshotEvents().length,
+            events: session.ownEvents(),
+          })
+          sessionId = session.header.parentSession
+          continue
+        }
+        const read = await this.sessionReader.read(sessionId)
+        if (!read.ok) {
+          generations.push({ sessionId, isCurrent, unreadableDetail: read.failure.detail })
+          break
+        }
+        const inspection = read.inspection
+        generations.push({
+          sessionId,
+          isCurrent,
+          createdAt: inspection.header.createdAt,
+          eventCount: inspection.events.length,
+          events: inspection.events.slice(inspection.inheritedEventCount),
+        })
+        sessionId = inspection.header.parentSession
+      }
+      return generations
+    })()
   }
 
   /**
@@ -1461,8 +1604,8 @@ export default class AgentTeam extends TypertRemoteService {
    * menu's reset row, supervision's forced fallback reset, the doctor
    * diagnostic reset, and the fresh-start task policy: commit the idempotent
    * ledger renewal, retire the previous generation, activate the fresh
-   * Session, and broadcast the reset notice. The fresh id derives from the
-   * requestId, so a retried identical request mints the same id and the
+   * Session, and privately notice the reset Member. The fresh id derives from
+   * the requestId, so a retried identical request mints the same id and the
    * ledger dedupes it instead of colliding; the format matches addMember's
    * `agent-team-<uuid>`. Callers own their own preconditions (participation,
    * enabled state, running-turn refusal) — this core only refuses a Member
@@ -1485,61 +1628,60 @@ export default class AgentTeam extends TypertRemoteService {
     }
     const renewed = result.value.member
     await this.retireMemberGeneration(memberId, active, previousSessionId)
-    await this.activateMember(renewed, undefined, undefined, previousSessionId)
+    // Defer the ordinary Inbox wake so the reset notice reads as the fresh
+    // generation's first Team word; the wake is rederived right after it.
+    await this.activateMember(renewed, undefined, undefined, previousSessionId, { deferNotify: true })
     const reactivated = this.handles.get(memberId)
     if (reactivated === undefined) {
       // Reactivation failed; the activation diagnostic carries the reason and
       // the durable renewal stays honest about the attempt.
       throw new Error(`Agent Member '${stored.handle}' failed to start a new context: ${this.memberFailures.get(memberId)?.activation ?? 'unknown error'}`)
     }
-    await this.announceContextReset(renewed, resetBy)
+    if (resetBy !== 'doctor') this.notifyMemberContextReset(reactivated.agent, renewed, resetBy)
+    this.notifyMember(reactivated.agent)
     return Object.freeze({ receipt: result.value.receipt, member: renewed })
   }
 
   /**
-   * Broadcast one context-reset notice on every Channel the renewed Member
-   * belongs to, delivered to every live fellow Member. A renewed Session starts
-   * empty, so collaborators must learn the conversation state was dropped and
-   * re-briefing is expected; identity, settings, private memory, and durable
-   * Team facts (Tasks, Claims, membership) survive, and the notice says so. The
-   * wording names who reset it — the Human, or team supervision after repeated
-   * failures or a hang. The doctor dispatch resets are skipped: the reset is an
-   * internal step of a one-shot diagnostic, the steer arrives immediately, and
-   * waking the whole Channel for it would buy nothing. Failures are logged,
-   * never thrown: the reset itself is already durable and committed when this
-   * runs.
+   * Privately notice the reset Member itself after its context renewal: one
+   * runtime notice — never a ledger Message — telling it the Session was
+   * reset, that its handle, settings, and private memory are unchanged and
+   * durable Team facts survived, and how to re-orient: the injected memory
+   * index names what was in hand, recent Team history is durable in the
+   * ledger through `team_view`, `team_inbox`, and `team_thread`, and whatever
+   * stays unclear it asks the teammates concerned instead of guessing. The
+   * Team is not broadcast to: a reset moves no durable Team fact, and the
+   * Member's next ordinary messages carry its state. Doctor dispatches skip
+   * it — the reset is an internal step of a one-shot diagnostic whose prompt
+   * arrives immediately. A failed delivery only logs: the renewal itself is
+   * already durable when this runs.
    */
-  private async announceContextReset(member: AgentTeamAgentMember, resetBy: 'human' | 'supervision' | 'teammate' | 'doctor' | 'policy'): Promise<void> {
-    if (resetBy === 'doctor') return
-    const ledger = this.requireLedger()
+  private notifyMemberContextReset(agent: Agent, member: AgentTeamAgentMember, resetBy: 'human' | 'supervision' | 'teammate' | 'policy'): void {
     const resetSource = resetBy === 'human'
       ? 'the Human'
       : resetBy === 'supervision'
         ? 'team supervision after repeated failures'
         : resetBy === 'teammate'
           ? 'a teammate through team supervision'
-          : 'its fresh-start Task policy'
-    const noticeBody = [
-      `Context reset notice: my Session was just reset by ${resetSource}, and I am starting from an empty context.`,
-      `My handle, settings, and private memory are unchanged, and durable Team facts (Tasks, Claims, Channels) are unaffected — but I remember nothing from earlier conversation, including anything we did together.`,
-      'If we had ongoing work, please re-share the key context here before relying on me to continue it.',
+          : 'your fresh-start Task policy'
+    const text = [
+      `Context reset notice: your Session was just reset by ${resetSource}, and you are starting from an empty context.`,
+      'Your handle, settings, and private memory are unchanged, and durable Team facts (Tasks, Claims, Channels) are unaffected — but you remember nothing from earlier conversation.',
+      'Re-orient before continuing any work: your injected memory index names what was in hand, and the recent Team history is durable in the ledger — read the Threads, Tasks, and mentions that concern you through team_view, team_inbox, and team_thread.',
+      'If anything stays unclear after reading, ask the teammates concerned — reply in the relevant Thread or send a direct message — instead of guessing.',
     ].join('\n')
-    const noticeChannels = ledger.workspacesOf(member.memberId)
-      .flatMap(workspaceId => ledger.channelsForMember(member.memberId, workspaceId).map(channelRef => ({ workspaceId, channelRef })))
-    for (const { workspaceId, channelRef } of noticeChannels) {
-      const audience = ledger.enabledChannelMembers(channelRef).filter(memberId => memberId !== member.memberId)
-      try {
-        await this.sendMessageAs({ kind: 'member', memberId: member.memberId, handle: member.handle }, {
-          requestId: randomUUID() as AgentTeamRequestId,
-          workspaceId,
-          channelRef,
-          body: noticeBody,
-          ...(audience.length === 0 ? {} : { recipients: audience }),
-          asTask: false,
-        })
-      } catch (error) {
-        this.ctx.logger.warn(`agent-team: context-reset notice for member '${member.handle}' failed in channel '${channelRef}': ${error instanceof Error ? error.message : String(error)}`)
-      }
+    const hint = createUserMessage({
+      content: [{ type: 'text', text }],
+      source: { kind: AGENT_TEAM_PLUGIN_ID, form: 'notice', summary: RESET_NOTICE_SUMMARY },
+    })
+    try {
+      // The same sequencing rule as the Inbox wake: ordinary next-turn input
+      // already queued (a rollover's or recovery's carried messages) claims
+      // the turn first, and this notice rides behind it as its own turn.
+      if (agent.inbox.nextTurn.some(message => message.source.kind === 'user')) agent.followup(hint)
+      else agent.steer(hint)
+    } catch (error) {
+      this.ctx.logger.warn(`agent-team: context-reset notice for member '${member.handle}' failed to deliver: ${error instanceof Error ? error.message : String(error)}`)
     }
   }
 
@@ -1593,7 +1735,7 @@ export default class AgentTeam extends TypertRemoteService {
     } catch (error) {
       const diagnostic = `manual context compaction failed: ${error instanceof Error ? error.message : String(error)}`
       this.ctx.logger.warn(`agent-team: ${diagnostic} (member '${member.handle}')`)
-      this.setMemberFailure(memberId, 'compaction', diagnostic)
+      this.setMemberFailure(memberId, 'compaction', diagnostic, active.agent.id)
       this.emitAutoCompactionChanged(memberId)
     } finally {
       this.pendingCompactions.delete(memberId)
@@ -1765,8 +1907,8 @@ export default class AgentTeam extends TypertRemoteService {
   /**
    * Post one auto-prune notice on every Channel the swept Member belongs to,
    * addressed to the Human by mention so it lands in the Human inbox. Ask mode
-   * asks for confirmation; full-auto documents what was committed. Member-voiced
-   * like the context-reset notice, and failures are logged, never thrown — the
+   * asks for confirmation; full-auto documents what was committed. The notice
+   * is Member-voiced, and failures are logged, never thrown — the
    * drop itself is already durable when this runs.
    */
   private async announceAutoPrune(member: AgentTeamAgentMember, sections: readonly string[], executed: boolean): Promise<void> {
@@ -2051,7 +2193,7 @@ export default class AgentTeam extends TypertRemoteService {
     const failures = this.memberFailures.get(memberId)
     return {
       transcript: renderFailureTranscript(events),
-      failureDiagnostic: failures?.runtime ?? failures?.compaction ?? failures?.activation?.detail,
+      failureDiagnostic: failures?.runtime?.message ?? failures?.compaction?.message ?? failures?.activation?.detail,
     }
   }
 
@@ -2077,6 +2219,11 @@ export default class AgentTeam extends TypertRemoteService {
     this.modelSelections.delete(memberId)
     this.memberRuntime.forgetMember(memberId)
     this.clearMemberFailure(memberId, 'activation')
+    // Runtime and compaction failures belong to the retired generation's
+    // Session: a record left behind would keep presence in error and could
+    // escalate a healthy new generation into an unneeded context reset.
+    this.clearMemberFailure(memberId, 'runtime')
+    this.clearMemberFailure(memberId, 'compaction')
     this.clearMemberNotificationState(memberId)
     // The previous log survives on disk; archiving hides it from every
     // grouping surface so one Member keeps exactly one visible Session.
@@ -2276,9 +2423,11 @@ export default class AgentTeam extends TypertRemoteService {
   /**
    * One supervised bring-up: the same repair `recoverMember` performs, chosen by
    * what is actually missing. No live Session (or an orphaned composition) is
-   * rebuilt; a live Agent that stopped mid-work gets the automatic continuation
-   * prompt. The next pass judges the attempt, so a throw here only means it did
-   * not help.
+   * rebuilt; a stopped Member whose failure signature is a pressure-policy
+   * request block escalates straight into the coercion chain's reset — the
+   * nudge cannot heal that class; any other live Agent that stopped mid-work
+   * gets the automatic continuation prompt. The next pass judges the attempt,
+   * so a throw here only means it did not help.
    */
   private async restartMemberUnderSupervision(memberId: AgentTeamMemberId): Promise<void> {
     const ledger = this.requireLedger()
@@ -2290,31 +2439,54 @@ export default class AgentTeam extends TypertRemoteService {
       await this.reactivateMember(memberId)
       return
     }
+    // A pressure-policy request block is the one stop a bring-up nudge provably
+    // cannot heal: the Member's context sits at or above the hard limit with its
+    // compaction failed or refused, so every later turn is refused before any
+    // model call and the nudge would only wake the Member straight into the same
+    // block. The coercion chain's fresh-context reset is the remedy, so the
+    // escalation starts here instead of spending the bring-up budget on nudges.
+    // The recorded failure must belong to the Member's current Session: a block
+    // left over from an earlier generation says nothing about this one, and
+    // resetting over it would throw away a healthy context.
+    const failures = this.memberFailures.get(memberId)
+    const blockFailure = failures?.runtime ?? failures?.compaction
+    if (blockFailure?.sessionId === handle.agent.id && isPressureRequestBlockDiagnostic(blockFailure.message)) {
+      this.ctx.logger.warn(`agent-team: supervision skipping the bring-up nudge for member '${member.handle}': its requests are blocked by the context pressure policy (${blockFailure.message}); escalating to a context reset`)
+      this.supervisor.onBlockedStop(memberId)
+      return
+    }
     this.ctx.logger.warn(`agent-team: supervision asking member '${member.handle}' to continue the work it stopped on`)
     this.steerResume(member, this.automaticResumeText())
   }
 
   /**
-   * Step one of the escalation chain behind the supervisor's give-up callback:
-   * record the episode and post the alert to the failing Member's Channels, so
-   * any fellow Member may reset it through `team_supervise`. The chain itself
-   * advances one step per supervision pass in {@link runSupervisionPass} — a
-   * further give-up callback for the same episode re-enters here as a no-op so
-   * the Team gets the whole inter-pass window to act, and the Host only coerces
-   * when nobody did.
+   * The give-up entry into the coercion chain: record the episode and run the
+   * Host's own context reset immediately — the same fresh-context renewal the
+   * Human menu performs, privately noticed to the reset Member alone. Nothing
+   * is broadcast asking teammates to reset it: the Member re-orients from its
+   * memory and the durable Team history and asks its teammates about whatever
+   * stays unclear. A further give-up callback for the same episode re-enters
+   * here as a no-op, and the chain's last resort — the archive-and-replace
+   * handover — advances in {@link runSupervisionPass} only while the Member
+   * still reads abnormal after the reset.
    */
   private async escalateSupervisedMember(memberId: AgentTeamMemberId, trigger: SupervisionTrigger, restartAttempts: number): Promise<void> {
     if (this.supervisionEscalation.has(memberId)) return
     this.supervisionEscalation.set(memberId, { trigger, restartAttempts, reset: false })
-    await this.announceSupervisionAlert(memberId, trigger, restartAttempts)
+    await this.forceResetSupervisedMember(memberId, trigger)
+    // forceReset swallows a renewal that committed but could not reactivate —
+    // that is still the reset step having run. Only a lifecycle refusal
+    // (requireAccepting) reaches here, and it leaves reset:false so the next
+    // pass retries the reset before any handover.
+    this.supervisionEscalation.set(memberId, { trigger, restartAttempts, reset: true })
   }
 
   /**
-   * Advance every open escalation one step while its Member is still abnormal:
-   * an alert nobody acted on becomes the Host's own context reset, and a reset
-   * that did not heal the Member becomes the archive-and-replace handover. A
+   * Advance every open escalation while its Member is still abnormal: a reset
+   * step that never committed retries, and a reset that did not heal the
+   * Member becomes the archive-and-replace handover. A
    * Member that reads healthy (or left the roster) drops out of the chain —
-   * a reset that healed it re-arms the gentle first step for any future
+   * a reset that healed it re-arms the gentle bring-up for any future
    * episode. Failures are logged, never thrown: the next pass retries the
    * same step.
    */
@@ -2340,43 +2512,6 @@ export default class AgentTeam extends TypertRemoteService {
         this.supervisionEscalation.delete(memberId)
       } catch (error) {
         this.ctx.logger.warn(`agent-team: supervision handover for member '${memberId}' failed: ${error instanceof Error ? error.message : String(error)}`)
-      }
-    }
-  }
-
-  /**
-   * Step one: broadcast the supervision alert on the failing Member's Channels,
-   * authored by that Member (the same voice the context-reset notice uses), so
-   * the Human alias and every live teammate receive it with concrete evidence
-   * and the exact `team_supervise` remedy. Failures are logged, never thrown —
-   * the Host's own fallback follows regardless.
-   */
-  private async announceSupervisionAlert(memberId: AgentTeamMemberId, trigger: SupervisionTrigger, restartAttempts: number): Promise<void> {
-    const ledger = this.requireLedger()
-    const member = ledger.getMember(memberId)
-    if (member === undefined) return
-    const body = supervisionAlertText({
-      failedHandle: member.handle, trigger, restartAttempts,
-      maxRestartAttempts: SUPERVISION_MAX_RESTART_ATTEMPTS,
-      maxConsecutiveFailures: SUPERVISION_MAX_CONSECUTIVE_FAILURES,
-      maxWindowFailures: SUPERVISION_WINDOW_FAILURES,
-      maxFailureWindowMs: SUPERVISION_FAILURE_WINDOW_MS,
-    })
-    const alertChannels = ledger.workspacesOf(memberId)
-      .flatMap(workspaceId => ledger.channelsForMember(memberId, workspaceId).map(channelRef => ({ workspaceId, channelRef })))
-    for (const { workspaceId, channelRef } of alertChannels) {
-      const audience = ledger.enabledChannelMembers(channelRef).filter(id => id !== memberId)
-      try {
-        await this.sendMessageAs({ kind: 'member', memberId, handle: member.handle }, {
-          requestId: randomUUID() as AgentTeamRequestId,
-          workspaceId,
-          channelRef,
-          body,
-          ...(audience.length === 0 ? {} : { recipients: audience }),
-          asTask: false,
-        })
-      } catch (error) {
-        this.ctx.logger.warn(`agent-team: supervision alert for member '${member.handle}' failed in channel '${channelRef}': ${error instanceof Error ? error.message : String(error)}`)
       }
     }
   }
@@ -2414,13 +2549,14 @@ export default class AgentTeam extends TypertRemoteService {
   }
 
   /**
-   * Step two: the Host performs the same context reset the Human menu performs
-   * ({@link renewMemberContextNow} — durable renewal, generation retire, fresh
-   * activation) on a Member nobody helped after the alert. This is the one
-   * caller allowed to retire a generation that is nominally still running: a
-   * hung Member never reaches idle, so refusing running Agents here would make
-   * the fallback unreachable — disposal aborts the wedged turn, and the durable
-   * binding has already moved by the time the old Agent dies.
+   * The chain's reset step: the Host performs the same context reset the Human
+   * menu performs ({@link renewMemberContextNow} — durable renewal, generation
+   * retire, fresh activation, private notice), retiring the wedged generation.
+   * This is the one caller allowed to retire a generation that is nominally
+   * still running: a hung Member never reaches idle, so refusing running
+   * Agents here would make the fallback unreachable — disposal aborts the
+   * wedged turn, and the durable binding has already moved by the time the old
+   * Agent dies.
    */
   private async forceResetSupervisedMember(memberId: AgentTeamMemberId, trigger: SupervisionTrigger): Promise<void> {
     await this.enqueueLifecycle(async () => {
@@ -2507,7 +2643,7 @@ export default class AgentTeam extends TypertRemoteService {
       })
       if (!added.committed) throw new Error(`supervision could not commit a replacement Member for '${failed.handle}'`)
       const stored = added.value.member
-      this.ctx.logger.warn(`agent-team: supervision replaced member '${failed.handle}' with '${stored.handle}' after ${trigger} escalating through alert and forced reset`)
+      this.ctx.logger.warn(`agent-team: supervision replaced member '${failed.handle}' with '${stored.handle}' after ${trigger} and a forced reset that did not heal it`)
       // The inherited index has to be in place before the first activation:
       // provisioning only writes a missing `memory.md`, so the copy wins and the
       // replacement's first turn already reads what its predecessor knew.
@@ -3098,6 +3234,15 @@ export default class AgentTeam extends TypertRemoteService {
           guidance: 'You are at or above the handoff budget. Finish the current atomic action and unsettled evidence, then call context_rollover with a fresh handoff now.' })
       }
       if (limits.usageTokens >= taskBoundaryThreshold) {
+        // A fresh-start Member is renewed automatically when its next task is
+        // assigned, so advising a rollover now would only erase the completion
+        // summary the Human still reads from the live Session. Keep the
+        // context; the next assignment is the boundary.
+        if (this.memberForAgent(agent)?.contextStartPolicy === 'fresh') {
+          return Object.freeze({ usageTokens: limits.usageTokens, taskBoundaryThreshold, handoffAt: limits.handoffAt, hardLimit: limits.hardLimit,
+            action: 'keep',
+            guidance: 'Keep the current context: your fresh-start Task policy renews the Session automatically when your next task is assigned, so rolling over now would only erase your completion summary from the live log. Do not rollover just because this Task was accepted.' })
+        }
         return Object.freeze({ usageTokens: limits.usageTokens, taskBoundaryThreshold, handoffAt: limits.handoffAt, hardLimit: limits.hardLimit,
           action: 'rollover',
           guidance: 'Finish the acceptance closeout, persist only durable reusable conclusions, collect or stop jobs, then call context_rollover with a fresh handoff covering every other active Claim. Do not return to an old checkpoint solely because this Task was accepted.' })
@@ -3130,7 +3275,7 @@ export default class AgentTeam extends TypertRemoteService {
     if (member === undefined || !ledger.participatesIn(request.memberId, request.workspaceId)) throw new Error(`unknown Member '${request.memberId}' in workspace '${request.workspaceId}'`)
     const status = this.memberStatus(member)
     const failures = this.memberFailures.get(request.memberId)
-    const diagnostic = failures?.runtime ?? failures?.compaction ?? failures?.activation?.detail
+    const diagnostic = failures?.runtime?.message ?? failures?.compaction?.message ?? failures?.activation?.detail
     return Object.freeze({
       memberId: member.memberId,
       handle: member.handle,
@@ -4274,7 +4419,7 @@ export default class AgentTeam extends TypertRemoteService {
     if (this.ctx.agentPresets.composedPreset(handle.agent.ctx) === undefined) {
       return Object.freeze({ member, availability: 'active', presence: 'error', diagnostic: { class: 'preset-composition' as const, detail: ORPHANED_MEMBER_DIAGNOSTIC } })
     }
-    const runtimeError = failures?.runtime ?? failures?.compaction
+    const runtimeError = failures?.runtime?.message ?? failures?.compaction?.message
     if (runtimeError !== undefined) return Object.freeze({ member, availability: 'active', presence: 'error', diagnostic: { class: 'runtime' as const, detail: runtimeError } })
     // Capability warnings are runtime-derived at activation (handles-scoped,
     // like failures): absent while capabilities resolve cleanly.
@@ -4285,9 +4430,9 @@ export default class AgentTeam extends TypertRemoteService {
     })
   }
 
-  private setMemberFailure(memberId: AgentTeamMemberId, slot: 'runtime' | 'compaction', message: string): void {
+  private setMemberFailure(memberId: AgentTeamMemberId, slot: 'runtime' | 'compaction', message: string, sessionId?: SessionId): void {
     const failures = this.memberFailures.get(memberId) ?? {}
-    failures[slot] = message
+    failures[slot] = Object.freeze({ message, ...(sessionId === undefined ? {} : { sessionId }) })
     this.memberFailures.set(memberId, failures)
   }
 
@@ -4472,12 +4617,58 @@ export default class AgentTeam extends TypertRemoteService {
       && source.form === 'notice' && source.summary === RECOVERY_NOTICE_SUMMARY
   }
 
+  /**
+   * Group key when one unread direct Message is a Host-posted recurring notice
+   * whose deliveries supersede each other — a continuation nudge (one group per
+   * Workspace) or a context-reset announcement (one group per announcing
+   * Member and Workspace). Each newer delivery restates the full current state,
+   * so an older unread instance carries no information and must not be
+   * re-rendered into a Member's bounded notification context. Any other Message
+   * has no key and always renders.
+   */
+  private recurringNoticeKey(fact: AgentTeamThreadFact, workspaceId: WorkspaceId): string | undefined {
+    if (fact.kind !== 'message') return undefined
+    const body = fact.message.body
+    const firstLine = body.slice(0, body.includes('\n') ? body.indexOf('\n') : body.length)
+    if (firstLine.includes(CONTINUATION_NUDGE_MARKER)) return `continuation\u0000${workspaceId}`
+    if (body.startsWith(CONTEXT_RESET_NOTICE_MARKER)) return `reset\u0000${workspaceId}\u0000${fact.message.sender}`
+    return undefined
+  }
+
   private notificationText(notifications: ReturnType<AgentTeamLedger['notificationFacts']>, readerId?: AgentTeamMemberId): string {
     const maxCharacters = 32 * 1024
     const sections: string[] = ['Team Inbox has unread work.']
     let characterCount = sections[0]!.length
     let detailedFactCount = 0
-    let omitted = notifications.length > 8
+    // Supersede pass: the newest sequence of each recurring-notice group, read
+    // across every notification, not just the rendered slice.
+    const noticeKeyOf = (entry: AgentTeamThreadReadFact, workspaceId: WorkspaceId): string | undefined =>
+      entry.direct && entry.fact.kind === 'message' ? this.recurringNoticeKey(entry.fact, workspaceId) : undefined
+    const newestNoticeSequence = new Map<string, number>()
+    for (const { item, facts } of notifications) {
+      for (const entry of facts) {
+        const key = noticeKeyOf(entry, item.workspaceId)
+        if (key !== undefined && (newestNoticeSequence.get(key) ?? -1) < entry.fact.sequence) newestNoticeSequence.set(key, entry.fact.sequence)
+      }
+    }
+    const supersededKeyOf = (entry: AgentTeamThreadReadFact, workspaceId: WorkspaceId): string | undefined => {
+      const key = noticeKeyOf(entry, workspaceId)
+      return key !== undefined && (newestNoticeSequence.get(key) ?? -1) > entry.fact.sequence ? key : undefined
+    }
+    // Superseded instances never render, and their Threads' slots free up:
+    // only Notifications with something left to say compete for the bounded
+    // item budget. Each superseded instance is counted for the summary line.
+    const supersededCounts = new Map<string, number>()
+    const renderable = notifications.flatMap(({ item, facts }) => {
+      const kept = facts.filter(entry => {
+        const key = supersededKeyOf(entry, item.workspaceId)
+        if (key === undefined) return true
+        supersededCounts.set(key, (supersededCounts.get(key) ?? 0) + 1)
+        return false
+      })
+      return kept.length === 0 ? [] : [Object.freeze({ item, facts: Object.freeze(kept) })]
+    })
+    let omitted = renderable.length > 8
     const append = (section: string): boolean => {
       if (characterCount + section.length + 2 > maxCharacters) {
         omitted = true
@@ -4487,7 +4678,7 @@ export default class AgentTeam extends TypertRemoteService {
       characterCount += section.length + 2
       return true
     }
-    for (const { item, facts } of notifications.slice(0, 8)) {
+    for (const { item, facts } of renderable.slice(0, 8)) {
       if (!append(`Workspace: ${item.workspaceId}\nChannel: ${item.channelRef}`)) break
       for (const { fact, direct } of facts) {
         if (detailedFactCount >= 20) {
@@ -4512,6 +4703,10 @@ export default class AgentTeam extends TypertRemoteService {
         const route = item.task === undefined ? `Thread ${item.thread.threadRef}` : `Task ${item.task.taskRef}`
         append(`${route}: ${ordinary.length} unread update${ordinary.length === 1 ? '' : 's'} · newest at ${formatTeamTimestamp(ordinary.at(-1)!.fact.occurredAt)}.`)
       }
+    }
+    if (supersededCounts.size > 0) {
+      const parts = [...supersededCounts].map(([key, count]) => `${count} earlier ${key.startsWith('continuation') ? 'continuation check' : 'context-reset notice'}${count === 1 ? '' : 's'}`)
+      sections.push(`Superseded Team notices are omitted from this context: ${parts.join(', ')} — only the newest delivery of each kind still carries current information.`)
     }
     if (omitted) sections.push('More unread work remains in team_inbox; the automatic context is bounded.')
     sections.push('Use team_thread read with the relevant workspace and threadRef before acting or replying. Use team_inbox only when you need to triage the remaining Threads.')

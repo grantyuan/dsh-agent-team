@@ -22,6 +22,8 @@ import type {
   AgentTeamRecoverMemberRequest,
   AgentTeamClearMemberContextRequest,
   AgentTeamCompactMemberContextRequest,
+  AgentTeamMemberSessionsRequest,
+  AgentTeamMemberSessionTranscriptRequest,
   AgentTeamCurateMemberPromptRequest,
   AgentTeamDiagnoseMemberRequest,
   AgentTeamRemoveChannelMemberRequest,
@@ -153,6 +155,8 @@ function registerModeShadow<T extends object>(
     clearMemberContext: (request: AgentTeamClearMemberContextRequest) => ctx.remote.agentTeam.clearMemberContext(request),
     diagnoseMember: (request: AgentTeamDiagnoseMemberRequest) => ctx.remote.agentTeam.diagnoseMember(request),
     compactMemberContext: (request: AgentTeamCompactMemberContextRequest) => ctx.remote.agentTeam.compactMemberContext(request),
+    loadMemberSessions: (request: AgentTeamMemberSessionsRequest) => ctx.remote.agentTeam.memberSessions(request),
+    loadMemberSessionTranscript: (request: AgentTeamMemberSessionTranscriptRequest) => ctx.remote.agentTeam.memberSessionTranscript(request),
     // The in-flight curation pass stays cancellable: the dialog's stop button
     // aborts through this signal, all the way to the Host's completion.
     curateMemberPrompt: (request: AgentTeamCurateMemberPromptRequest, signal?: AbortSignal) => ctx.remote.agentTeam.curateMemberPrompt(request, signal),

@@ -664,6 +664,48 @@ describe('Team archival surfaces', () => {
     await b.runtime.dispose()
   })
 
+  it('browses the Member session lineage read-only from the row menu', async () => {
+    const b = await runtimeWithTeam({ initialChannels: true })
+    fireEvent.click(b.view.getByRole('button', { name: '团队' }))
+    await b.view.findByText('builder')
+
+    // 历史会话 opens the stored-lineage dialog: the live generation leads and
+    // its tail loads without ever activating or writing a Session.
+    fireEvent.click(b.view.getByRole('button', { name: 'builder 的操作' }))
+    fireEvent.click(await within(document.body).findByRole('menuitem', { name: '历史会话' }))
+    const dialog = await b.view.findByRole('dialog', { name: '历史会话：builder' })
+    await waitFor(() => expect(b.memberSessions).toHaveBeenCalledWith({ memberId: 'member:builder' }))
+    expect(within(dialog).getByRole('button', { name: /当前会话/ }).textContent).toContain('30 条事件')
+    await within(dialog).findByText('transcript tail of session-current')
+    expect(within(dialog).getByRole('button', { name: /会话 #2/ }).textContent).toContain('120 条事件')
+
+    // The bounded tail offers one page of earlier history; loading it
+    // prepends the older page and retires the control once none remains.
+    fireEvent.click(within(dialog).getByRole('button', { name: '加载更早内容' }))
+    await waitFor(() => expect(b.memberSessionTranscript).toHaveBeenCalledWith({ memberId: 'member:builder', sessionId: 'session-current', beforeSeq: 100 }))
+    await within(dialog).findByText('the earliest page')
+    await waitFor(() => expect(within(dialog).queryByRole('button', { name: '加载更早内容' })).toBeNull())
+
+    // Selecting the archived generation re-reads that generation's own tail.
+    fireEvent.click(within(dialog).getByRole('button', { name: /会话 #2/ }))
+    await within(dialog).findByText('transcript tail of session-archived')
+    await waitFor(() => expect(b.memberSessionTranscript).toHaveBeenCalledWith({ memberId: 'member:builder', sessionId: 'session-archived' }))
+
+    // The transcript card is resizable through the browser corner handle and
+    // maximizable through the footer toggle: pressing it swaps the label and
+    // state without disturbing the loaded generation.
+    fireEvent.click(within(dialog).getByRole('button', { name: '最大化' }))
+    await waitFor(() => expect(within(dialog).getByRole('button', { name: '还原' }).getAttribute('aria-pressed')).toBe('true'))
+    expect(dialog.textContent).toContain('transcript tail of session-archived')
+    fireEvent.click(within(dialog).getByRole('button', { name: '还原' }))
+    await waitFor(() => expect(within(dialog).getByRole('button', { name: '最大化' }).getAttribute('aria-pressed')).toBe('false'))
+
+    const closeButtons = within(dialog).getAllByRole('button', { name: '关闭' })
+    fireEvent.click(closeButtons[closeButtons.length - 1]!)
+    await waitFor(() => expect(b.view.queryByRole('dialog', { name: '历史会话：builder' })).toBeNull())
+    await b.runtime.dispose()
+  })
+
   it('replaces the rail empty claims with one error line when the connection drops', async () => {
     const b = await runtimeWithTeam({ mode: 'team', workspaceId: 'w1' })
     const readChannels = b.viewChannels.getMockImplementation()!

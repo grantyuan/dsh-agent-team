@@ -15,15 +15,20 @@
  * - {@link SUPERVISION_MAX_CONSECUTIVE_FAILURES} `agent/error` occurrences with
  *   no clean turn end between them, or {@link SUPERVISION_WINDOW_FAILURES}
  *   occurrences inside {@link SUPERVISION_FAILURE_WINDOW_MS} however separated,
- *   prove it cannot make progress even while it runs.
+ *   prove it cannot make progress even while it runs;
+ * - a stopped Member whose failure signature proves the bring-up nudge futile
+ *   — its own context policy refusing every model request — skips the nudge
+ *   and enters the chain on the spot via {@link onBlockedStop}.
  *
- * Once proven, the Host escalates in three steps (one per pass, so the Team can
- * act between them): first the alert asks any fellow Member to reset the
- * Member's context through `team_supervise`; next the Host performs that same
- * context reset itself; the archive-and-replace handover is the last resort.
- * The replacement carries the failed Member's role, private memory, and Channel
- * reach — never its Session log — and asks the Human admin in Channel to
- * reassign the released work.
+ * Once proven, the Host resets the Member's context itself — the same
+ * fresh-context renewal the Human menu performs, privately noticed to the
+ * reset Member alone; nothing is broadcast to the Team, because the Member
+ * re-orients from its memory and the durable Team history and asks its
+ * teammates about whatever stays unclear. The archive-and-replace handover is
+ * the last resort when that reset did not heal it: the replacement carries
+ * the failed Member's role, private memory, and Channel reach — never its
+ * Session log — and asks the Human admin in Channel to reassign the released
+ * work.
  *
  * "Abnormally stopped" is deliberately the dead-or-erroring shape, not the
  * merely-unproductive one: `unavailable` (no live Session, failed activation) or
@@ -88,9 +93,11 @@ export interface SupervisorOptions {
   /** One bounded bring-up attempt; the next pass re-reads the state to judge it. */
   readonly restart: (memberId: AgentTeamMemberId) => Promise<void>
   /**
-   * Archive the failed Member and hand its work to a same-role replacement.
-   * `restartAttempts` is the bring-up count already spent, which the notice
-   * reports verbatim.
+   * One proven episode: the Host opens the coercion chain with its own
+   * private context reset, and the archive-and-replace handover follows on a
+   * later pass only while the Member still reads abnormal. `restartAttempts`
+   * is the bring-up count already spent, which the handover notice reports
+   * verbatim.
    */
   readonly replace: (memberId: AgentTeamMemberId, trigger: SupervisionTrigger, restartAttempts: number) => Promise<void>
   /** Log one coordinator diagnostic. */
@@ -145,13 +152,14 @@ export class MemberSupervisor {
   /**
    * Observe one `agent/error` occurrence. A Member that fails
    * {@link SUPERVISION_MAX_CONSECUTIVE_FAILURES} times without ever finishing a
-   * turn cleanly is replaced on the spot — waiting for the next pass would only
-   * burn more of the same failing route. The consecutive streak is judged first
-   * because it is the sharper evidence; the rolling window then still catches
-   * the Member that keeps failing on every retry of the same work however often
-   * a turn technically ends. Only the watch list is counted: an erroring Member
-   * with no open Claim has nothing to hand over yet, and the pass leaves it to
-   * the operator exactly as `recovery.ts` does.
+   * turn cleanly starts the coercion chain on the spot — waiting for the next
+   * pass would only burn more of the same failing route. The consecutive
+   * streak is judged first because it is the sharper evidence; the rolling
+   * window then still catches the Member that keeps failing on every retry of
+   * the same work however often a turn technically ends. Only the watch list
+   * is counted: an erroring Member with no open Claim has nothing to hand
+   * over yet, and the pass leaves it to the operator exactly as
+   * `recovery.ts` does.
    */
   onError(memberId: AgentTeamMemberId): void {
     if (this.disposed || !this.watched.has(memberId) && !this.options.candidates().includes(memberId)) return
@@ -177,6 +185,25 @@ export class MemberSupervisor {
     const watched = this.watched.get(memberId)
     if (watched === undefined) return
     watched.consecutiveFailures = 0
+  }
+
+  /**
+   * One proven un-bring-up-able stop, reported by the Host when a stopped
+   * Member's failure signature proves a continuation nudge cannot heal it:
+   * the Member's own context policy is refusing every model request (a failed
+   * or refused hard-limit compaction, a spent forced-compaction budget, an
+   * unknown route capacity — see `isPressureRequestBlockDiagnostic`). The next
+   * turn is refused before any model call, so the gentle bring-up is skipped
+   * and the coercion chain starts on the spot, exactly like a fully spent
+   * failure streak: the Host's private context reset first, the
+   * archive-and-replace handover only while the Member still reads abnormal
+   * afterwards.
+   */
+  onBlockedStop(memberId: AgentTeamMemberId): void {
+    if (this.disposed || !this.watched.has(memberId) && !this.options.candidates().includes(memberId)) return
+    const attempts = this.watched.get(memberId)?.restartAttempts ?? 0
+    this.watched.delete(memberId)
+    void this.replace(memberId, 'context-oversize', attempts)
   }
 
   /**
@@ -284,37 +311,6 @@ export interface SupervisionReleasedClaim {
 }
 
 /**
- * The step-one supervision alert: posted by the failing Member itself before
- * any Host coercion, it names the observed abnormality and tells the Team what
- * any fellow Member can do about it through the `team_supervise` tool — reset
- * the Member's context exactly like the Human menu's reset row. The Host's own
- * fallback reset still follows if nobody acts before the next pass judges the
- * Member again.
- */
-export function supervisionAlertText(input: {
-  readonly failedHandle: string
-  readonly trigger: SupervisionTrigger
-  readonly restartAttempts: number
-  readonly maxRestartAttempts: number
-  readonly maxConsecutiveFailures: number
-  readonly maxWindowFailures: number
-  readonly maxFailureWindowMs: number
-}): string {
-  const cause = input.trigger === 'abnormal-stop' || input.trigger === 'hung'
-    ? input.trigger === 'hung'
-      ? `has been running with no durable session event for over ${Math.round(SUPERVISION_HUNG_MS / 60000)} minutes and reads as hung`
-      : `stopped abnormally and stayed stopped through ${input.restartAttempts}/${input.maxRestartAttempts} bring-up attempts`
-    : input.trigger === 'failure-rate'
-      ? `failed ${input.maxWindowFailures} times within ${Math.round(input.maxFailureWindowMs / 60000)} minutes`
-      : `failed ${input.maxConsecutiveFailures} turns in a row without finishing any of them`
-  return [
-    `@human Supervision alert: I am \`${input.failedHandle}\` and ${cause}.`,
-    'My context is likely wedged on it. Any teammate may reset me with the `team_supervise` tool (action `reset`, member `' + input.failedHandle + '`) — the same reset the Human menu performs — and then hand me fresh work.',
-    'If nobody acts, the Host will reset my context itself and, as a last resort, replace me.',
-  ].join('\n')
-}
-
-/**
  * The public handover notice a replacement Member posts in the failed Member's
  * Channel. It is authored by the replacement, so the Channel sees the new owner
  * asking for the work, and `@human` is the permanent admin alias that carries
@@ -335,7 +331,9 @@ export function supervisionHandoffText(input: {
     ? `stopped abnormally and stayed stopped after ${input.restartAttempts}/${input.maxRestartAttempts} bring-up attempts`
     : input.trigger === 'failure-rate'
       ? `failed ${input.maxWindowFailures} times within ${Math.round(input.maxFailureWindowMs / 60000)} minutes`
-      : `failed ${input.maxConsecutiveFailures} turns in a row without finishing any of them`
+      : input.trigger === 'context-oversize'
+        ? 'kept having every model request blocked by its own context pressure policy'
+        : `failed ${input.maxConsecutiveFailures} turns in a row without finishing any of them`
   const claims = input.releasedClaims.length === 0
     ? '- none (its Claims were already released)'
     : input.releasedClaims.map(claim => `- ${claim.direction}${claim.taskRef === undefined ? '' : ` (${claim.taskRef})`}`).join('\n')

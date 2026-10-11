@@ -248,6 +248,14 @@ export class TaskContinuationWatcher {
 }
 
 /**
+ * The stable first line of every continuation nudge, carried verbatim into the
+ * posted Message. The Inbox notification projection matches it to recognize
+ * nudges whose newer delivery has superseded them, so the generator and that
+ * matcher share one definition.
+ */
+export const CONTINUATION_NUDGE_MARKER = 'Continuation check: every Agent is stopped, but these Task(s) are still open:'
+
+/**
  * The continuation nudge: posted by the Host under the Human admin's voice
  * into the open work's Channel, it names the leader, lists every open Task
  * with its standing, and states the one expectation — keep the Team moving.
@@ -258,7 +266,7 @@ export function continuationNudgeText(input: {
   readonly tasks: readonly ContinuationTask[]
 }): string {
   const lines = [
-    `@${input.leaderHandle} Continuation check: every Agent is stopped, but these Task(s) are still open:`,
+    `@${input.leaderHandle} ${CONTINUATION_NUDGE_MARKER}`,
     ...input.tasks.map(task => `- ${task.taskRef}${task.taskNumber > 0 ? ` (#${task.taskNumber})` : ''} — ${task.status} — ${task.subject}`),
     'Please continue the unfinished work: pick up or reassign the Tasks above, and keep each Task\'s status current so the Human can follow progress. Mention the Human only when a decision is owed.',
   ]

@@ -5,7 +5,7 @@ import type {
   AgentTeamModelSelection,
 } from '@wowyuarm/dsh-agent-team/types'
 import type { WorkspaceId } from '@deepseek-ai/dsh-api-workspace-controller/client'
-import { Button, IconArchiveOutlineRegular, IconEditOutlineRegular, IconGaugeOutlineRegular, IconInspectOutlineRegular, IconNewChatOutlineRegular, IconPlayOutlineRegular, IconPlusOutlineRegular, IconRefreshOutlineRegular, Input, Modal, Tooltip } from '@deepseek-ai/dsh-client-ui-primitives'
+import { Button, IconArchiveOutlineRegular, IconClockOutlineRegular, IconEditOutlineRegular, IconGaugeOutlineRegular, IconInspectOutlineRegular, IconNewChatOutlineRegular, IconPlayOutlineRegular, IconPlusOutlineRegular, IconRefreshOutlineRegular, Input, Modal, Tooltip } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { TeamSidebarProps } from './slots.ts'
 import { TeamMemberIdentity } from './TeamMemberRow.tsx'
 import { SortableRow, useSidebarRowDrag } from './sidebar-drag.tsx'
@@ -16,6 +16,7 @@ import { diagnosticText, restartOffered } from './TeamPresenceDot.tsx'
 import { TeamRowMenu } from './TeamRowMenu.tsx'
 import { TeamSidebarSection } from './TeamSidebarSection.tsx'
 import { AgentEditorDialog, ContextPickerField, MemberPromptDialog, ModelPickerField, parseContextWindow, sameModel, warmModelCatalog } from './TeamMemberEditor.tsx'
+import { TeamSessionHistoryDialog } from './TeamSessionHistoryDialog.tsx'
 import { TeamAgentImport } from './TeamAgentImport.tsx'
 import createCss from './create.module.css'
 import css from './sidebar.module.css'
@@ -31,6 +32,8 @@ interface TeamAgentsPanelProps {
   readonly recoverMember: TeamSidebarProps['recoverMember']
   readonly clearMemberContext: TeamSidebarProps['clearMemberContext']
   readonly compactMemberContext: TeamSidebarProps['compactMemberContext']
+  readonly loadMemberSessions: TeamSidebarProps['loadMemberSessions']
+  readonly loadMemberSessionTranscript: TeamSidebarProps['loadMemberSessionTranscript']
   readonly diagnoseMember: TeamSidebarProps['diagnoseMember']
   readonly archiveMember: TeamSidebarProps['archiveMember']
   readonly joinWorkspace: TeamSidebarProps['joinWorkspace']
@@ -43,7 +46,7 @@ interface TeamAgentsPanelProps {
   readonly t: TeamSidebarProps['t']
 }
 
-export function TeamAgentsPanel({ workspaceId, loadMembers, subscribeChanges, addMember, updateMember, loadPromptView, curateMemberPrompt, recoverMember, clearMemberContext, compactMemberContext, diagnoseMember, archiveMember, joinWorkspace, leaveWorkspace, loadModels, memberSessionId, openMemberSession, onCreatingChange, t }: TeamAgentsPanelProps) {
+export function TeamAgentsPanel({ workspaceId, loadMembers, subscribeChanges, addMember, updateMember, loadPromptView, curateMemberPrompt, recoverMember, clearMemberContext, compactMemberContext, loadMemberSessions, loadMemberSessionTranscript, diagnoseMember, archiveMember, joinWorkspace, leaveWorkspace, loadModels, memberSessionId, openMemberSession, onCreatingChange, t }: TeamAgentsPanelProps) {
   const [members, setMembers] = useState<readonly AgentTeamClientMemberStatus[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string>()
@@ -313,7 +316,7 @@ export function TeamAgentsPanel({ workspaceId, loadMembers, subscribeChanges, ad
         <div className={css.agentList}>
           {orderedMembers.map(status => (
             <SortableRow key={status.member.memberId} drag={drag} orderKey={status.member.memberId}>
-              <AgentRow workspaceId={workspaceId} leaveWorkspace={leaveWorkspace} status={status} {...(memberSessionId === undefined ? {} : { current: status.member.sessionId === memberSessionId })} updateMember={updateMember} loadPromptView={loadPromptView} curateMemberPrompt={curateMemberPrompt} recoverMember={recoverMember} clearMemberContext={clearMemberContext} compactMemberContext={compactMemberContext} diagnoseMember={diagnoseMember} archiveMember={archiveMember} loadModels={loadModels} openMemberSession={openMemberSession} onUpdated={refresh} t={t} />
+              <AgentRow workspaceId={workspaceId} leaveWorkspace={leaveWorkspace} status={status} {...(memberSessionId === undefined ? {} : { current: status.member.sessionId === memberSessionId })} updateMember={updateMember} loadPromptView={loadPromptView} curateMemberPrompt={curateMemberPrompt} recoverMember={recoverMember} clearMemberContext={clearMemberContext} compactMemberContext={compactMemberContext} loadMemberSessions={loadMemberSessions} loadMemberSessionTranscript={loadMemberSessionTranscript} diagnoseMember={diagnoseMember} archiveMember={archiveMember} loadModels={loadModels} openMemberSession={openMemberSession} onUpdated={refresh} t={t} />
             </SortableRow>
           ))}
         </div>
@@ -333,7 +336,7 @@ export function TeamAgentsPanel({ workspaceId, loadMembers, subscribeChanges, ad
  * conversation page, the avatar carries identity plus the presence badge, and
  * the row menu opens the editor.
  */
-function AgentRow({ workspaceId, leaveWorkspace, status, current, updateMember, loadPromptView, curateMemberPrompt, recoverMember, clearMemberContext, compactMemberContext, diagnoseMember, archiveMember, loadModels, openMemberSession, onUpdated, t }: {
+function AgentRow({ workspaceId, leaveWorkspace, status, current, updateMember, loadPromptView, curateMemberPrompt, recoverMember, clearMemberContext, compactMemberContext, loadMemberSessions, loadMemberSessionTranscript, diagnoseMember, archiveMember, loadModels, openMemberSession, onUpdated, t }: {
   readonly workspaceId: WorkspaceId
   readonly leaveWorkspace: TeamSidebarProps['leaveWorkspace']
   readonly status: AgentTeamClientMemberStatus
@@ -345,6 +348,8 @@ function AgentRow({ workspaceId, leaveWorkspace, status, current, updateMember, 
   readonly recoverMember: TeamSidebarProps['recoverMember']
   readonly clearMemberContext: TeamSidebarProps['clearMemberContext']
   readonly compactMemberContext: TeamSidebarProps['compactMemberContext']
+  readonly loadMemberSessions: TeamSidebarProps['loadMemberSessions']
+  readonly loadMemberSessionTranscript: TeamSidebarProps['loadMemberSessionTranscript']
   readonly diagnoseMember: TeamSidebarProps['diagnoseMember']
   readonly archiveMember: TeamSidebarProps['archiveMember']
   readonly loadModels: TeamSidebarProps['loadModels']
@@ -357,6 +362,7 @@ function AgentRow({ workspaceId, leaveWorkspace, status, current, updateMember, 
   const [archiving, setArchiving] = useState(false)
   const [resetting, setResetting] = useState(false)
   const [compacting, setCompacting] = useState(false)
+  const [historyOpen, setHistoryOpen] = useState(false)
   const [rowAlert, setRowAlert] = useState<string>()
   const [archivePending, setArchivePending] = useState(false)
   const [resetPending, setResetPending] = useState(false)
@@ -499,12 +505,17 @@ function AgentRow({ workspaceId, leaveWorkspace, status, current, updateMember, 
                 { id: 'reset', label: t('resetAgent'), icon: <IconNewChatOutlineRegular /> },
                 { id: 'compact', label: t('compactAgent'), icon: <IconGaugeOutlineRegular /> },
               ] : []),
+              // Session history reads the stored lineage: it works for every
+              // lifecycle state, because archived logs survive suspensions
+              // and renewals alike.
+              { id: 'history', label: t('sessionHistory'), icon: <IconClockOutlineRegular /> },
               { id: 'archive', label: t(withdrawing ? 'withdrawAgent' : 'archiveAgent'), icon: <IconArchiveOutlineRegular size={16} />, danger: true },
             ]}
             onSelect={(id) => {
               if (id === 'edit') setEditing(true)
               else if (id === 'archive') setArchiving(true)
               else if (id === 'reset') setResetting(true)
+              else if (id === 'history') setHistoryOpen(true)
               else if (id === 'compact') {
                 setCompactModel(undefined)
                 setCompacting(true)
@@ -566,6 +577,15 @@ function AgentRow({ workspaceId, leaveWorkspace, status, current, updateMember, 
           {!withdrawing && status.workspaceIds.length > 1 && <p>{t('archiveOtherWorkspaces', { count: status.workspaceIds.length - 1 })}</p>}
           {rowAlert !== undefined && <p className={createCss.error} role="alert">{rowAlert}</p>}
         </Modal>
+      )}
+      {historyOpen && (
+        <TeamSessionHistoryDialog
+          status={status}
+          loadMemberSessions={loadMemberSessions}
+          loadMemberSessionTranscript={loadMemberSessionTranscript}
+          onClose={() => { setHistoryOpen(false) }}
+          t={t}
+        />
       )}
       {editing && (
         <AgentEditorDialog

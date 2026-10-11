@@ -35,6 +35,7 @@ import { checkpointRefFor, foldTeamContextProjection } from '../src/context-proj
 import { AGENT_TEAM_PLUGIN_ID, continuationCheckpointRefOf, handoffOf, isCheckpointContinuationMessage, isHandoffMessage } from '../src/context-source.ts'
 import { RECOVERY_DELAY_MS } from '../src/recovery.ts'
 import { COMPLETION_MARKER } from '../src/response-guard.ts'
+import { CONTINUATION_NUDGE_MARKER, continuationNudgeText } from '../src/continuation-watcher.ts'
 import type { AgentTeamChannelRef, AgentTeamClaimRef, AgentTeamMemberId, AgentTeamRequestId } from '../src/types.ts'
 import { MemoryStorageBackend } from './helpers/memory-backend.ts'
 
@@ -440,9 +441,12 @@ describe('Agent Team Member lifecycle', () => {
     expect(ctx.agentTeam.members().find(member => member.member.memberId === added.status.member.memberId)!.presence).toBe('available')
     await writeFile(join(added.status.member.privateMemoryPath, 'notes', 'kept.md'), 'persistent note')
 
+    // The Host's private reset notice opens the fresh Session's first turn,
+    // so one scripted reply is budgeted for it.
+    adapter.enqueue(textResponse('Re-oriented from the Team history.'))
     const cleared = await ctx.agentTeam.clearMemberContext({ requestId: requestId('clear'), workspaceId, memberId: added.status.member.memberId })
     expect(cleared.status.availability).toBe('active')
-    expect(cleared.status.presence).toBe('available')
+    expect(cleared.status.presence).toBe('working')
     expect(cleared.status.member.sessionId).not.toBe(added.status.member.sessionId)
 
     // The old live Session is disposed; the Member now runs a fresh handle
@@ -453,8 +457,16 @@ describe('Agent Team Member lifecycle', () => {
     expect(liveAfter).not.toBe(liveBefore)
     expect(liveAfter.session.header.cwd).toBe(liveBefore.session.header.cwd)
     expect(liveAfter.session.header.parentSession).toBe(added.status.member.sessionId)
-    expect(liveAfter.session.ownEvents().filter(event => event.type === 'user/message' || event.type === 'turn/start')).toHaveLength(0)
-    expect(liveAfter.session.ownEvents().length).toBeLessThan(liveBefore.session.ownEvents().length)
+    // The fresh transcript inherits nothing from the previous conversation:
+    // after its notice turn settles, the Host's private reset notice is the
+    // only conversation the new Session has ever carried (beside the per-turn
+    // runtime injections), and the earlier Task body stays in the archived log.
+    await liveAfter.whenIdle()
+    const freshUserTexts = liveAfter.session.ownEvents()
+      .filter(event => event.type === 'user/message')
+      .map(event => JSON.stringify(event))
+    expect(freshUserTexts.filter(text => text.includes('Context reset notice'))).toHaveLength(1)
+    expect(freshUserTexts.every(text => !text.includes('Build the initial feature'))).toBe(true)
     const sessionTitle = ctx.get('sessionTitle')
     expect(sessionTitle?.get(liveAfter.session)).toMatchObject({ title: 'builder', source: { kind: 'user' } })
 
@@ -498,27 +510,33 @@ describe('Agent Team Member lifecycle', () => {
       .rejects.toThrow(/only enabled Members can start from a new context/)
   })
 
-  it('broadcasts a context-reset notice to the Channels after a manual clear', async () => {
-    const { ctx, workspaceId } = await realHarness()
+  it('notices the reset Member privately and posts nothing to the Channels after a manual clear', async () => {
+    const adapter = new ScriptedAdapter()
+    const { ctx, workspaceId } = await realHarness(adapter)
     const channel = await ctx.agentTeam.createChannel({ requestId: requestId('reset-channel'), workspaceId, name: 'engineering', description: 'Engineering work' })
     const added = await ctx.agentTeam.addMember({ requestId: requestId('reset-add'), workspaceId, handle: 'builder', description: 'Builds the implementation', presetId: 'team-member', channelRefs: [channel.channel.channelRef] })
     const peer = await ctx.agentTeam.addMember({ requestId: requestId('reset-peer'), workspaceId, handle: 'watcher', description: 'Works alongside', presetId: 'team-member', channelRefs: [channel.channel.channelRef] })
     const peerAgent = ctx.agents.get(peer.status.member.sessionId)!
     expect(ctx.agentTeam.inboxForAgent(peerAgent, { workspaceId }).totalDirectCount).toBe(0)
 
+    adapter.enqueue(textResponse('I will re-orient from memory and Team history.'))
     const cleared = await ctx.agentTeam.clearMemberContext({ requestId: requestId('reset-clear'), workspaceId, memberId: added.status.member.memberId })
     expect(cleared.status.availability).toBe('active')
 
-    // The renewed Member announced its reset in the Channel it kept, and the
-    // fellow Member received it as a direct mention to re-brief against.
+    // The reset stays private: nothing was announced on the Channel and the
+    // fellow Member received no mention to re-brief against.
     const view = ctx.agentTeam.view({ workspaceId })
-    const notices = view.items.map(item => item.message).filter(message => message.body.includes('Context reset notice'))
-    expect(notices).toHaveLength(1)
-    expect(notices[0]!.sender).toBe(added.status.member.memberId)
-    expect(notices[0]!.channelRef).toBe(channel.channel.channelRef)
-    const peerInbox = ctx.agentTeam.inboxForAgent(peerAgent, { workspaceId })
-    expect(peerInbox.totalDirectCount).toBe(1)
-    expect(peerInbox.items[0]!.thread.threadRef).not.toBeUndefined()
+    expect(view.items.some(item => item.message.body.includes('Context reset notice'))).toBe(false)
+    expect(ctx.agentTeam.inboxForAgent(peerAgent, { workspaceId }).totalDirectCount).toBe(0)
+    // The renewed Member itself woke on the re-orientation notice in its fresh Session.
+    const resetAgent = ctx.agents.get(cleared.status.member.sessionId)!
+    await resetAgent.whenIdle()
+    const request = JSON.stringify(adapter.requests[0]!.messages)
+    expect(request).toContain('Context reset notice: your Session was just reset by the Human')
+    expect(request).toContain('team_view')
+    expect(request).toContain('team_inbox')
+    expect(request).toContain('team_thread')
+    expect(request).toContain('ask the teammates concerned')
     expect(() => ctx.agentTeam.validateLedger()).not.toThrow()
   })
 
@@ -557,11 +575,16 @@ describe('Agent Team Member lifecycle', () => {
     expect(orphaned.presence).toBe('error')
 
     const cleared = await ctx.agentTeam.clearMemberContext({ requestId: requestId('clear'), workspaceId, memberId: added.status.member.memberId })
-    expect(cleared.status.presence).toBe('available')
+    // The renewal is healthy, and the private reset notice immediately opens
+    // the fresh Session's first turn, so the Member reads working at the seam.
+    expect(cleared.status.presence).toBe('working')
     expect(cleared.status.member.sessionId).not.toBe(added.status.member.sessionId)
     expect(archived).toContain(added.status.member.sessionId)
     const renewed = ctx.agents.get(cleared.status.member.sessionId)!
     expect(renewed).not.toBe(live)
+    await renewed.whenIdle()
+    const healed = ctx.agentTeam.members().find(member => member.member.memberId === added.status.member.memberId)!
+    expect(healed.presence).toBe('available')
     expect(ctx.agentPresets.serviceFor(renewed, 'compaction')).toBeDefined()
     expect(ctx.tools.schemas(renewed).length).toBeGreaterThan(0)
   })
@@ -1238,6 +1261,52 @@ describe('Agent Team Member lifecycle', () => {
     expect(omitted.facts).toEqual(expect.arrayContaining([
       expect.objectContaining({ direct: true, fact: expect.objectContaining({ kind: 'message', message: expect.objectContaining({ body: expect.stringContaining('DIRECT-END-5') }) }) }),
     ]))
+  })
+
+  it('supersedes earlier Host recurring notices and renders only the newest of each kind in the hint', async () => {
+    const adapter = new GatedAdapter()
+    const { ctx, workspaceId } = await realHarness(adapter)
+    const channel = await ctx.agentTeam.createChannel({ requestId: requestId('supersede-channel'), workspaceId,
+      name: 'engineering', description: 'Engineering work' })
+    const builder = await ctx.agentTeam.addMember({ requestId: requestId('supersede-builder'), workspaceId, handle: 'builder',
+      description: 'Builds changes', presetId: 'team-member', channelRefs: [channel.channel.channelRef] })
+    const agent = ctx.agents.get(builder.status.member.sessionId)!
+    agent.followup(createUserMessage({ content: [{ type: 'text', text: 'Continue current project work.' }], source: { kind: 'user' } }))
+    await adapter.started.promise
+
+    const send = async (tag: string, body: string): Promise<void> => {
+      const result = await ctx.agentTeam.sendMessage({ requestId: requestId(`supersede-${tag}`), workspaceId,
+        channelRef: channel.channel.channelRef, body, recipients: [builder.status.member.memberId] })
+      if (result.kind !== 'committed') throw new Error(`expected committed Message, received ${result.kind}`)
+    }
+    const nudge = (subject: string): string => continuationNudgeText({ leaderHandle: 'builder',
+      tasks: [{ workspaceId, taskRef: `task:${subject}`, taskNumber: 1, status: 'in_review', subject }] })
+    const resetNotice = (token: string): string => `Context reset notice: my Session was just reset by the Human, and I am starting from an empty context. (${token})`
+    // Two superseded deliveries, then each kind's newest, then one ordinary
+    // direct mention: the coalesced hint must carry only the current state.
+    await send('nudge-old', nudge('STALE-NUDGE-TASK'))
+    await send('reset-old', resetNotice('STALE-RESET-TOKEN'))
+    await send('nudge-new', nudge('CURRENT-NUDGE-TASK'))
+    await send('reset-new', resetNotice('CURRENT-RESET-TOKEN'))
+    await send('mention', 'Please review the surviving mention')
+
+    adapter.enqueue(textResponse('I will triage the bounded notices.'))
+    adapter.release.resolve()
+    await agent.whenIdle()
+    const request = JSON.stringify(adapter.requests[1]!.messages)
+    expect(request).toContain('Direct Team mention')
+    expect(request).toContain('Please review the surviving mention')
+    expect(request).toContain('CURRENT-NUDGE-TASK')
+    expect(request).toContain(CONTINUATION_NUDGE_MARKER)
+    expect(request).toContain('CURRENT-RESET-TOKEN')
+    expect(request).not.toContain('STALE-NUDGE-TASK')
+    expect(request).not.toContain('STALE-RESET-TOKEN')
+    expect(request).toContain('Superseded Team notices are omitted from this context')
+    expect(request).toContain('1 earlier continuation check')
+    expect(request).toContain('1 earlier context-reset notice')
+    // The superseded Messages stay durable Inbox facts, only the bounded
+    // notification context drops them.
+    expect(ctx.agentTeam.inboxForAgent(agent, { workspaceId })).toMatchObject({ totalUnreadCount: 5, totalDirectCount: 5 })
   })
 
   it('wakes an affected Member with a Task close and released Claim summary', async () => {
@@ -4625,20 +4694,16 @@ describe('Member supervision handover', () => {
     expect(ctx.agentTeam.members().map(status => status.member.handle)).toEqual(['builder'])
     expect(ctx.agentTeam.members().find(status => status.member.memberId === memberId)).toMatchObject({ availability: 'unavailable' })
 
-    // The proven Member walks the escalation chain one step per pass: the
-    // fourth pass posts the alert that asks any teammate to reset it through
-    // `team_supervise`, the fifth pass is the Host's own fallback context
-    // reset (its re-activation still fails on the broken mount), and the
-    // sixth pass is the archive-and-replace handover. The mount failure is
-    // lifted before the last pass so the replacement can activate like any
-    // add, and the escalation step runs before the pass's own bring-up so
-    // the healed mount cannot quietly revive the old Member instead.
+    // The proven Member walks the coercion chain: the fourth pass is the
+    // give-up itself — the Host privately resets the wedged generation (the
+    // re-activation still fails on the broken mount) and no reset news
+    // reaches any Channel — and the fifth pass is the archive-and-replace
+    // handover. The mount failure is lifted before the last pass so the
+    // replacement can activate like any add, and the escalation step runs
+    // before the pass's own bring-up so the healed mount cannot quietly
+    // revive the old Member instead.
     await ctx.agentTeam.runSupervisionPass()
-    const alerts = ctx.agentTeam.view({ workspaceId }).items.map(item => item.message).filter(message => message.body.includes('Supervision alert'))
-    expect(alerts).toHaveLength(1)
-    expect(alerts[0]!.sender).toBe(memberId)
-    expect(alerts[0]!.body).toContain('`team_supervise`')
-    await ctx.agentTeam.runSupervisionPass()
+    expect(ctx.agentTeam.view({ workspaceId }).items.map(item => item.message).filter(message => message.body.includes('Supervision'))).toHaveLength(0)
     presets.failingMount = false
     await ctx.agentTeam.runSupervisionPass()
 
@@ -4667,38 +4732,63 @@ describe('Member supervision handover', () => {
     expect(() => ctx.agentTeam.validateLedger()).not.toThrow()
   })
 
-  it('escalates a three-error streak through the alert and then the Host reset', async () => {
+  it('privately resets a Member after a three-error streak and posts nothing to the Channels', async () => {
     const { ctx, workspaceId } = await realHarness()
-    const { added, memberId, agent } = await setupClaimedMember(ctx, workspaceId, 'supervise-streak')
+    const { added, memberId } = await setupClaimedMember(ctx, workspaceId, 'supervise-streak')
 
     // 'HTTP 500' is deliberately outside the recoverable families: the
     // recovery coordinator ignores these occurrences, and only supervision's
     // own streak counter reacts.
     for (let failure = 0; failure < 3; failure += 1) {
-      ctx.emit('agent/error', { agent, turn: 1, step: 1, error: new Error('HTTP 500 backend exploded') })
+      ctx.emit('agent/error', { agent: ctx.agents.get(added.status.member.sessionId)!, turn: 1, step: 1, error: new Error('HTTP 500 backend exploded') })
     }
 
-    // Step one is the alert, posted by the failing Member itself: it names the
-    // streak and the exact `team_supervise` remedy any teammate can perform.
-    await vi.waitFor(() => {
-      expect(ctx.agentTeam.view({ workspaceId }).items.map(item => item.message).filter(message => message.body.includes('Supervision alert'))).toHaveLength(1)
-    })
-    const alert = ctx.agentTeam.view({ workspaceId }).items.map(item => item.message).find(message => message.body.includes('Supervision alert'))!
-    expect(alert.body).toContain('failed 3 turns in a row without finishing any of them')
-    expect(alert.body).toContain('action `reset`')
-
-    // Nobody acted within the pass window, so the Host performs the same
-    // context reset the Human menu performs: the Member keeps its handle,
-    // identity, and Claims, and starts a fresh Session — no replacement.
+    // The give-up is the reset: the Host immediately performs the same
+    // fresh-context renewal the Human menu performs — the Member keeps its
+    // handle, identity, and Claims, starts a fresh Session, and is privately
+    // noticed to re-orient. No alert asks the Team to act, and no replacement
+    // follows while the reset heals the Member.
     const previousSessionId = added.status.member.sessionId
-    await ctx.agentTeam.runSupervisionPass()
     await vi.waitFor(() => {
       const status = ctx.agentTeam.members().find(status => status.member.memberId === memberId)
       expect(status, JSON.stringify(ctx.agentTeam.members().map(entry => entry.member.handle))).toBeDefined()
       expect(status!.member.sessionId).not.toBe(previousSessionId)
       expect(status).toMatchObject({ availability: 'active' })
     })
+    expect(ctx.agentTeam.view({ workspaceId }).items.map(item => item.message).filter(message => message.body.includes('Supervision'))).toHaveLength(0)
+    await ctx.agentTeam.runSupervisionPass()
     expect(ctx.agentTeam.members().map(status => status.member.handle)).toEqual(['builder'])
+    expect(() => ctx.agentTeam.validateLedger()).not.toThrow()
+  })
+
+  it('escalates a pressure-blocked Member straight to the context reset instead of nudging it', async () => {
+    const { ctx, workspaceId } = await realHarness()
+    const { added, memberId, agent, taskRef } = await setupClaimedMember(ctx, workspaceId, 'supervise-blocked')
+
+    // The generation is wedged the way a refused hard-limit compaction wedges
+    // it: the pressure policy recorded a fail-closed request block and every
+    // turn ends as a pre-step reject — a blocked turn emits no `agent/error`
+    // of its own, so no streak counter ever sees it and the recorded
+    // diagnostic is all supervision has to read.
+    ctx.emit('agent/error', { agent, turn: 1, step: 1, error: new Error('context hard limit compaction failed: 403: {"type":"server_error","code":"dsh_compaction_refused","message":"dsh native compaction call refused by billion-context","retryable":false}; the request was blocked') })
+    const previousSessionId = added.status.member.sessionId
+
+    // The very first pass escalates instead of nudging: no continuation prompt
+    // is steered into the wedged generation — that nudge would wake the Member
+    // straight into the same block — and the Host privately resets the context
+    // (fresh Session, same handle, same Claims), which heals the Member.
+    await ctx.agentTeam.runSupervisionPass()
+    await vi.waitFor(() => {
+      const status = ctx.agentTeam.members().find(status => status.member.memberId === memberId)
+      expect(status!.member.sessionId).not.toBe(previousSessionId)
+      expect(status).toMatchObject({ availability: 'active' })
+    })
+
+    // The reset healed it: no handover broadcast, the roster is unchanged, and
+    // the claimed Task stays with the same Member.
+    expect(ctx.agentTeam.view({ workspaceId }).items.map(item => item.message).filter(message => message.body.includes('Supervision'))).toHaveLength(0)
+    expect(ctx.agentTeam.members().map(status => status.member.handle)).toEqual(['builder'])
+    expect(ctx.agentTeam.view({ workspaceId }).tasks.find(task => task.taskRef === taskRef)).toMatchObject({ status: 'in_progress' })
     expect(() => ctx.agentTeam.validateLedger()).not.toThrow()
   })
 
@@ -4722,10 +4812,9 @@ describe('Member supervision handover', () => {
       const rebuilt = ctx.agents.get(added.status.member.sessionId)
       if (rebuilt !== undefined) await waitForIdle(ctx, rebuilt)
     }
-    // Then the chain itself: the alert pass, the Host's fallback reset pass
-    // (its re-activation still fails on the broken mount), and the handover
-    // pass with the mount lifted before the escalation step runs.
-    await ctx.agentTeam.runSupervisionPass()
+    // Then the chain itself: the give-up pass where the Host's private reset
+    // attempt fails on the broken mount (no Channel sees anything), and the
+    // handover pass with the mount lifted before the escalation step runs.
     await ctx.agentTeam.runSupervisionPass()
     presets.failingMount = false
     await ctx.agentTeam.runSupervisionPass()
@@ -4740,10 +4829,10 @@ describe('Member supervision handover', () => {
     for (const notice of notices) expect(notice.sender).toBe(replacement!.member.memberId)
     // The bystander was addressed directly on the shared Channel, so its Inbox
     // carries the mention even though the notice is authored by the replacement.
-    // The escalation adds the supervision alert before it; the Host's fallback
-    // reset could not run (the broken mount left no live Session to renew), so
-    // no context-reset notice reached the Channel.
-    expect(ctx.agentTeam.inboxForAgent(bystanderAgent, { workspaceId }).totalDirectCount).toBe(2)
+    // The reset attempt before it stayed private — the broken mount left no
+    // live Session to renew and no alert or notice reached any Channel — so
+    // the handover mention is the bystander's only direct.
+    expect(ctx.agentTeam.inboxForAgent(bystanderAgent, { workspaceId }).totalDirectCount).toBe(1)
     expect(() => ctx.agentTeam.validateLedger()).not.toThrow()
   })
 })
@@ -4837,6 +4926,149 @@ describe('Agent Team member context control (ticket 01)', () => {
     expect(ctx.agentTeam.members().find(status => status.member.memberId === memberId)?.member.sessionId).toBe(session0)
     expect(archived).not.toContain(session0)
     expect(() => ctx.agentTeam.validateLedger()).not.toThrow()
+  })
+
+  it('renews a fresh Member only at new-task assignment: Claim done and Task acceptance never renew', async () => {
+    const adapter = new ScriptedAdapter()
+    const { ctx, workspaceId, archived } = await realHarness(adapter)
+    const channel = await ctx.agentTeam.createChannel({ requestId: requestId('endkeep-channel'), workspaceId, name: 'engineering', description: 'Engineering work' })
+    const fresh = await ctx.agentTeam.addMember({ requestId: requestId('endkeep-add'), workspaceId, handle: 'scout', description: 'Starts fresh per task', presetId: 'team-member', channelRefs: [channel.channel.channelRef], contextStartPolicy: 'fresh' })
+    const memberId = fresh.status.member.memberId
+    for (let turn = 0; turn < 8; turn += 1) adapter.enqueue(textResponse('Acknowledged.'))
+    const sessionOf = (): SessionId => ctx.agentTeam.members().find(status => status.member.memberId === memberId)!.member.sessionId
+
+    // Assignment boundary one: the Human's atomic start renews the fresh Member.
+    const started = await ctx.agentTeam.sendMessage({ asTask: true, requestId: requestId('endkeep-start'), workspaceId, channelRef: channel.channel.channelRef, body: 'Investigate the flaky test', recipients: [memberId] })
+    if (started.kind !== 'committed') throw new Error(`expected committed start, received ${started.kind}`)
+    const session1 = await waitFor(() => sessionOf() !== fresh.status.member.sessionId ? sessionOf() : undefined)
+    const live1 = await waitFor(() => ctx.agents.get(session1)!)
+    await waitForIdle(ctx, live1)
+
+    // Assignment boundary two: the Member's own Claim renews it again.
+    const read = await ctx.agentTeam.readThreadForAgent(live1, { requestId: requestId('endkeep-read'), workspaceId, taskRef: started.task!.taskRef })
+    const claimed = await ctx.agentTeam.changeClaimForAgent(live1, { requestId: requestId('endkeep-claim'), workspaceId, taskRef: started.task!.taskRef, action: 'claim', baseRevision: read.thread.revision, direction: 'own the fix' })
+    if (claimed.kind !== 'committed') throw new Error(`expected committed claim, received ${claimed.kind}`)
+    const session2 = await waitFor(() => sessionOf() !== session1 ? sessionOf() : undefined)
+    const live2 = await waitFor(() => ctx.agents.get(session2)!)
+
+    // Completion is NOT an assignment: marking the Claim done and the Human
+    // accepting the Task must leave the working Session (with its fresh
+    // completion summary in the live log) untouched.
+    await waitForIdle(ctx, live2)
+    const doneRead = await ctx.agentTeam.readThreadForAgent(live2, { requestId: requestId('endkeep-done-read'), workspaceId, taskRef: started.task!.taskRef })
+    const done = await ctx.agentTeam.changeClaimForAgent(live2, { requestId: requestId('endkeep-done'), workspaceId, taskRef: started.task!.taskRef, action: 'done', claimRef: (claimed as { claim: { claimRef: AgentTeamClaimRef } }).claim.claimRef, baseRevision: doneRead.thread.revision })
+    if (done.kind !== 'committed') throw new Error(`expected committed done, received ${done.kind}`)
+    const humanRead = await ctx.agentTeam.readThread({ requestId: requestId('endkeep-human-read'), workspaceId, taskRef: started.task!.taskRef })
+    const accepted = await ctx.agentTeam.changeTask({ requestId: requestId('endkeep-accept'), workspaceId, taskRef: started.task!.taskRef, action: 'accept', baseRevision: humanRead.thread.revision })
+    if (accepted.kind !== 'committed') throw new Error(`expected committed accept, received ${accepted.kind}`)
+    // A wrongly scheduled completion-time renewal would commit well inside this window.
+    await new Promise(resolve => setTimeout(resolve, 500))
+    expect(sessionOf()).toBe(session2)
+    expect(archived).not.toContain(session2)
+    expect(() => ctx.agentTeam.validateLedger()).not.toThrow()
+  })
+
+  it('advises a fresh-start Member to keep the context after acceptance instead of rolling over', async () => {
+    const adapter = new ScriptedAdapter()
+    const { ctx, workspaceId, pressureState } = await realHarness(adapter)
+    const channel = await ctx.agentTeam.createChannel({ requestId: requestId('freshadvice-channel'), workspaceId, name: 'engineering', description: 'Engineering work' })
+    const fresh = await ctx.agentTeam.addMember({ requestId: requestId('freshadvice-add'), workspaceId, handle: 'scout', description: 'Starts fresh per task', presetId: 'team-member', channelRefs: [channel.channel.channelRef], contextStartPolicy: 'fresh' })
+    const memberId = fresh.status.member.memberId
+    for (let turn = 0; turn < 10; turn += 1) adapter.enqueue(textResponse('Acknowledged.'))
+    const started = await ctx.agentTeam.sendMessage({ asTask: true, requestId: requestId('freshadvice-start'), workspaceId, channelRef: channel.channel.channelRef, body: 'Ship the feature', recipients: [memberId] })
+    if (started.kind !== 'committed') throw new Error(`expected committed start, received ${started.kind}`)
+    const sessionOf = (): SessionId => ctx.agentTeam.members().find(status => status.member.memberId === memberId)!.member.sessionId
+    const session1 = await waitFor(() => sessionOf() !== fresh.status.member.sessionId ? sessionOf() : undefined)
+    const live1 = await waitFor(() => ctx.agents.get(session1)!)
+    await waitForIdle(ctx, live1)
+    const memberRead = await ctx.agentTeam.readThreadForAgent(live1, { requestId: requestId('freshadvice-read'), workspaceId, taskRef: started.task!.taskRef })
+    const claimed = await ctx.agentTeam.changeClaimForAgent(live1, { requestId: requestId('freshadvice-claim'), workspaceId, taskRef: started.task!.taskRef, action: 'claim', baseRevision: memberRead.thread.revision, direction: 'own it' })
+    if (claimed.kind !== 'committed') throw new Error(`expected committed claim, received ${claimed.kind}`)
+    const session2 = await waitFor(() => sessionOf() !== session1 ? sessionOf() : undefined)
+    const live2 = await waitFor(() => ctx.agents.get(session2)!)
+    await waitForIdle(ctx, live2)
+    const doneRead = await ctx.agentTeam.readThreadForAgent(live2, { requestId: requestId('freshadvice-doneread'), workspaceId, taskRef: started.task!.taskRef })
+    const done = await ctx.agentTeam.changeClaimForAgent(live2, { requestId: requestId('freshadvice-done'), workspaceId, taskRef: started.task!.taskRef, action: 'done', claimRef: (claimed as { claim: { claimRef: AgentTeamClaimRef } }).claim.claimRef, baseRevision: doneRead.thread.revision })
+    if (done.kind !== 'committed') throw new Error(`expected committed done, received ${done.kind}`)
+    const humanRead = await ctx.agentTeam.readThread({ requestId: requestId('freshadvice-human'), workspaceId, taskRef: started.task!.taskRef })
+    const accepted = await ctx.agentTeam.changeTask({ requestId: requestId('freshadvice-accept'), workspaceId, taskRef: started.task!.taskRef, action: 'accept', baseRevision: humanRead.thread.revision })
+    if (accepted.kind !== 'committed') throw new Error(`expected committed accept, received ${accepted.kind}`)
+
+    // Usage at the task-boundary tier would advise a rollover for a continue
+    // Member; a fresh Member instead keeps the live Session so the Human can
+    // still read its completion summary — the next assignment is its reset.
+    pressureState.usageTokens = 128_000
+    const advising = await ctx.agentTeam.readThreadForAgent(live2, { requestId: requestId('freshadvice-advice'), workspaceId, taskRef: started.task!.taskRef })
+    expect(advising.contextAdvice?.action).toBe('keep')
+    expect(advising.contextAdvice?.guidance).toContain('fresh-start Task policy')
+    expect(advising.contextAdvice?.guidance).not.toContain('context_rollover')
+    expect(() => ctx.agentTeam.validateLedger()).not.toThrow()
+  })
+
+  it('lists a reset Member\'s session lineage and reads archived transcripts on demand', async () => {
+    const adapter = new ScriptedAdapter()
+    const { ctx, workspaceId } = await realHarness(adapter)
+    const channel = await ctx.agentTeam.createChannel({ requestId: requestId('lineage-channel'), workspaceId, name: 'engineering', description: 'Engineering work' })
+    const added = await ctx.agentTeam.addMember({ requestId: requestId('lineage-add'), workspaceId, handle: 'builder', description: 'Builds the implementation', presetId: 'team-member', channelRefs: [channel.channel.channelRef] })
+    const memberId = added.status.member.memberId
+    const firstSession = added.status.member.sessionId
+    const live = ctx.agents.get(firstSession)!
+    adapter.enqueue(textResponse('Initial work finished.'))
+    // Listener-only wait: the Member is idle right after activation, so a
+    // state-aware helper would resolve before the send's wake turn runs.
+    const idle = new Promise<void>(resolve => {
+      const dispose = ctx.on('agent/status', ({ agent: subject, status }) => {
+        if (subject !== live || status !== 'idle') return
+        dispose()
+        resolve()
+      })
+    })
+    const started = await ctx.agentTeam.sendMessage({ asTask: true, requestId: requestId('lineage-task'), workspaceId, channelRef: channel.channel.channelRef, body: 'Build the initial feature', recipients: [memberId] })
+    if (started.kind !== 'committed') throw new Error(`expected committed start, received ${started.kind}`)
+    await idle
+    await ctx.agentTeam.readThreadForAgent(live, { requestId: requestId('lineage-read'), workspaceId, taskRef: started.task!.taskRef })
+    // Settle to available before the clear: the renewal guard refuses a
+    // Member that is still running.
+    const settleDeadline = Date.now() + 3000
+    while (Date.now() < settleDeadline
+      && ctx.agentTeam.members().find(entry => entry.member.memberId === memberId)!.presence !== 'available') {
+      await new Promise(resolve => setTimeout(resolve, 25))
+    }
+
+    // Before any renewal the lineage is exactly the live generation.
+    const before = await ctx.agentTeam.memberSessions({ memberId })
+    expect(before).toHaveLength(1)
+    expect(before[0]!.sessionId).toBe(firstSession)
+    expect(before[0]!.isCurrent).toBe(true)
+
+    adapter.enqueue(textResponse('Re-oriented.'))
+    const cleared = await ctx.agentTeam.clearMemberContext({ requestId: requestId('lineage-clear'), workspaceId, memberId })
+    const secondSession = cleared.status.member.sessionId
+    const liveAfter = ctx.agents.get(secondSession)!
+    await liveAfter.whenIdle()
+
+    const after = await ctx.agentTeam.memberSessions({ memberId })
+    expect(after).toHaveLength(2)
+    expect(after[0]!.sessionId).toBe(secondSession)
+    expect(after[0]!.isCurrent).toBe(true)
+    expect(after[1]!.sessionId).toBe(firstSession)
+    expect(after[1]!.isCurrent).toBe(false)
+    expect(typeof after[1]!.createdAt).toBe('number')
+    expect(typeof after[1]!.eventCount).toBe('number')
+
+    // The archived generation serves its own transcript: the original Task
+    // body is there, and the child generation's reset notice is not.
+    const oldPage = await ctx.agentTeam.memberSessionTranscript({ memberId, sessionId: firstSession })
+    expect(JSON.stringify(oldPage.entries)).toContain('Build the initial feature')
+    expect(oldPage.entries.some(entry => entry.text.includes('Context reset notice'))).toBe(false)
+    expect(oldPage.hasEarlier).toBe(false)
+    // The current generation serves the notice, never the inherited prefix.
+    const newPage = await ctx.agentTeam.memberSessionTranscript({ memberId, sessionId: secondSession })
+    expect(newPage.entries.some(entry => entry.role === 'user' && entry.text.includes('Context reset notice'))).toBe(true)
+    expect(JSON.stringify(newPage.entries)).not.toContain('Build the initial feature')
+
+    // A Session outside this Member's lineage is refused outright.
+    await expect(ctx.agentTeam.memberSessionTranscript({ memberId, sessionId: SessionId('agent-team-not-a-lineage') })).rejects.toThrow(/not in the lineage/)
   })
 
   it('clamps the pressure budget to a Member window override without ever raising the route window', async () => {

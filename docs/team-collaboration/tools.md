@@ -34,6 +34,8 @@ A history page renders a historical outcome with Thread identity, the full ancho
 
 When one `read` acknowledges an unread acceptance of a still-done Task, the result carries one `contextAdvice` section: the reading Member's measured usage, the route's budgets, the Task-boundary threshold `min(128_000, effective handoffAt)`, and one action — keep the current context, roll over fresh after the closeout, or hand off now at the handoff budget. Advice is a recommendation only: the Host never checkpoints, rolls over, or compacts on an acceptance, and a measurement failure degrades to an explicit `unavailable` line instead of reversing the committed read.
 
+A `fresh` Member reads the task-boundary tier as keep: its next assignment renews the context anyway, so rolling over now would only erase the completion summary from the live log.
+
 History and repeat reads carry no advice.
 
 ## `team_message`
@@ -58,7 +60,9 @@ A committed mutation names its action (Claim created, completed, or released), r
 
 `team_supervise` reads and repairs a fellow Member's health on the same evidence the periodic supervision pass acts on. `status` reports one Member's pass state — `healthy`, `settling`, or `stopped` — its presence, its recorded failure diagnostic, and how many times it errored inside the twenty-minute window; it is a read and writes no operation.
 
-`reset` forces an abnormal Member — stopped with an error, failing repeatedly, or hung — into the same fresh-context reset the Human menu performs: the Session renews from empty, identity, settings, and private memory survive, and the previous log stays archived. A healthy Member refuses the reset — supervision repairs only what is actually abnormal — and the caller cannot reset itself. After a reset, re-brief the Member on its interrupted work and hand it fresh tasks.
+`reset` forces an abnormal Member — stopped with an error, failing repeatedly, or hung — into the same fresh-context reset the Human menu performs: the Session renews from empty, identity, settings, and private memory survive, and the previous log stays archived. A healthy Member refuses the reset — supervision repairs only what is actually abnormal — and the caller cannot reset itself.
+
+After a reset the Member is privately noticed to re-orient from its private memory and recent Team history and asks teammates about anything that stays unclear — hand it fresh work; no context re-share is needed.
 
 ## `context_rollover`
 

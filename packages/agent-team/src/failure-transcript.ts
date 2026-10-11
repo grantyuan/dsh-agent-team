@@ -45,26 +45,40 @@ function textOf(message: unknown): string {
     .join(' ')
 }
 
-/** Render one event line, or undefined for events the transcript does not show. */
-export function renderTranscriptEvent(event: TranscriptEvent): string | undefined {
+/** One model-visible transcript line, split into the role/text pair both surfaces render from. */
+export interface TranscriptEntry {
+  readonly role: 'user' | 'assistant' | 'tool-call' | 'tool-result'
+  readonly text: string
+}
+
+/** Render one event's role/text pair, or undefined for events the transcript does not show. */
+export function transcriptEntryOf(event: TranscriptEvent): TranscriptEntry | undefined {
   const data = event.data as Record<string, unknown> | undefined
   switch (event.type) {
     case 'user/message':
-      return `[user] ${clamp(textOf(data))}`
+      return { role: 'user', text: clamp(textOf(data)) }
     case 'assistant/message':
-      return `[assistant] ${clamp(textOf(data))}`
+      return { role: 'assistant', text: clamp(textOf(data)) }
     case 'tool/call': {
       const name = typeof data?.name === 'string' ? data.name : 'unknown-tool'
       const args = typeof data?.arguments === 'string' ? data.arguments : JSON.stringify(data?.arguments ?? {})
-      return `[tool call] ${name} ${clamp(args, 500)}`
+      return { role: 'tool-call', text: `${name} ${clamp(args, 500)}` }
     }
     case 'tool/result': {
       const message = data?.message
-      return `[tool result] ${clamp(typeof message === 'string' ? message : JSON.stringify(message ?? {}), 800)}`
+      return { role: 'tool-result', text: clamp(typeof message === 'string' ? message : JSON.stringify(message ?? {}), 800) }
     }
     default:
       return undefined
   }
+}
+
+/** Render one event line, or undefined for events the transcript does not show. */
+export function renderTranscriptEvent(event: TranscriptEvent): string | undefined {
+  const entry = transcriptEntryOf(event)
+  if (entry === undefined) return undefined
+  const label = entry.role === 'tool-call' ? 'tool call' : entry.role === 'tool-result' ? 'tool result' : entry.role
+  return `[${label}] ${entry.text}`
 }
 
 /**

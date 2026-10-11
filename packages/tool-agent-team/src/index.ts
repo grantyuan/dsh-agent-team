@@ -719,7 +719,7 @@ const teamView = defineTool({
 
 const teamSupervise = defineTool({
   name: 'team_supervise',
-  description: 'Check or repair a fellow Member\'s health through team supervision. status reports what the periodic supervision pass reads about one Member: pass state (healthy / settling / stopped), presence, the recorded failure diagnostic, and how many times that Member errored inside the 20-minute window. reset forces an abnormal Member — stopped with an error, failing repeatedly, or hung — into the same fresh-context reset the Human menu performs: its Session renews from empty, its identity, settings, and private memory survive, and its previous log stays archived. reset refuses a healthy Member: supervision repairs only what is actually abnormal. After a reset, re-brief the Member on its interrupted work and hand it fresh tasks.',
+  description: 'Check or repair a fellow Member\'s health through team supervision. status reports what the periodic supervision pass reads about one Member: pass state (healthy / settling / stopped), presence, the recorded failure diagnostic, and how many times that Member errored inside the 20-minute window. reset forces an abnormal Member — stopped with an error, failing repeatedly, or hung — into the same fresh-context reset the Human menu performs: its Session renews from empty, its identity, settings, and private memory survive, and its previous log stays archived; the reset Member is privately noticed to re-orient from its private memory and recent Team history, and it asks its teammates about whatever stays unclear. reset refuses a healthy Member: supervision repairs only what is actually abnormal. After a reset, hand the Member fresh tasks — it needs no context re-share from you.',
   parameters: {
     action: { type: 'string', required: true, enum: ['status', 'reset'] },
     memberRef: { type: 'string', required: true, description: "Full branded Member ref exactly as returned by Team tools, including the 'member:' prefix. An unambiguous abbreviation of the first 6+ UUID hex characters also resolves. The target must be an enabled Agent Member of your Workspace; you cannot reset yourself." },
@@ -746,7 +746,7 @@ const teamSupervise = defineTool({
       return [{ type: 'text', text: [
         `Committed — @${value.handle} (${value.memberId}) was reset to a fresh context.`,
         `Its identity, settings, and private memory survive; durable Team facts (Tasks, Claims, Channels) are unaffected; its previous session log is archived.`,
-        'It remembers nothing from before the reset: re-share the key context and hand it fresh work.',
+        'It remembers nothing from before the reset: the Host has privately noticed it to re-orient from its private memory and recent Team history, so hand it fresh work and it will ask you if anything stays unclear.',
       ].join('\n') }]
     },
   },

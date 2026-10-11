@@ -40,6 +40,8 @@ describe('Agent Team generated Typert boundary', () => {
       'joinWorkspace',
       'leaveWorkspace',
       'memberPromptView',
+      'memberSessionTranscript',
+      'memberSessions',
       'members',
       'promoteThread',
       'putAttachment',

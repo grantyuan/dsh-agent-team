@@ -21,15 +21,21 @@ Host 从 durable unread state 派生 Agent notifications，并通过 Agent publi
 
 Automatic context 最多包含 8 个 Inbox Threads、20 条详细 direct 或 Activity facts、每条 direct Message body 8 KiB、总计 32 KiB。省略内容仍由 `team_inbox` 与 `team_thread` 持久保存并可发现。成功的 Thread read 会同时消费相关 direct/Activity markers 和 ordinary read watermark。
 
+Host 发布的周期性通知（continuation check，以及只有记录过已废止广播的旧 ledger 仍会携带的 context-reset Channel 公告）每次投递都重述完整现状，比同类最新一条更早的 unread 实例不携带新信息：automatic context 只完整渲染每组最新一条，被取代的旧实例折叠为一行摘要并腾出其配额，不再把重复的历史灌入被重置或被唤醒的 Agent；这些 Messages 仍完整留在 durable Inbox。
+
 Pending hints 按 Member 合并。Consumed 或 ignored hint 不会再触发 turn，直到后续相关 durable change、resume 或 runtime-error recovery 重置 notification state。Restart/resume 使用同一 durable Inbox check，因此 transient Session queues 不是 authority。这是 at-least-once notification intent，不是 exactly-once model processing；Agent 可能忽略、失败或重复 Team read operation。
 
 对于可恢复的临时 service errors，Host 按 Member 连续 `agent/error` occurrences 计数，而不是按 recovery wakeups 或 error text 计数：前两次 errors 各自在延迟后 wake 一次，第 3 次立即停止自动 recovery，并保留 error 交给 operator。不同 recoverable kinds 不会中断连续 error。只有 clean turn end 会清零，non-recoverable error 会取消 tracking。Recovery notice 自身会合并 continuation 与当前 durable Inbox facts，因此 ordinary Inbox notification 不会覆盖它或追加第二条提示。
 
 Web Client 的 Agent-row menu 提供两个 runtime recovery entrances（都不写 ledger）：有 live session 的 error Member 显示「恢复」，由 Host 向 session 注入 continuation prompt（孤儿 composition 则原地重建）；activation failed 的 Member 显示「重启」，由 Host 重新执行该 Member activation，再次失败时仍以 diagnostic 显示在 sidebar。
 
-Agent 行菜单对 live Member 持有两个可见的上下文动作。「重置」经 `clearMemberContext` 走持久的 rollover 机制换新 Member Session——新 Session id 带 fork lineage 指回被归档的上一份日志，私有记忆不受影响。「压缩」经 `compactMemberContext` 调度一次手动压缩：Remote 校验守卫（Member enabled、无进行中的 rollover、存在活跃 handle、没有已 pending 的压缩）并立即原样返回状态。
+Agent 行菜单对 live Member 持有两个上下文动作，并对每一行提供第三个动作「历史会话」。「重置」经 `clearMemberContext` 走持久的 rollover 机制换新 Member Session——新 Session id 带 fork lineage 指回被归档的上一份日志，私有记忆不受影响。「压缩」经 `compactMemberContext` 调度一次手动压缩：Remote 校验守卫（Member enabled、无进行中的 rollover、存在活跃 handle、没有已 pending 的压缩）并立即原样返回状态。
 
-重置成功后，该 Member 会向自己所在的每个 Channel 发一条不含 Task 的 context-reset 公告，用显式 recipients 直接触达所有存活的其他 Member，让团队知道其 Session 已清空重来，而 handle、设置与私有记忆都不变；公告发送失败只记日志。
+「历史会话」经 `memberSessions` 与 `memberSessionTranscript` 两个 Remote 读取：沿存储的 `parentSession` 谱系列出该 Member 的全部 Session 世代——当前世代居首，不可读的祖先在游走止步处标记——并把所选世代自身的事件渲染为有界、游标分页的转录。它从不激活、恢复或写入任何 Session，因此即便 Harness 拒绝把归档会话作为 live 对话打开，归档世代仍可浏览。
+
+重置成功后，Host 只私下提示被重置的 Member 本人：提示点明是谁触发了重置，说明 Session 已清空重来而 handle、设置与私有记忆不变、durable Team facts 不受影响，并要求它在继续工作前先凭注入的记忆与 durable Team history（`team_view`、`team_inbox`、`team_thread`）重新定位当前任务，读完仍不清楚的应在相关 Thread 回复或发私信询问队友而不是猜测；不再向任何 Channel 广播，该提示是运行时 notification intent 而非 ledger Message，投递失败只记日志。
+
+续期只发生在「被安排新任务」的接缝：`fresh` Member 在下一次 Claim 或 Human 原子开始时换新上下文，Claim 完成或 Task 验收绝不触发续期——live 日志因此保留刚完成的总结，直到下一次分配才清空。读时验收指引对 `fresh` Member 同样给出 keep 而非 roll over，理由一致；persona 约定每个 Claim 完成时先在 Task Thread 发布完成消息并附上简明总结，让成果在 durable ledger 中活过之后任何一次重置。
 
 后台运行等待 Member 的 idle 边界后，经一个瞬态 `BasicCompactionEngine` 强制一次缩减——该引擎把 Human 选定的摘要 LLM 携带在自己的 config 里（缺省回退到 Member 当前路由的模型）。持续 busy 的 Member 只记一行日志后放弃该请求——对话优先；失败的运行经压力策略同一条 compaction 失败槽上报。压缩不提交 ledger operation；只写入它自己的 Session history。模型发起的 rollover 期间（ledger 绑定已迁移、新 Session 尚未就绪），Member 状态短暂显示为 unavailable 并带 "context rollover in progress" diagnostic；若该 Member 的 Session 正嵌入右栏，Client 只在旧→新绑定变化且当前页面正是被观察的旧 live Session 时跟随一次到新 Session，归档视图不会跳转。
 

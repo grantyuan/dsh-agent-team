@@ -3,7 +3,7 @@ import { createUserMessage } from '@deepseek-ai/dsh-llm'
 import { CONTEXT_WINDOW_EXCEEDED_CODE } from '@deepseek-ai/dsh-llm'
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import type { CompactionEngine, CompactionResult } from '@deepseek-ai/dsh-compaction'
-import { contextPressureNoticeText, CONTEXT_PRESSURE_NOTICE_SUMMARY, PRESSURE_NOTICE_FOLD, PressurePolicyCoordinator } from '../src/pressure-policy.ts'
+import { contextPressureNoticeText, CONTEXT_PRESSURE_NOTICE_SUMMARY, isPressureRequestBlockDiagnostic, PRESSURE_NOTICE_FOLD, PressurePolicyCoordinator } from '../src/pressure-policy.ts'
 import { AGENT_TEAM_PLUGIN_ID } from '../src/context-source.ts'
 import { advanceSessionEventCursor, initSessionEventCursor } from '../src/session-event-cursor.ts'
 
@@ -74,6 +74,7 @@ function coordinator(options?: {
   readonly engineBehavior?: 'advance' | 'noop' | 'throw' | 'reduce'
   readonly limits?: { usageTokens: number; hardLimit: number; handoffAt: number } | undefined
   readonly failures?: string[]
+  readonly healed?: string[]
   readonly steered?: unknown[]
 }): { policy: PressurePolicyCoordinator; engine: ReturnType<typeof fakeEngine>; steered: unknown[] } {
   const engine = fakeEngine(options?.engineBehavior ?? 'advance')
@@ -86,6 +87,7 @@ function coordinator(options?: {
     activeClaimLabels: () => ['claim:a (do it)'],
     runningJobLabels: () => [],
     failed: (_memberId, _sessionId, diagnostic) => { options?.failures?.push(diagnostic) },
+    healed: memberId => { options?.healed?.push(memberId) },
     log: () => {},
   })
   return { policy, engine, steered: steered as unknown[] }
@@ -164,6 +166,30 @@ describe('Agent Team pressure policy (ticket 03)', () => {
     expect(failures[0]).toContain('blocked')
   })
 
+  it('the pre-step that proves the pressure receded also reports a recorded block healed', async () => {
+    const failures: string[] = []
+    const healed: string[] = []
+    // The reported usage rides a mutable limits object, mirroring how the live
+    // route report tracks the same reality the meter measures.
+    const limits = { usageTokens: 256_000, hardLimit: 256_000, handoffAt: 200_000 }
+    const { policy } = coordinator({ engineBehavior: 'noop', limits, failures, healed })
+    const { agent, usage } = fakeAgent({ tokens: 256_000 })
+    // The hard-limit crossing blocks the request and records the failure; no
+    // healed signal may fire while the block still describes reality.
+    expect(await policy.onPreStep(agent, new AbortController().signal)).toMatchObject({ kind: 'reject' })
+    expect(failures).toHaveLength(1)
+    expect(healed).toEqual([])
+    expect(await policy.onPreStep(agent, new AbortController().signal)).toMatchObject({ kind: 'reject' })
+    expect(healed).toEqual([])
+    // Pressure recedes below the hard limit (rollover, manual compaction, a
+    // wider route, …): the same pre-step that proves it reports the block
+    // healed, so a stale record cannot outlive the generation it described.
+    usage.totalTokens = 150_000
+    limits.usageTokens = 150_000
+    expect(await policy.onPreStep(agent, new AbortController().signal)).toMatchObject({ kind: 'continue' })
+    expect(healed).toEqual(['member:test'])
+  })
+
   it('a hard-limit compaction that reduces but stays above the limit fails closed instead of looping', async () => {
     const failures: string[] = []
     const { policy, engine } = coordinator({ engineBehavior: 'noop', limits: { usageTokens: 256_000, hardLimit: 256_000, handoffAt: 200_000 }, failures })
@@ -236,6 +262,38 @@ describe('Agent Team pressure policy (ticket 03)', () => {
     const decision = await policy.onPreStep(agent, new AbortController().signal)
     expect(decision.kind).toBe('reject')
     expect(failures[0]).toContain('unknown')
+  })
+
+  it('every diagnostic the policy records as a request block classifies as one, and nothing else does', async () => {
+    const failures: string[] = []
+    const { policy } = coordinator({ engineBehavior: 'noop', limits: { usageTokens: 256_000, hardLimit: 256_000, handoffAt: 200_000 }, failures })
+    const { agent } = fakeAgent({ tokens: 256_000 })
+    // First crossing: the forced compaction cannot get below the limit, so the
+    // unproven-reduction block is recorded.
+    await policy.onPreStep(agent, new AbortController().signal)
+    // Second step: the chain's budget is already spent.
+    await policy.onPreStep(agent, new AbortController().signal)
+    expect(failures).toHaveLength(2)
+    for (const diagnostic of failures) expect(isPressureRequestBlockDiagnostic(diagnostic)).toBe(true)
+
+    // A throwing engine records the compaction failure itself.
+    const thrown: string[] = []
+    const throwing = coordinator({ engineBehavior: 'throw', limits: { usageTokens: 256_000, hardLimit: 256_000, handoffAt: 200_000 }, failures: thrown })
+    await throwing.policy.onPreStep(fakeAgent().agent, new AbortController().signal)
+    expect(thrown).toHaveLength(1)
+    expect(isPressureRequestBlockDiagnostic(thrown[0]!)).toBe(true)
+
+    // Unknown route capacity blocks before any model call.
+    const capacity: string[] = []
+    const unmeasured = coordinator({ limits: undefined, failures: capacity })
+    await unmeasured.policy.onPreStep(fakeAgent().agent, new AbortController().signal)
+    expect(capacity).toHaveLength(1)
+    expect(isPressureRequestBlockDiagnostic(capacity[0]!)).toBe(true)
+
+    // The manual compaction path's failures never block a request, and an
+    // ordinary transport error is not a policy block either.
+    expect(isPressureRequestBlockDiagnostic('manual context compaction failed: engine failure')).toBe(false)
+    expect(isPressureRequestBlockDiagnostic('request to https://example.com failed: ECONNRESET')).toBe(false)
   })
 
   it('provider overflow compacts and retries once; a second overflow in the sequence falls through', async () => {

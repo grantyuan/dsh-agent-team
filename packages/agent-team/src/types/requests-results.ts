@@ -214,6 +214,53 @@ export interface AgentTeamMemberPromptView {
   readonly contextWindow?: number
 }
 
+/** Human read of one Member's Session lineage for the session-history dialog. */
+export interface AgentTeamMemberSessionsRequest {
+  readonly memberId: AgentTeamMemberId
+}
+
+/**
+ * One Session generation this Member ran, newest first. The current live
+ * generation leads; earlier generations are archived logs kept by renewals,
+ * rollovers, and restarts. An unreadable ancestor degrades to a flagged entry
+ * where the walk stopped — the list never claims depth it could not verify.
+ */
+export interface AgentTeamMemberSessionSummary {
+  readonly sessionId: AgentTeamMemberSessionId
+  /** The live generation's Session; the dialog marks it 当前会话. */
+  readonly isCurrent: boolean
+  /** Creation instant (Unix ms) from the stored header; absent when unreadable. */
+  readonly createdAt?: number
+  /** Physical event count (fork-inherited prefix included); absent when unreadable. */
+  readonly eventCount?: number
+}
+
+/** Human read of one bounded transcript page of one Member Session. */
+export interface AgentTeamMemberSessionTranscriptRequest {
+  readonly memberId: AgentTeamMemberId
+  readonly sessionId: AgentTeamMemberSessionId
+  /** Return only entries with a seq below this cursor; absent starts at the newest. */
+  readonly beforeSeq?: number
+}
+
+/** One model-visible transcript line of one Member Session. */
+export interface AgentTeamMemberSessionTranscriptEntry {
+  readonly seq: number
+  /** Wall-clock instant of the event (Unix ms). */
+  readonly time: number
+  readonly role: 'user' | 'assistant' | 'tool-call' | 'tool-result'
+  /** Bounded single-run text; per-line clamped like the doctor transcript. */
+  readonly text: string
+}
+
+export interface AgentTeamMemberSessionTranscript {
+  /** Chronological page (oldest first) of this generation's own events. */
+  readonly entries: readonly AgentTeamMemberSessionTranscriptEntry[]
+  /** An earlier page exists; pass `nextBeforeSeq` as the next request's cursor. */
+  readonly hasEarlier: boolean
+  readonly nextBeforeSeq?: number
+}
+
 /** Human intent to have the LLM draft a prompt curation proposal for one Member. */
 export interface AgentTeamCurateMemberPromptRequest {
   readonly memberId: AgentTeamMemberId

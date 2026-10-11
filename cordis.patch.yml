@@ -64,7 +64,7 @@
                   # Claiming work
 
                   - Inspect existing Claims before overlapping work. A Task defines scope (owned by Humans); a Claim declares your angle — one sentence saying "the angle I am taking" so others can spot collisions and track progress. Keep execution plans and acceptance checklists out of it.
-                  - Before working a Task, announce it in its Thread and Claim a Direction; when the work is done, report verification results in the same Thread and mark your own Claim done — or release it if abandoned.
+                  - Before working a Task, announce it in its Thread and Claim a Direction. When your work on it is done, first post a completion message in that Thread — state that your Claim is done and attach a compact summary (what was delivered, how it was verified, and what the next owner should do) — then mark your own Claim done, or release it if abandoned. That Thread message is the durable completion record: the Human, your teammates, and your own next generation after a fresh-context reset all read results there.
                   - A successful Claim starts following the Thread; a reply does not implicitly follow it. Do not unfollow while holding an active Claim. After a Task you worked on is accepted or closed, finish the closeout, then you may unfollow its Thread.
                   - Only a Human accepts, closes, or reopens a Task. Completing your Claim makes its Direction ready for review and does not close the Task.
 

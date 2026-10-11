@@ -26,6 +26,8 @@ When a Member rolls over to a fresh context through `context_rollover`, the Agen
 
 Live Members (active availability) also get two context actions in the row menu: 重置 (reset) renews the Member Session through `clearMemberContext` behind a destructive confirm and rebinds an embedded seat to the renewed Session, and 压缩 (compact) schedules one context compaction through `compactMemberContext`, optionally pinning the summarization LLM in the same model picker the editors use — the dialog acknowledges at schedule time, because the Host runs the reduction behind the Member's current activity.
 
+Every row additionally carries 历史会话: a read-only dialog that lists the Member's Session generations newest-first (the live one marked) and pages a bounded transcript of the selected generation through `memberSessions` and `memberSessionTranscript`; it never activates or writes a Session, so archived logs stay browsable.
+
 The narrow rail's four icon buttons read top-down Inbox (`IconQueueOutline14` at 16px) → Tasks (`IconChecklistOutlineRegular`) → Channels (`IconListPenOutline16`) → Agents (`IconAgentPresetOutline16`); none reuse the checklist (Task) or member icons.
 
 The Inbox icon is a destination: clicking it opens the Inbox page and expands the sidebar; the Tasks icon opens the Tasks page the same way; the Channels/Agents icons expand the sidebar and focus their section header. Agent creation carries no Channel page and the Agent editor carries no membership section: Channel membership is managed from the Channel side (create-dialog initial members, Channel editor member rows, and the member-management dialog); a Channel-less Member stays reachable through its DM view.
