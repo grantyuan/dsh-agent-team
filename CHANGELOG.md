@@ -31,6 +31,7 @@ All notable changes to this project are documented in this file. The format foll
 - Fixed runaway context compaction at the hard limit: a forced compaction must now prove the measured context dropped below the hard limit before the step goes out — otherwise the step fails closed — and at most one forced compaction is spent per recovery chain, ending the loop of repeated compress-rewrite steps that busted the provider prompt cache and burned tokens without shrinking the context.
 - The sender name follows the content-size setting: at a raised size the author grows with the message instead of staying at its default size, while the message body keeps the grid it already had.
 - The certified DSH baseline moves to `0.2.0-rc.2`: every `@deepseek-ai/dsh-*` peer advances to `>=0.2.0-rc.2 <0.2.1`, so a host still on `0.2.0-rc.1` falls outside the declared range.
+- Certified against DSH `0.2.1-alpha.2`: every `@deepseek-ai/dsh-*` peer moves together to `>=0.2.1-alpha.2 <0.2.2`, and the `@deepseek-ai/cordis` peer moves to `~4.0.5-alpha.1` — the range that line's own packages declare — because a `^4.0.1` comparator admits no prerelease tuple and an npm install of the candidate resolved to nothing. The `@deepseek-ai/dsh-invariants` peer left with the package it named: Harness removed its runtime invariant registry, so the ledger divergence guard is now a Team-owned companion row beside the Host, keeping the same fail-closed mount check and the same deferred, burst-coalesced replay after commits.
 
 ## [0.2.0] - 2026-09-29
 

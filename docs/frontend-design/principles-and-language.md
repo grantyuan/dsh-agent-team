@@ -23,6 +23,19 @@ radius scale on named tokens, and re-rounded several surfaces (the composer
 card 22px → 28px, menu and result rows 8px → 12px and 16px, chips 6px → 8px).
 See the two-checkout rule below for how one sheet serves both rc.1 and rc.2.
 
+Re-verified on the **0.2.1-alpha.2** line at source level: the radius tiers and
+the focus-ring chain are unchanged, and this cut only adds theme aliases behind
+the user font lists (`--dsh-font-family-text-default`,
+`--dsh-font-family-code-default`), which Team surfaces inherit through
+`font-family: inherit`. The audit reports no font or geometry finding for a Team
+surface on that checkout.
+
+Its three open errors there are pre-existing, not upgrade drift:
+`--dsw-alias-surface-primary` and `--dsw-alias-interactive-bg-selected` are
+named nowhere in the shipped theme at `0.2.0-rc.2` either, and the `.inboxCard`
+geometry row points at a Team selector this sheet no longer owns. They stay open
+until the surfaces that carry them are deliberately restyled.
+
 Re-verified on the **0.2.0-rc.1** line (the certified peer line; see
 [dsh-release-compatibility.md](../dsh-release-compatibility.md)), and again on
 **0.2.0-rc.2** at source level: the radius tiers and the focus-ring chain are

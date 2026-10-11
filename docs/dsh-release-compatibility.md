@@ -167,9 +167,9 @@ Record candidate tag, symptom, affected interface, reproduction command, and nex
 
 ## 6. Current baseline
 
-The current certified baseline is DSH `0.2.0-rc.2`; the paragraphs below preserve the history that produced the preceding baselines.
+The current certified baseline is DSH `0.2.1-alpha.2`; the paragraphs below preserve the history that produced the preceding baselines.
 
-The DSH peers state exactly that certified line, `>=0.2.0-rc.2 <0.2.1`, so a line this repository has not verified falls outside the declared range instead of installing under an unverified compatibility claim.
+The DSH peers state exactly that certified line, `>=0.2.1-alpha.2 <0.2.2`, so a line this repository has not verified falls outside the declared range instead of installing under an unverified compatibility claim.
 
 The routed sqlite backend is a vendored fork, not a dependency at all (GitHub issue #28): the upstream package stays a devDependency pinned at the fork source, 0.1.5-rc.2, as the byte-compatibility fixture reference, and every compat round diffs the fork against that version's file before anything else.
 
@@ -302,3 +302,45 @@ The published `0.2.0` bundle was installed against the candidate and booted from
 The certified baseline advanced to this candidate on 2026-09-29, after the certification rather than as part of it: the operator moved all 45 DSH peers to `>=0.2.0-rc.2 <0.2.1`, with the CI harness tag and the Hoplite tag to `dsh-v0.2.0-rc.2` and every wording spot that names the range.
 
 The move narrows the declared line to `0.2.0-rc.2` and later. The published `0.2.0` tarball keeps its wider `>=0.2.0-rc.1 <0.2.1` declaration, so only a later release refuses a host still on `0.2.0-rc.1`.
+
+### DSH 0.2.1-alpha.2
+
+DSH `0.2.1-alpha.2` is certified and moves the baseline. Tag `dsh-v0.2.1-alpha.2` (`d7432673`) is the commit the adjacent checkout was on for the whole round, so the facades, the browser lane, and the tests all read that tree.
+
+npm carries the candidate on `alpha` while `latest` and `next` still point at `0.2.0-rc.2`, so section 4's release-urgency test is not met: a host that stays on the published line keeps working. A host moved to the `alpha` lane mounts nothing until a bundle release declares this line.
+
+All 44 `@deepseek-ai/dsh-*` peers moved together to `>=0.2.1-alpha.2 <0.2.2`, and the CI harness tag, the Hoplite tag, and every wording spot that names the range moved in the same cut.
+
+`@deepseek-ai/dsh-invariants` left with the package it named, which is why the peer count dropped from 45. The Team version and the README install pin stayed: the release runbook owns that bump.
+
+The `@deepseek-ai/cordis` peer moved from `^4.0.1` to `~4.0.5-alpha.1`, the range every package on this line declares for itself.
+
+A `^4.0.1` comparator admits no prerelease tuple, so an npm resolution of the candidate met `ERESOLVE` with nothing satisfying both sides. `check:versions` reads only the `@deepseek-ai/dsh-*` ranges, so this peer is a hand-moved spot like the prose ones.
+
+One upstream removal moved bundle source: the runtime invariant registry — `@deepseek-ai/dsh-invariants`, `ctx.invariants`, and every `<package>/invariant` subpath — is gone.
+
+The ledger guard is now Team-owned: a companion row beside the Host that injects `agentTeam` and installs the checks itself.
+
+Both halves of the contract survive the move. The mount check stays synchronous and fail-closed, and the commit replay stays deferred one check phase, burst-coalesced, and latched until a replay comes back clean.
+
+The `invariant violated by "<package>": …` wording is kept, because the failure text and its tests describe the same divergence a reader sees in a Host log.
+
+The other two changes stopped at the test surface. `@deepseek-ai/dsh-tool-skill` now injects the Session `workingDirectory` service, which the shipped base bundle already provides, so composition is unchanged and only the synthetic skills harness needed a stand-in.
+
+The optional session-search tool moved `packages/session-query/tool-session-query` → `packages/experimental/tool-session-query` under the same package name; the spike that loads it by path reads the new location.
+
+Section 3.6 is not re-triggered: v4 stays the native Session format, no new migration package exists, and no source-kind or write-path rule changed.
+
+The vendored sqlite fork was diffed against its pinned cut first, as every compat round does. Upstream touched `storage-sqlite` once since `0.1.5-rc.2` — a redundant-cast removal in `unit.ts` — so the fork stays byte-faithful to the pinned source and carries no behavior delta.
+
+Evidence on the certified tree: `npm run typecheck` (493 Harness mappings), `npm test` (929 passed, 1 skipped), `npm run lint`, `npm run build`, `npm pack`, `check:artifact`, `git diff --check`, and `npm run test:browser` (5 journeys).
+
+Section 3.5 was run against both resolvers, and the two lanes differ, so each is stated separately.
+
+A profile-shaped pnpm install (`nodeLinker: hoisted`, `autoInstallPeers: false`) resolves one DSH generation, nests no copy, and reports peer issues as a warning only — the layout every real profile uses.
+
+npm drags a second generation in: the regular dependency `@wowyuarm/dsh-context-continuity@0.1.6` still declares its own DSH peers as `>=0.2.0-rc.1 <0.2.1`, and npm auto-installs that unsatisfied range beside an engine which value-imports `dsh-llm`, `dsh-session`, `dsh-tools`, and `dsh-session-persistence`.
+
+No published engine release names this line yet — `0.2.0`, `0.2.1` and `0.3.0` all still declare `<0.2.1` — so the gap is recorded rather than papered over.
+
+The close is the same as the `0.2.0-rc.1` round: raise the dependency floor to an engine whose peers admit the host, in the window that engine's own move ships.

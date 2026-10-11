@@ -427,7 +427,8 @@ describe('Agent Team member tool policy', () => {
     const engine = await import('@deepseek-ai/dsh-session-query')
     // The tool plugin ships in the adjacent Harness checkout (read-only
     // reference); it is not a Team dependency, so the spike loads it by path.
-    const toolPluginModule = await import(pathToFileURL(join(harnessDir, 'packages/session-query/tool-session-query/lib/index.js')).href)
+    // 0.2.1 moved the optional session-search tool under packages/experimental/.
+    const toolPluginModule = await import(pathToFileURL(join(harnessDir, 'packages/experimental/tool-session-query/lib/index.js')).href)
     const toolPlugin = {
       name: 'tool-session-query',
       inject: toolPluginModule.inject as readonly string[],

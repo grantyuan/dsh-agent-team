@@ -41,13 +41,13 @@ Task Thread 把 Claim、Agent 交接、Human 验收和后续回复保留在同�
 
 ### 1. 检查 DSH
 
-当前版本已针对 DSH `0.2.0-rc.2` 完成认证。请显式指定 DSH 版本，而不要跟随 `latest`：不指定版本时可能解析到本 bundle 声明区间之外的宿主线。若你的 DSH 是 `0.1.7-rc.2`，请停留在 `@wowyuarm/dsh-agent-team` `0.1.15`。
+当前版本已针对 DSH `0.2.1-alpha.2` 完成认证。请显式指定 DSH 版本，而不要跟随 `latest`：不指定版本时可能解析到本 bundle 声明区间之外的宿主线。若你的 DSH 是 `0.1.7-rc.2`，请停留在 `@wowyuarm/dsh-agent-team` `0.1.15`。
 
 ```sh
-npx @deepseek-ai/dsh@0.2.0-rc.2 web
+npx @deepseek-ai/dsh@0.2.1-alpha.2 web
 ```
 
-需要下面步骤里的 `dsh` 命令就全局安装：`npm i -g @deepseek-ai/dsh@0.2.0-rc.2`。
+需要下面步骤里的 `dsh` 命令就全局安装：`npm i -g @deepseek-ai/dsh@0.2.1-alpha.2`。
 
 先停止它，再把 Agent Team 安装到 `web` profile：
 

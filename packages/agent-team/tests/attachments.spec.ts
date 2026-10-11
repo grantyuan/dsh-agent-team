@@ -6,7 +6,6 @@ import { join, sep } from 'node:path'
 /** Escape a literal string for embedding in a RegExp (path separators differ per platform). */
 const escapeRegExp = (value: string) => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
 import { Context } from '@deepseek-ai/cordis'
-import InvariantRegistry from '@deepseek-ai/dsh-invariants'
 import Storage from '@deepseek-ai/dsh-storage'
 import SessionProjectionRegistry from '@deepseek-ai/dsh-session-projection'
 import { DomainFacility } from '@deepseek-ai/dsh-storage-domain'
@@ -46,10 +45,9 @@ async function harness(): Promise<{ readonly ctx: Context; readonly facility: Do
   // Inject-list requirement; these tests never assemble a prompt (no live sessions).
   ctx.provide('systemPrompt', { assemble: async () => ({ sections: [], contexts: [], tools: [], variables: {} }) })
   ctx.provide('sessionPersistence', { list: async () => [] })
-  await ctx.plugin(InvariantRegistry)
-  await ctx.plugin(agentTeamInvariant)
   await ctx.plugin(SessionProjectionRegistry)
   const fiber = await ctx.plugin(AgentTeam)
+  await ctx.plugin(agentTeamInvariant)
   cleanups.push(async () => { await fiber.dispose(); await facility.closeAll() })
   return { ctx, facility }
 }

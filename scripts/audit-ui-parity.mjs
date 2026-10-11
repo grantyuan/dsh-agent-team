@@ -1,6 +1,6 @@
 // UI parity audit: mechanical consistency checks between the Team Client's
 // own CSS/TSX and the DSH 0.1.7 design language — the rc.2 baseline, re-verified
-// on the 0.2.0-rc.1 and 0.2.0-rc.2 lines — documented in
+// on the 0.2.0-rc.1, 0.2.0-rc.2, and 0.2.1-alpha.2 lines — documented in
 // docs/frontend-design/principles-and-language.md §Design language alignment.
 // This is the repeatable
 // form of the manual audit that produced commit bb1ebba — run it after any

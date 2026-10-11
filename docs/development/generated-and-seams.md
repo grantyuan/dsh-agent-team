@@ -74,7 +74,7 @@ The six mechanical surfaces that must change together:
 5. **Host and Remote.** Add the `@Remote('<action>')` method in `index.ts`: authorize, dispatch to the ledger with the Human or Member actor, and emit the committed receipt.
 6. **Tests and docs.** Cover commit, replay, authorization, and the projection effect; then update the owning maintained document (`architecture/README.md` for boundaries, `domain-model.md` for semantics, `team-collaboration/README.md` for a model-facing contract).
 
-The invariant companion is checked, not extended: `invariant.ts` registers one `agentTeam` invariant that validates the whole durable ledger at mount and after commits, so a new operation is covered automatically once it replays. Extend it only when the new record shape needs a relationship the projection validator does not already assert.
+The invariant companion is checked, not extended: `invariant.ts` is one Team-owned companion row that validates the whole durable ledger at mount and after commits, so a new operation is covered automatically once it replays. Extend it only when the new record shape needs a relationship the projection validator does not already assert.
 
 Two boundaries this checklist depends on:
 

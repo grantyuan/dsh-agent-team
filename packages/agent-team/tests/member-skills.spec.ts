@@ -63,6 +63,10 @@ async function memberSkillsHarness(): Promise<{
   ]
 
   const ctx = new Context()
+  // DSH 0.2.1 routes every `tool-skill` call through the Session working
+  // directory. This synthetic harness mounts no fs provider, so the Member's
+  // project directory is the answer; `ensure` is the only seam the tool uses.
+  ctx.provide('workingDirectory', { ensure: async () => project } as never)
   // rc.1: preset health resolves package rows by walking node_modules above
   // ctx.baseUrl — point at this repository, where the harness and bundle
   // packages are linked, as a real profile install would.

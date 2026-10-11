@@ -15,6 +15,10 @@ Team Client 渲染在 shipped DSH 外壳内部，必须讲基础 UI 的设计语
 
 对齐目标是 **0.1.7-rc.2** 的写法：它把焦点环 token 化、把圆角刻度变成命名 token，并重新调圆了几个面（composer 卡 22px → 28px，菜单行与结果行 8px → 12px 与 16px，小胶囊 6px → 8px）。同一份样式如何同时服务 rc.1 与 rc.2，见下面的「双 checkout 规则」。
 
+这条基线已在 **0.2.1-alpha.2** 上做过源码级复核：圆角刻度与焦点环链未变，该版本只是在用户字体列表后面新增别名（`--dsh-font-family-text-default`、`--dsh-font-family-code-default`），Team 面经 `font-family: inherit` 自动继承。审计在那棵树上没有报出任何 Team 面的字体或几何问题。
+
+它在那棵树上仍有三条 open error，且都不是本次升级造成的漂移：`--dsw-alias-surface-primary` 与 `--dsw-alias-interactive-bg-selected` 在 `0.2.0-rc.2` 的 shipped 主题里同样无人定义，`.inboxCard` 那条几何检查指向一个本表已不再拥有的 Team selector。它们等到承载它们的面被有意重做时再一并关闭。
+
 这条基线已在 **0.2.0-rc.1** 线上复核（认证线见 [dsh-release-compatibility.zh.md](../dsh-release-compatibility.zh.md)），并在 **0.2.0-rc.2** 上做了源码级复核：圆角刻度与焦点环链未变，本表镜像的 shipped 样式表逐字节一致，主题文件只增别名。0.2 真正动过的是本契约**不**镜像的 shipped 面：浮层改读新的 frame inset 变量、转录区微光改走 `TextShimmer` 原语、聊天气流间距收紧到 6px（助手回复后 12px）。Team 时间线保持自己的消息节奏、不采用那个间距：它的行是带座位的消息，预留身份位、正文自带 markdown 块级外边距，固定的转录 flow gap 在这里没有对应物。
 
 | 维度 | 规则 | shipped 参考 |

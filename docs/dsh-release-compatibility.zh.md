@@ -226,9 +226,9 @@ Harness 随附一套 experimental Agent Teams，以独立 profile bundle 形式�
 
 ## 6. 当前基线
 
-当前 Team bundle 的已认证基线是 DSH `0.2.0-rc.2`；以下几段保留产生前几条基线的历史。
+当前 Team bundle 的已认证基线是 DSH `0.2.1-alpha.2`；以下几段保留产生前几条基线的历史。
 
-DSH peers 正好声明这条已认证线：`>=0.2.0-rc.2 <0.2.1`，因此本仓库尚未验证的线会落在声明区间之外，而不是在未经核实的兼容声明下被装上。
+DSH peers 正好声明这条已认证线：`>=0.2.1-alpha.2 <0.2.2`，因此本仓库尚未验证的线会落在声明区间之外，而不是以未经认证的兼容性声明被装上。
 
 经路由的 sqlite 后端是 vendored fork，根本不是 dependency（GitHub issue #28）：上游包只以 devDependency 钉在 fork 来源版本 0.1.5-rc.2，用作字节兼容 fixture 参照；每次兼容认证先把 fork 与该版本文件对一遍 diff，再做其他事。
 
@@ -365,3 +365,59 @@ tag `639ed01`（2026-09-29）在 `dsh-v0.2.0-rc.1` 之后 187 个提交。认证
 已认证基线于 2026-09-29 在这个候选上向前推进——它发生在认证之后，而不是认证的一部分：运维方把 45 个 DSH peers 移到 `>=0.2.0-rc.2 <0.2.1`，CI harness tag 与 Hoplite tag 移到 `dsh-v0.2.0-rc.2`，各命名区间的措辞位点一并更新。
 
 这次移动把声明线收窄到 `0.2.0-rc.2` 及以后。已发布的 `0.2.0` tarball 仍保留更宽的 `>=0.2.0-rc.1 <0.2.1` 声明，所以要等下一个版本才会拒绝仍停在 `0.2.0-rc.1` 的宿主。
+
+### DSH 0.2.1-alpha.2
+
+DSH `0.2.1-alpha.2` 认证通过，基线前移到这条线。
+
+tag `dsh-v0.2.1-alpha.2`（`d7432673`）正是整轮验证时相邻 checkout 所在的 commit，facade、browser lane 与测试读的都是这一棵树。
+
+npm 上该候选位于 `alpha`，而 `latest` 与 `next` 仍是 `0.2.0-rc.2`，因此 §4 的发布紧迫性不成立：留在已发布线上的宿主照常工作。
+
+但把宿主移到 `alpha` 线的用户，在 bundle 发布声明这条线之前什么都挂不上。
+
+44 个 `@deepseek-ai/dsh-*` peers 一起移到 `>=0.2.1-alpha.2 <0.2.2`，CI harness tag、Hoplite tag 与所有写明该线的措辞位点同批移动。
+
+`@deepseek-ai/dsh-invariants` 随它命名的包一起离开，peer 计数因此从 45 降到 44。
+
+Team 版本与 README 的安装 pin 没有动：那一次 bump 归发布流程所有。
+
+`@deepseek-ai/cordis` peer 从 `^4.0.1` 移到 `~4.0.5-alpha.1`，也就是这条线上每个包自己声明的区间。
+
+`^4.0.1` 这个 comparator 不接受任何 prerelease tuple，npm 解析候选时两侧无解并报 `ERESOLVE`。
+
+`check:versions` 只读 `@deepseek-ai/dsh-*` 区间，所以这个 peer 与文字基线一样要靠人工同步。
+
+唯一动到 bundle 源码的上游删除是 runtime invariant registry：`@deepseek-ai/dsh-invariants`、`ctx.invariants` 与所有 `<package>/invariant` 子路径都不再发布。
+
+ledger guard 现在归 Team 自有：Host 旁的一条 companion row，自己 inject `agentTeam`、自己安装校验。
+
+契约的两半都保留：mount 检查仍是同步且 fail-closed，commit replay 仍延后一个 check 相、合并突发，并 latch 到一次干净重放才解除。
+
+`invariant violated by "<package>": …` 文案保持不变，失败文本与测试描述的还是 Host 日志里同一次 divergence。
+
+另外两处止步于测试面。`@deepseek-ai/dsh-tool-skill` 现在 inject Session 的 `workingDirectory` 服务，而随附 base bundle 本就提供它，装配没有变化。
+
+因此只有合成的 skills harness 需要一个替身；可选的 session-search 工具在包名不变下移动到 `packages/experimental/tool-session-query`。
+
+按路径加载它的 spike 测试读新位置。
+
+§3.6 没有被重新触发：原生 Session 格式仍是 v4，没有新的 migration 包，source-kind 与写入路径规则都没变。
+
+按每轮兼容认证的规矩，先 diff vendored sqlite fork 与它 pin 的那一版上游文件。
+
+`0.1.5-rc.2` 之后上游只动过 `storage-sqlite` 一次——`unit.ts` 里去掉一处冗余 cast，所以 fork 与钉住的源码仍逐字一致，没有行为差异。
+
+认证树上的证据：`npm run typecheck`（493 个 Harness mapping）、`npm test`（929 通过、1 跳过）、`npm run lint`、`npm run build`、`npm pack`、`check:artifact`、`git diff --check`、`npm run test:browser`（5 条 journey）。
+
+§3.5 对两个 resolver 都跑了，两条 lane 结果不同，因此分别写明。
+
+profile 形状的 pnpm 安装（`nodeLinker: hoisted`、`autoInstallPeers: false`）只解析出一代 DSH，不嵌套拷贝，peer 问题只报 warning——真实 profile 用的就是这个布局。
+
+npm 会拖进第二代：常规依赖 `@wowyuarm/dsh-context-continuity@0.1.6` 仍把自己的 DSH peers 声明为 `>=0.2.0-rc.1 <0.2.1`。
+
+npm 会把这个不满足的区间自动装到 engine 旁边，而该 engine 以 value import 引用 `dsh-llm`、`dsh-session`、`dsh-tools` 与 `dsh-session-persistence`。
+
+目前没有任何已发布的 engine 版本写明这条线——`0.2.0`、`0.2.1`、`0.3.0` 都还是 `<0.2.1`——所以这个缺口记录在案，不做粉饰。
+
+关闭方式与 `0.2.0-rc.1` 那轮相同：等 engine 自己移动区间的窗口，把依赖下限抬到 peers 能容纳宿主的版本。

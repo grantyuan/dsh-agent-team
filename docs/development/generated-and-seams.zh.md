@@ -72,7 +72,7 @@ types/requests-results.ts   公开的 request 与 result 形状
 5. **Host 与 Remote。** 在 `index.ts` 加上 `@Remote('<action>')` 方法：授权、以 Human 或 Member actor 分派给 ledger、发出 committed receipt。
 6. **测试与文档。** 覆盖 commit、replay、授权与 projection 效果；然后更新该事实的归属文档（边界改 `architecture/README.md`，语义改 `domain-model.md`，面向模型的契约改 `team-collaboration/README.md`）。
 
-invariant companion 是"被覆盖"而不是"要扩展"：`invariant.ts` 注册一个 `agentTeam` invariant，在 mount 时与每次 commit 后校验整个 durable ledger，所以只要新 operation 能 replay 就自动纳入覆盖。只有当新 record 形状需要 projection validator 尚未断言的关系时才扩展它。
+invariant companion 是"被覆盖"而不是"要扩展"：`invariant.ts` 是 Team 自有的 companion row（Harness 的 runtime invariant registry 已在 0.2.1 移除），在 mount 时与每次 commit 后校验整个 durable ledger，所以只要新 operation 能 replay 就自动纳入覆盖。只有当新 record 形状需要 projection validator 尚未断言的关系时才扩展它。
 
 这份清单依赖两条边界：
 

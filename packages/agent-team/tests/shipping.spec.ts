@@ -93,8 +93,10 @@ describe('Agent Team shipping contract', () => {
     expect(patch).toContain('agentPresets: true')
     expect(patch).toContain("name: '@wowyuarm/dsh-agent-team/host'")
     expect(patch).toContain("name: '@wowyuarm/dsh-agent-team'")
-    expect(patch).toContain("name: '@deepseek-ai/dsh-invariants'")
+    // The ledger guard is Team-owned: Harness retired its invariant registry,
+    // so only our own companion row ships.
     expect(patch).toContain("name: '@wowyuarm/dsh-agent-team/invariant'")
+    expect(patch).not.toContain('@deepseek-ai/dsh-invariants')
     // The Team ledger medium: only agent_team routes to SQLite through the
     // public per-domain route table. The backend is vendored under our own
     // package name (see packages/agent-team/src/vendor/storage-sqlite/):
@@ -178,15 +180,15 @@ describe('Agent Team shipping contract', () => {
       exports: Record<string, { default?: string }>
       dsh: { client: { platform: string; inject: string[] } }
     }
-    expect(bundleManifest.peerDependencies['@deepseek-ai/dsh-tool-web']).toBe('>=0.2.0-rc.2 <0.2.1')
-    expect(bundleManifest.peerDependencies['@deepseek-ai/dsh-command-compact']).toBe('>=0.2.0-rc.2 <0.2.1')
-    expect(bundleManifest.peerDependencies['@deepseek-ai/dsh-agent-preset']).toBe('>=0.2.0-rc.2 <0.2.1')
-    expect(bundleManifest.peerDependencies['@deepseek-ai/dsh-agent-preset-registry']).toBe('>=0.2.0-rc.2 <0.2.1')
+    expect(bundleManifest.peerDependencies['@deepseek-ai/dsh-tool-web']).toBe('>=0.2.1-alpha.2 <0.2.2')
+    expect(bundleManifest.peerDependencies['@deepseek-ai/dsh-command-compact']).toBe('>=0.2.1-alpha.2 <0.2.2')
+    expect(bundleManifest.peerDependencies['@deepseek-ai/dsh-agent-preset']).toBe('>=0.2.1-alpha.2 <0.2.2')
+    expect(bundleManifest.peerDependencies['@deepseek-ai/dsh-agent-preset-registry']).toBe('>=0.2.1-alpha.2 <0.2.2')
     expect(bundleManifest.peerDependencies['@deepseek-ai/dsh-agent-presets']).toBeUndefined()
     // The certified baseline moves as one cut: every DSH peer carries the same
     // range, or an install resolves two DSH generations at once. No host-scope
     // package may sit in `dependencies` (see the host-scope gate below).
-    expect([...dshPeerRanges(bundleManifest)]).toEqual(['>=0.2.0-rc.2 <0.2.1'])
+    expect([...dshPeerRanges(bundleManifest)]).toEqual(['>=0.2.1-alpha.2 <0.2.2'])
     expect(preset).toContain('compaction: true')
     expect(preset).toContain('toolResultPruner: true')
     expect(preset).toContain('team_inbox, team_thread, team_message, team_claim, and team_view')
