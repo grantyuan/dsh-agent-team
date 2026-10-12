@@ -36,6 +36,7 @@ import { AGENT_TEAM_PLUGIN_ID, continuationCheckpointRefOf, handoffOf, isCheckpo
 import { RECOVERY_DELAY_MS } from '../src/recovery.ts'
 import { COMPLETION_MARKER } from '../src/response-guard.ts'
 import { CONTINUATION_NUDGE_MARKER, continuationNudgeText } from '../src/continuation-watcher.ts'
+import { LIAISON_REPORT_GRACE_MS } from '../src/completion-liaison.ts'
 import type { AgentTeamChannelRef, AgentTeamClaimRef, AgentTeamMemberId, AgentTeamRequestId } from '../src/types.ts'
 import { MemoryStorageBackend } from './helpers/memory-backend.ts'
 
@@ -1105,7 +1106,7 @@ describe('Agent Team Member lifecycle', () => {
     const firstRead = await ctx.agentTeam.readThreadForAgent(agent, { requestId: requestId('loop-read'), workspaceId,
       taskRef: started.task!.taskRef })
     const update = await ctx.agentTeam.reply({ requestId: requestId('loop-update'), workspaceId,
-      taskRef: started.task!.taskRef, body: 'Newer context arrived', baseRevision: firstRead.thread.revision })
+      taskRef: started.task!.taskRef, body: 'Newer context arrived @builder', baseRevision: firstRead.thread.revision })
     if (update.kind !== 'committed') throw new Error(`expected committed update, received ${update.kind}`)
 
     adapter.enqueue(toolCallResponse('model-team-view', 'team_view', {}))
@@ -1113,8 +1114,8 @@ describe('Agent Team Member lifecycle', () => {
       taskRef: started.task!.taskRef, body: 'Premature reply', baseRevision: update.thread.revision }))
     adapter.enqueue(textResponse('I will read the Thread before replying.'))
 
-    // The committed Human update leaves durable unread work, so its pending
-    // hint wakes the idle Member; that wake carries the model steps under test.
+    // The committed Human update names the Member, and that Direct marker
+    // wakes them point-to-point; the wake carries the model steps under test.
     const idle = waitForIdle(ctx, agent)
     await idle
 
@@ -1141,10 +1142,13 @@ describe('Agent Team Member lifecycle', () => {
     agent.followup(createUserMessage({ content: [{ type: 'text', text: 'Start ordinary project work.' }], source: { kind: 'user' } }))
     await adapter.started.promise
 
-    const first = await ctx.agentTeam.reply({ requestId: requestId('safe-update-1'), workspaceId, taskRef: started.task!.taskRef, body: 'First hidden update', baseRevision: revision })
+    // The updates name the Member: waking is point-to-point, so an addressed
+    // reply is what reaches a running Member — as one coalesced hint at the
+    // next step boundary, never as two mid-turn injections.
+    const first = await ctx.agentTeam.reply({ requestId: requestId('safe-update-1'), workspaceId, taskRef: started.task!.taskRef, body: 'First hidden update @builder', baseRevision: revision })
     if (first.kind !== 'committed') throw new Error(`expected committed reply, received ${first.kind}`)
     revision = first.thread.revision
-    const second = await ctx.agentTeam.reply({ requestId: requestId('safe-update-2'), workspaceId, taskRef: started.task!.taskRef, body: 'Second hidden update', baseRevision: revision })
+    const second = await ctx.agentTeam.reply({ requestId: requestId('safe-update-2'), workspaceId, taskRef: started.task!.taskRef, body: 'Second hidden update @builder', baseRevision: revision })
     if (second.kind !== 'committed') throw new Error(`expected committed reply, received ${second.kind}`)
     expect(adapter.requests).toHaveLength(1)
     adapter.enqueue(textResponse('I will triage Team Inbox next.'))
@@ -1155,9 +1159,11 @@ describe('Agent Team Member lifecycle', () => {
     const safeBoundaryRequest = JSON.stringify(adapter.requests[1]!.messages)
     expect(safeBoundaryRequest).toContain('Team Inbox has unread work')
     expect(safeBoundaryRequest).toContain(started.task!.taskRef)
-    expect(safeBoundaryRequest).toContain('2 unread updates')
-    expect(safeBoundaryRequest).not.toContain('First hidden update')
-    expect(safeBoundaryRequest).not.toContain('Second hidden update')
+    // Both updates are addressed, so each renders as its own Direct mention
+    // inside the one coalesced hint — never as two hints.
+    expect(safeBoundaryRequest.match(/Direct Team mention/g)).toHaveLength(2)
+    expect(safeBoundaryRequest).toContain('First hidden update')
+    expect(safeBoundaryRequest).toContain('Second hidden update')
     const hints = agent.session.ownEvents().filter(event => event.type === 'user/message'
       && JSON.stringify(event.data).includes('Team Inbox has unread work'))
     expect(hints).toHaveLength(1)
@@ -1345,7 +1351,7 @@ describe('Agent Team Member lifecycle', () => {
     expect(request).toContain('Released Claims')
   })
 
-  it('wakes an idle Member from durable Inbox state without injecting Thread bodies', async () => {
+  it('leaves unaddressed Thread chatter unread until the next direct delivery, which then omits its body', async () => {
     const adapter = new ScriptedAdapter()
     const { ctx, workspaceId } = await realHarness(adapter)
     const channel = await ctx.agentTeam.createChannel({ requestId: requestId('wake-channel'), workspaceId, name: 'engineering', description: 'Engineering work' })
@@ -1355,20 +1361,24 @@ describe('Agent Team Member lifecycle', () => {
     if (started.kind !== 'committed') throw new Error(`expected committed start, received ${started.kind}`)
     await ctx.agentTeam.changeAttentionForAgent(agent, { requestId: requestId('wake-follow'), workspaceId, taskRef: started.task!.taskRef, action: 'follow' })
     const humanRead = await ctx.agentTeam.readThread({ requestId: requestId('wake-human-read'), workspaceId, taskRef: started.task!.taskRef })
-    adapter.enqueue(textResponse('I will inspect Team Inbox.'))
     const first = await ctx.agentTeam.reply({ requestId: requestId('wake-reply-1'), workspaceId, taskRef: started.task!.taskRef, body: 'Please inspect the durable wake.', baseRevision: humanRead.thread.revision })
     if (first.kind !== 'committed') throw new Error(`expected committed reply, received ${first.kind}`)
-    await agent.whenIdle()
-    expect(adapter.requests).toHaveLength(1)
-    expect(JSON.stringify(adapter.requests[0]!.messages)).toContain('Team Inbox has unread work')
-    expect(JSON.stringify(adapter.requests[0]!.messages)).not.toContain('Please inspect the durable wake.')
+    // Point-to-point waking: an update that names nobody stays pure unread —
+    // it counts in the Inbox projection but spends no model turn.
+    expect(adapter.requests).toHaveLength(0)
 
     adapter.enqueue(textResponse('I will triage both updates.'))
-    const second = await ctx.agentTeam.reply({ requestId: requestId('wake-reply-2'), workspaceId, taskRef: started.task!.taskRef, body: 'A second update should coalesce.', baseRevision: first.thread.revision })
+    const second = await ctx.agentTeam.reply({ requestId: requestId('wake-reply-2'), workspaceId, taskRef: started.task!.taskRef, body: 'A second update should coalesce. @builder', baseRevision: first.thread.revision })
     if (second.kind !== 'committed') throw new Error(`expected committed reply, received ${second.kind}`)
     await agent.whenIdle()
-    expect(adapter.requests).toHaveLength(2)
-    expect(JSON.stringify(adapter.requests[1]!.messages)).not.toContain('A second update should coalesce.')
+    expect(adapter.requests).toHaveLength(1)
+    const request = JSON.stringify(adapter.requests[0]!.messages)
+    // the direct mention and the coalesced unread count arrive together…
+    expect(request).toContain('Team Inbox has unread work')
+    expect(request).toContain('1 unread update')
+    expect(request).toContain('A second update should coalesce.')
+    // …while the unaddressed chatter rides along as body-free bookkeeping.
+    expect(request).not.toContain('Please inspect the durable wake.')
   })
 
   it('recovers a needed hint from durable unread state on Member resume', async () => {
@@ -1463,12 +1473,20 @@ describe('Agent Team Member lifecycle', () => {
       await agent.whenIdle()
 
       adapter.enqueue(textResponse('I will continue the interrupted work.'))
+      // The recovery round below closes on the marker with the Task still
+      // open in a leaderless Workspace — the completion liaison's push wakes
+      // a third round, answered here.
+      adapter.enqueue(textResponse('Acknowledged.'))
       await ctx.agentTeam.recoverMember({ requestId: requestId('manual-recovery'), workspaceId, memberId: builder.status.member.memberId })
       await agent.whenIdle()
       await vi.advanceTimersByTimeAsync(RECOVERY_DELAY_MS)
 
+      // requests: [0] the manual recovery instruction, [1] the liaison Task
+      // push past the grace window. The follow-arrival reply names no one, so
+      // point-to-point waking leaves it as unread chatter — no round of its
+      // own — and the cancelled automatic wakeup adds none either.
       expect(adapter.requests).toHaveLength(2)
-      const request = JSON.stringify(adapter.requests.at(-1)!.messages)
+      const request = JSON.stringify(adapter.requests[0]!.messages)
       expect(request).toContain('The operator asked you to resume after the previous turn ended early.')
       expect(request).not.toContain('temporary service error')
       expect(request).toContain('Please continue the work you were doing before the error.')
@@ -1476,6 +1494,9 @@ describe('Agent Team Member lifecycle', () => {
       expect(request).toContain(started.task!.taskRef)
       expect(request).not.toContain('Unread through manual recovery')
       expect(request).not.toMatch(/automatic recovery|attempt|stop|handoff/i)
+      const push = JSON.stringify(adapter.requests[1]!.messages)
+      expect(push).toContain('Task push (no Team leader designated)')
+      expect(push).toContain(started.task!.taskRef)
     } finally {
       vi.useRealTimers()
     }
@@ -1493,6 +1514,10 @@ describe('Agent Team Member lifecycle', () => {
     const humanRead = await ctx.agentTeam.readThread({ requestId: requestId('error-human-read'), workspaceId, taskRef: started.task!.taskRef })
     const update = await ctx.agentTeam.reply({ requestId: requestId('error-update'), workspaceId, taskRef: started.task!.taskRef, body: 'Unread through runtime error', baseRevision: humanRead.thread.revision })
     if (update.kind !== 'committed') throw new Error(`expected committed reply, received ${update.kind}`)
+    // Point-to-point waking leaves the unaddressed reply as unread only, so
+    // the Member fails on an ordinary turn instead: the empty scripted queue
+    // throws mid-turn and puts the presence in `error` either way.
+    agent.followup(createUserMessage({ content: [{ type: 'text', text: 'Kick off a round.' }], source: { kind: 'user' } }))
     await agent.whenIdle()
     expect(ctx.agentTeam.members().find(status => status.member.memberId === builder.status.member.memberId)?.presence).toBe('error')
 
@@ -5097,5 +5122,233 @@ describe('Agent Team member context control (ticket 01)', () => {
     ctx.agents.get(raised.status.member.sessionId)!.followup(createUserMessage({ content: [{ type: 'text', text: 'turn one' }], source: { kind: 'user' } }))
     await waitForIdle(ctx, ctx.agents.get(raised.status.member.sessionId)!)
     expect(noticesIn(raised.status.member.sessionId)).toHaveLength(0)
+  })
+
+  function faultyTextResponse(text: string): StreamChunk[] {
+    return [
+      { type: 'block-start', index: 0, blockType: 'text' },
+      { type: 'text-delta', index: 0, text },
+      { type: 'block-end', index: 0, block: { type: 'text', text } },
+      { type: 'usage', usage: { inputTokens: 10, outputTokens: text.length } },
+      { type: 'finish', reason: { kind: 'stop' } },
+    ]
+  }
+
+  it('re-arms and reminds an abnormal stop even after the in-loop nudge budget stood down', async () => {
+    const adapter = new ScriptedAdapter()
+    const { ctx, workspaceId } = await realHarness(adapter)
+    const channel = await ctx.agentTeam.createChannel({ requestId: requestId('stoplane-channel'), workspaceId, name: 'engineering', description: 'Engineering work' })
+    const added = await ctx.agentTeam.addMember({ requestId: requestId('stoplane-add'), workspaceId, handle: 'drifter', description: 'Trails off mid-task', presetId: 'team-member', channelRefs: [channel.channel.channelRef] })
+    const agent = ctx.agents.get(added.status.member.sessionId)!
+    // Four consecutive faulty rounds exhaust the three-nudge in-loop budget;
+    // the fifth scripted response — the marker close — can only be reached
+    // when the stop lane reminds the Member after the stand-down. This is
+    // the live Qwen lane: trail-off text stops that once left the Member
+    // stopped with the Task unfinished.
+    for (let round = 0; round < 4; round += 1) adapter.enqueue(faultyTextResponse(`Let me keep checking the build: round ${round}`))
+    adapter.enqueue(textResponse('Everything is delivered.'))
+    agent.followup(createUserMessage({ content: [{ type: 'text', text: 'work the task' }], source: { kind: 'user' } }))
+    await waitFor(() => (adapter.requests.length >= 5 ? adapter.requests.length : undefined))
+    await waitForIdle(ctx, agent)
+    const guardNotices = agent.session.ownEvents().filter(event => event.type === 'user/message'
+      && (event.data as { source?: { summary?: string } }).source?.summary === 'Response guard: continue the incomplete turn')
+    expect(guardNotices.length).toBeGreaterThanOrEqual(4)
+    expect(JSON.stringify(agent.session.ownEvents())).toContain('Everything is delivered')
+  })
+
+  it('renews an armed fresh Member before delivering a teammate\'s dispatch mention', async () => {
+    const adapter = new ScriptedAdapter()
+    const { ctx, workspaceId, archived } = await realHarness(adapter)
+    const channel = await ctx.agentTeam.createChannel({ requestId: requestId('armdisp-channel'), workspaceId, name: 'engineering', description: 'Engineering work' })
+    const mgr = await ctx.agentTeam.addMember({ requestId: requestId('armdisp-mgr'), workspaceId, handle: 'manager', description: 'Dispatches work', presetId: 'team-member', channelRefs: [channel.channel.channelRef] })
+    const worker = await ctx.agentTeam.addMember({ requestId: requestId('armdisp-worker'), workspaceId, handle: 'worker', description: 'Executes dispatched work', presetId: 'team-member', channelRefs: [channel.channel.channelRef], contextStartPolicy: 'fresh' })
+    const workerId = worker.status.member.memberId
+    const workerSession0 = worker.status.member.sessionId
+    for (let turn = 0; turn < 6; turn += 1) adapter.enqueue(textResponse('Acknowledged.'))
+    const sessionOf = (): SessionId => ctx.agentTeam.members().find(status => status.member.memberId === workerId)!.member.sessionId
+
+    // The worker closes its current turn with the completion marker: the
+    // fresh-start policy arms. Completion alone must NOT renew — the working
+    // log still holds the result the teammates may ask about.
+    const workerAgent = ctx.agents.get(workerSession0)!
+    workerAgent.followup(createUserMessage({ content: [{ type: 'text', text: 'finish current work' }], source: { kind: 'user' } }))
+    await waitForIdle(ctx, workerAgent)
+    expect(sessionOf()).toBe(workerSession0)
+    expect(archived).not.toContain(workerSession0)
+
+    // The teammate dispatch: a Channel message mentioning @worker. The Inbox
+    // wake is gated behind the renewal, so the mention reaches the fresh
+    // generation — system context first, reset notice, then the task.
+    const mgrAgent = ctx.agents.get(mgr.status.member.sessionId)!
+    const dispatched = await ctx.agentTeam.sendMessageForAgent(mgrAgent, { requestId: requestId('armdisp-send'), workspaceId, channelRef: channel.channel.channelRef, body: 'Fix the flaky startup test @worker' })
+    expect(dispatched.kind).toBe('committed')
+    const workerSession1 = await waitFor(() => sessionOf() !== workerSession0 ? sessionOf() : undefined)
+    await waitForArchived(archived, workerSession0)
+    const freshAgent = await waitFor(() => ctx.agents.get(workerSession1)!)
+    const texts = freshAgent.session.ownEvents()
+      .filter(event => event.type === 'user/message')
+      .map(event => (event as { data: { content: ReadonlyArray<{ type: string; text?: string }> } }).data.content
+        .map(block => block.text ?? '').join(''))
+    const resetAt = texts.findIndex(text => text.includes('Context reset notice'))
+    const inboxAt = texts.findIndex(text => text.includes('Team Inbox has unread work'))
+    expect(resetAt).toBeGreaterThanOrEqual(0)
+    expect(inboxAt).toBeGreaterThanOrEqual(0)
+    expect(resetAt).toBeLessThan(inboxAt)
+    expect(() => ctx.agentTeam.validateLedger()).not.toThrow()
+  })
+
+  it('delivers an exempted dispatch into the live Session and still renews for the next task', async () => {
+    const adapter = new ScriptedAdapter()
+    const { ctx, workspaceId, archived } = await realHarness(adapter)
+    const channel = await ctx.agentTeam.createChannel({ requestId: requestId('keepdisp-channel'), workspaceId, name: 'engineering', description: 'Engineering work' })
+    const mgr = await ctx.agentTeam.addMember({ requestId: requestId('keepdisp-mgr'), workspaceId, handle: 'manager', description: 'Dispatches work', presetId: 'team-member', channelRefs: [channel.channel.channelRef] })
+    const worker = await ctx.agentTeam.addMember({ requestId: requestId('keepdisp-worker'), workspaceId, handle: 'worker', description: 'Executes dispatched work', presetId: 'team-member', channelRefs: [channel.channel.channelRef], contextStartPolicy: 'fresh' })
+    const workerId = worker.status.member.memberId
+    const workerSession0 = worker.status.member.sessionId
+    for (let turn = 0; turn < 8; turn += 1) adapter.enqueue(textResponse('Acknowledged.'))
+    const sessionOf = (): SessionId => ctx.agentTeam.members().find(status => status.member.memberId === workerId)!.member.sessionId
+
+    // The worker closes its turn on the marker: armed. The teammate's dispatch
+    // then declares it needs the live Session, so the gate lets THAT delivery
+    // through unread and un-renewed — the exempted context stays readable.
+    const workerAgent = ctx.agents.get(workerSession0)!
+    workerAgent.followup(createUserMessage({ content: [{ type: 'text', text: 'finish current work' }], source: { kind: 'user' } }))
+    await waitForIdle(ctx, workerAgent)
+    const mgrAgent = ctx.agents.get(mgr.status.member.sessionId)!
+    const kept = await ctx.agentTeam.sendMessageForAgent(mgrAgent, { requestId: requestId('keepdisp-keep'), workspaceId, channelRef: channel.channel.channelRef, body: 'Follow up on the flaky test @worker', keepContext: true })
+    expect(kept.kind).toBe('committed')
+    const liveTexts = (): string => workerAgent.session.ownEvents()
+      .filter(event => event.type === 'user/message')
+      .map(event => (event as { data: { content: ReadonlyArray<{ type: string; text?: string }> } }).data.content.map(block => block.text ?? '').join(''))
+      .join('\n')
+    await waitFor(() => (liveTexts().includes('Team Inbox has unread work') ? true : undefined))
+    expect(liveTexts()).toContain('Follow up on the flaky test')
+    expect(sessionOf()).toBe(workerSession0)
+    expect(archived).not.toContain(workerSession0)
+
+    // The next dispatch carries no declaration: the arm it did not spend is
+    // still there, so the renewal lands first and the new task starts clean.
+    const next = await ctx.agentTeam.sendMessageForAgent(mgrAgent, { requestId: requestId('keepdisp-next'), workspaceId, channelRef: channel.channel.channelRef, body: 'A brand new unrelated task @worker' })
+    expect(next.kind).toBe('committed')
+    const workerSession1 = await waitFor(() => sessionOf() !== workerSession0 ? sessionOf() : undefined)
+    await waitForArchived(archived, workerSession0)
+    expect(() => ctx.agentTeam.validateLedger()).not.toThrow()
+  })
+
+  it('skips the atomic-start renewal only for the Message that declared the exemption', async () => {
+    const adapter = new ScriptedAdapter()
+    const { ctx, workspaceId, archived } = await realHarness(adapter)
+    const channel = await ctx.agentTeam.createChannel({ requestId: requestId('keepstart-channel'), workspaceId, name: 'engineering', description: 'Engineering work' })
+    const worker = await ctx.agentTeam.addMember({ requestId: requestId('keepstart-worker'), workspaceId, handle: 'worker', description: 'Executes dispatched work', presetId: 'team-member', channelRefs: [channel.channel.channelRef], contextStartPolicy: 'fresh' })
+    const workerId = worker.status.member.memberId
+    const workerSession0 = worker.status.member.sessionId
+    for (let turn = 0; turn < 8; turn += 1) adapter.enqueue(textResponse('Acknowledged.'))
+    const sessionOf = (): SessionId => ctx.agentTeam.members().find(status => status.member.memberId === workerId)!.member.sessionId
+
+    const workerAgent = ctx.agents.get(workerSession0)!
+    workerAgent.followup(createUserMessage({ content: [{ type: 'text', text: 'finish current work' }], source: { kind: 'user' } }))
+    await waitForIdle(ctx, workerAgent)
+
+    // A Human atomic start normally schedules the renewal at its own commit
+    // boundary; the sender's declaration holds it back for this task.
+    const keptStart = await ctx.agentTeam.sendMessage({ asTask: true, keepContext: true, requestId: requestId('keepstart-keep'), workspaceId, channelRef: channel.channel.channelRef, body: 'Continue exactly where you left off @worker', recipients: [workerId] })
+    expect(keptStart.kind).toBe('committed')
+    const liveTexts = (): string => workerAgent.session.ownEvents()
+      .filter(event => event.type === 'user/message')
+      .map(event => (event as { data: { content: ReadonlyArray<{ type: string; text?: string }> } }).data.content.map(block => block.text ?? '').join(''))
+      .join('\n')
+    await waitFor(() => (liveTexts().includes('Team Inbox has unread work') ? true : undefined))
+    expect(liveTexts()).toContain('Continue exactly where you left off')
+    expect(sessionOf()).toBe(workerSession0)
+    expect(archived).not.toContain(workerSession0)
+
+    // The following atomic start has no exemption and renews as before.
+    const nextStart = await ctx.agentTeam.sendMessage({ asTask: true, requestId: requestId('keepstart-next'), workspaceId, channelRef: channel.channel.channelRef, body: 'A brand new task @worker', recipients: [workerId] })
+    expect(nextStart.kind).toBe('committed')
+    const workerSession1 = await waitFor(() => sessionOf() !== workerSession0 ? sessionOf() : undefined)
+    await waitForArchived(archived, workerSession0)
+    expect(() => ctx.agentTeam.validateLedger()).not.toThrow()
+  })
+
+  it('prompts the designated leader when a finished Member settles idle without reporting', async () => {
+    const adapter = new ScriptedAdapter()
+    const { ctx, workspaceId } = await realHarness(adapter)
+    const channel = await ctx.agentTeam.createChannel({ requestId: requestId('liaison-leader-channel'), workspaceId, name: 'engineering', description: 'Engineering work' })
+    const chief = await ctx.agentTeam.addMember({ requestId: requestId('liaison-leader-chief'), workspaceId, handle: 'chief', description: 'Leads the team', presetId: 'team-member', channelRefs: [channel.channel.channelRef] })
+    const worker = await ctx.agentTeam.addMember({ requestId: requestId('liaison-leader-worker'), workspaceId, handle: 'scout', description: 'Does the work', presetId: 'team-member', channelRefs: [channel.channel.channelRef] })
+    const workerId = worker.status.member.memberId
+    // Designation rides the Member editor: the roster now has an enabled leader.
+    const designated = await ctx.agentTeam.updateMember({ requestId: requestId('liaison-leader-designate'), memberId: chief.status.member.memberId, handle: 'chief', description: 'Leads the team', leader: true })
+    expect(designated.status.member.leader).toBe(true)
+    for (let turn = 0; turn < 6; turn += 1) adapter.enqueue(textResponse('Acknowledged.'))
+
+    // The Human dispatches a Task and the worker finishes it on the marker —
+    // but never addresses the leader (no mention, no DM). The completion opens
+    // one liaison episode.
+    const started = await ctx.agentTeam.sendMessage({ asTask: true, requestId: requestId('liaison-leader-start'), workspaceId, channelRef: channel.channel.channelRef, body: 'Investigate the flaky test', recipients: [workerId] })
+    if (started.kind !== 'committed') throw new Error(`expected committed start, received ${started.kind}`)
+    const liveWorker = ctx.agents.get(worker.status.member.sessionId)!
+    await waitForIdle(ctx, liveWorker)
+
+    // Past the grace window, one liaison pass prompts the leader instead of
+    // waiting for the whole Team to idle.
+    await ctx.agentTeam.runCompletionLiaisonPass(Date.now() + LIAISON_REPORT_GRACE_MS + 1_000)
+    const bodies = () => ctx.agentTeam.view({ workspaceId }).items.map(item => item.message.body)
+    await waitFor(() => bodies().some(body => body.includes('Team report check:')) ? true : undefined)
+    expect(bodies().filter(body => body.includes('Team report check:'))).toHaveLength(1)
+    expect(bodies().find(body => body.includes('Team report check:'))).toContain('scout finished its latest work')
+    const liveChief = await waitFor(() => ctx.agents.get(chief.status.member.sessionId)!)
+    await waitForIdle(ctx, liveChief)
+    expect(() => ctx.agentTeam.validateLedger()).not.toThrow()
+  })
+
+  it('pushes the open Tasks to the Member itself when no leader exists, relays its refusal to @human, and never re-pushes', async () => {
+    const adapter = new ScriptedAdapter()
+    const { ctx, workspaceId } = await realHarness(adapter)
+    const channel = await ctx.agentTeam.createChannel({ requestId: requestId('liaison-push-channel'), workspaceId, name: 'engineering', description: 'Engineering work' })
+    const worker = await ctx.agentTeam.addMember({ requestId: requestId('liaison-push-worker'), workspaceId, handle: 'scout', description: 'Does the work', presetId: 'team-member', channelRefs: [channel.channel.channelRef] })
+    const workerId = worker.status.member.memberId
+    // Round one finishes the dispatched work; round two (woken by the Task
+    // push) opens the reply with the refusal contract; round three answers a
+    // later ping. The buffer absorbs scheduling noise.
+    adapter.enqueue(textResponse('Acknowledged.'))
+    adapter.enqueue(textResponse('拒绝继续：这次我没有余力推进这些任务。'))
+    adapter.enqueue(textResponse('Acknowledged.'))
+    for (let turn = 0; turn < 5; turn += 1) adapter.enqueue(textResponse('Acknowledged.'))
+
+    // A leaderless Workspace: the Human's Task stays an open todo, the worker
+    // finishes its round on the marker and settles.
+    const started = await ctx.agentTeam.sendMessage({ asTask: true, requestId: requestId('liaison-push-start'), workspaceId, channelRef: channel.channel.channelRef, body: 'Investigate the flaky test', recipients: [workerId] })
+    if (started.kind !== 'committed') throw new Error(`expected committed start, received ${started.kind}`)
+    const liveWorker = ctx.agents.get(worker.status.member.sessionId)!
+    await waitForIdle(ctx, liveWorker)
+
+    const clock = Date.now()
+    // Pass one: with no leader to prompt, the open Task list is pushed to the
+    // worker itself, and the mention wakes it for its own decision round.
+    await ctx.agentTeam.runCompletionLiaisonPass(clock + LIAISON_REPORT_GRACE_MS + 1_000)
+    const bodies = () => ctx.agentTeam.view({ workspaceId }).items.map(item => item.message.body)
+    await waitFor(() => bodies().some(body => body.includes('Task push (no Team leader designated):')) ? true : undefined)
+    expect(bodies().filter(body => body.includes('Task push (no Team leader designated):'))).toHaveLength(1)
+
+    // The decision round opens with the contract phrase — the Host quotes it
+    // to @human in the Channel and stops pushing Tasks to this Member.
+    await waitForIdle(ctx, liveWorker)
+    await new Promise(resolve => setTimeout(resolve, 300))
+    const declined = bodies().filter(body => body.includes('Task push declined:'))
+    expect(declined).toHaveLength(1)
+    expect(declined[0]).toContain('拒绝继续')
+    expect(declined[0]).toContain('@human')
+
+    // A later completion past the cooldown still finds no push: the refusal
+    // closed this Member's participation in the policy for the process.
+    const ping = await ctx.agentTeam.sendMessage({ asTask: false, requestId: requestId('liaison-push-ping'), workspaceId, channelRef: channel.channel.channelRef, body: 'Anything else on your plate?', recipients: [workerId] })
+    if (ping.kind !== 'committed') throw new Error(`expected committed ping, received ${ping.kind}`)
+    await waitForIdle(ctx, liveWorker)
+    await ctx.agentTeam.runCompletionLiaisonPass(clock + LIAISON_REPORT_GRACE_MS + 11 * 60_000 + 1_000)
+    await new Promise(resolve => setTimeout(resolve, 300))
+    expect(bodies().filter(body => body.includes('Task push (no Team leader designated):'))).toHaveLength(1)
+    expect(bodies().filter(body => body.includes('Task push declined:'))).toHaveLength(1)
+    expect(() => ctx.agentTeam.validateLedger()).not.toThrow()
   })
 })

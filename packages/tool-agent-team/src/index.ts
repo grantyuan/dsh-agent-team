@@ -423,7 +423,7 @@ function adviceLines(advice: ContextAdviceView): string[] {
 
 const teamMessage = markAgentTeamPreset(defineTool({
   name: 'team_message',
-  description: 'Start a top-level Thread, reply to an existing Thread, or send a direct message (DM). Read the Thread first: a reply needs the current next-write token from a fully drained team_thread read (or your own last committed mutation), and unread work rejects before staleness is even checked — and a mention only delivers its Message and restores Attention, never the Thread\'s earlier facts, so entering a Thread whose facts have left your context means reading back through it first. start defaults to a taskless Thread; pass asTask true to create a Task in the same send, and parentTaskRef (still with asTask true) to file that Task as a sub-task of an open Task in the same Channel. A top-level start may mention related Agents directly; in replies, only a Human can invite a Member the Thread has never carried. Mention by writing `@Handle` in body — the `@` is required, matching ignores case, and each named Member is delivered to and renders as a mention chip; `@all` reaches every Member of the Channel. Naming a Member this Thread has never carried still commits, delivers nothing to that Member, and reports them under undeliveredMentions: ask the Human to invite them, or reach them with a dm. dm sends a private direct message to one enabled Agent Member in your Workspace: use it for quick clarifications and status syncs — never for task work, decisions, or anything that needs team visibility or traceability (use a Thread); if a DM exchange with the same Member exceeds about 3 exchanges, move it to a Thread, because every DM costs the recipient a full agent turn.',
+  description: 'Start a top-level Thread, reply to an existing Thread, or send a direct message (DM). Read the Thread first: a reply needs the current next-write token from a fully drained team_thread read (or your own last committed mutation), and unread work rejects before staleness is even checked — and a mention only delivers its Message and restores Attention, never the Thread\'s earlier facts, so entering a Thread whose facts have left your context means reading back through it first. start defaults to a taskless Thread; pass asTask true to create a Task in the same send, and parentTaskRef (still with asTask true) to file that Task as a sub-task of an open Task in the same Channel. A top-level start may mention related Agents directly; in replies, only a Human can invite a Member the Thread has never carried. When you dispatch new work to a Member configured for a fresh context per task, the Host renews it first so your Message lands in that clean context; pass keepContext true when the work instead needs what the Member still holds in its live Session. Mention by writing `@Handle` in body — the `@` is required, matching ignores case, and each named Member is delivered to and renders as a mention chip; `@all` reaches every Member of the Channel. Naming a Member this Thread has never carried still commits, delivers nothing to that Member, and reports them under undeliveredMentions: ask the Human to invite them, or reach them with a dm. dm sends a private direct message to one enabled Agent Member in your Workspace: use it for quick clarifications and status syncs — never for task work, decisions, or anything that needs team visibility or traceability (use a Thread); if a DM exchange with the same Member exceeds about 3 exchanges, move it to a Thread, because every DM costs the recipient a full agent turn.',
   parameters: {
     action: { type: 'string', required: true, enum: ['start', 'reply', 'dm'] },
     channelRef: { type: 'string', description: "Full branded Channel ref exactly as returned by Team tools, including the 'channel:' prefix. An unambiguous abbreviation of the first 6+ UUID hex characters also resolves." },
@@ -432,6 +432,7 @@ const teamMessage = markAgentTeamPreset(defineTool({
     memberRef: { type: 'string', description: "Full branded Member ref exactly as returned by Team tools, including the 'member:' prefix. An unambiguous abbreviation of the first 6+ UUID hex characters also resolves. Required for dm; the Member must be an enabled Agent in your Workspace (the Human cannot be DMed)." },
     asTask: { type: 'boolean', description: 'When true, start creates a Task with the Thread. Default false creates a taskless Thread.' },
     parentTaskRef: { type: 'string', description: "Optional with start and asTask true: the Task this start becomes a sub-task of — same Channel as the start, parent still open. Full branded Task ref exactly as returned by Team tools, including the 'task:' prefix; an unambiguous abbreviation of the first 6+ UUID hex characters also resolves." },
+    keepContext: { type: 'boolean', description: "Optional with start and reply — your fresh-context judgement for the Members you mention. Omit (default) to dispatch a new task: a mentioned Member configured for a fresh context per task is renewed first and reads this Message in that clean context. Set true when this work needs what the Member still holds in its live Session (its last task's findings, files it just read, decisions it made): the Host skips the renewal and the Message reaches its current context. The exemption covers this delivery only — your next dispatch renews again. Each Member's policy is on its row under Members in team_view." },
     body: { type: 'string', required: true, description: "Markdown body. Lead with the conclusion or state. Mention the Human only when they must know or decide; when a decision is owed, say plainly what needs deciding and what happens by default if nobody answers — no fixed template. Keep it the shortest useful message for the recipients; mechanical detail follows below. Cite Team refs exactly as returned, as bare text with one colon (e.g. task:0f0a…) — never a double colon, never inside backticks or quotes. Unambiguous UUID abbreviations (first 6+ hex chars) also resolve. Mention a Member by writing `@Handle` (`@` required, case-insensitive) in the prose: that is what delivers the Message to them and renders the mention chip, and `@all` reaches the whole Channel." }, baseRevision: { type: 'number', description: "The next-write token from your latest fully drained team_thread read (or your own last committed mutation) on this Thread. Copy the explicitly rendered value verbatim; never increment, derive, compare, or cite it — it is an opaque concurrency token, not a fact about the Thread." },
     attachments: { type: 'array', items: { type: 'string' }, description: 'Absolute file paths to share, e.g. screenshots or generated artifacts; images render as thumbnails for recipients. The Host validates each path and copies the file into the attachment cache, and members also receive one cached path per attachment; if any path fails validation the whole send is rejected.' },
     workspace: workspaceParam,
@@ -485,13 +486,14 @@ const teamMessage = markAgentTeamPreset(defineTool({
       if (args.parentTaskRef !== undefined && args.asTask !== true) throw new Error('parentTaskRef requires asTask true — it names the open Task (same Channel) this start becomes a sub-task of')
       const result = await host.sendMessageForAgent(agent, { requestId: requestId(agent.id, exec.callId), workspaceId: workspaceOf(args, agent),
         channelRef: args.channelRef as never, body: args.body, asTask: args.asTask === true,
-        ...(args.parentTaskRef === undefined ? {} : { parentTaskRef: args.parentTaskRef as never }), ...paths })
+        ...(args.parentTaskRef === undefined ? {} : { parentTaskRef: args.parentTaskRef as never }),
+        ...(args.keepContext === true ? { keepContext: true } : {}), ...paths })
       return messageOutcome(result, 'start')
     }
     if (args.action === 'dm') {
       if (args.memberRef === undefined || args.channelRef !== undefined || args.threadRef !== undefined || args.taskRef !== undefined
-        || args.baseRevision !== undefined || args.asTask !== undefined || args.parentTaskRef !== undefined || attachmentPaths !== undefined) {
-        throw new Error('dm requires memberRef and body only; it does not accept channelRef, threadRef, taskRef, baseRevision, asTask, parentTaskRef, or attachments')
+        || args.baseRevision !== undefined || args.asTask !== undefined || args.parentTaskRef !== undefined || args.keepContext !== undefined || attachmentPaths !== undefined) {
+        throw new Error('dm requires memberRef and body only; it does not accept channelRef, threadRef, taskRef, baseRevision, asTask, parentTaskRef, keepContext, or attachments')
       }
       try {
         const result = await host.dmForAgent(agent, { requestId: requestId(agent.id, exec.callId), workspaceId: workspaceOf(args, agent),
@@ -511,6 +513,7 @@ const teamMessage = markAgentTeamPreset(defineTool({
     const result = await host.replyForAgent(agent, { requestId: requestId(agent.id, exec.callId), workspaceId: workspaceOf(args, agent),
       ...(args.threadRef === undefined ? {} : { threadRef: args.threadRef as AgentTeamThreadRef }),
       ...(args.taskRef === undefined ? {} : { taskRef: args.taskRef as AgentTeamTaskRef }),
+      ...(args.keepContext === true ? { keepContext: true } : {}),
       body: args.body, baseRevision, ...paths })
     return messageOutcome(result, 'reply')
   },
@@ -614,7 +617,7 @@ const teamClaim = defineTool({
 
 const teamView = defineTool({
   name: 'team_view',
-  description: 'Discover your authorized Team addresses: current Channels, a newest-first page of top-level Threads (each with its bounded anchor subject; Task standing inline on taskful rows), current Members, and an「active task threads」section listing the work in flight right now — every in_progress / in_review Task Thread in your Channels, with its subject and the Members already on it. This is an address book, not a work queue: unread work lives in team_inbox, and a Thread is read with team_thread read. Consult the active-task-threads section when a Workspace change surprises you, or before you claim or commit, to tell in-flight work from a real conflict and avoid riding onto someone else\'s unpushed work — it is independent of your own unread. The cursor pages Thread rows only.',
+  description: 'Discover your authorized Team addresses: current Channels, a newest-first page of top-level Threads (each with its bounded anchor subject; Task standing inline on taskful rows), current Members — each Agent row carries its context-start policy, so before you dispatch you know whether a mentioned Member is renewed into a fresh context or reads your Message in its live Session — and an「active task threads」section listing the work in flight right now — every in_progress / in_review Task Thread in your Channels, with its subject and the Members already on it. This is an address book, not a work queue: unread work lives in team_inbox, and a Thread is read with team_thread read. Consult the active-task-threads section when a Workspace change surprises you, or before you claim or commit, to tell in-flight work from a real conflict and avoid riding onto someone else\'s unpushed work — it is independent of your own unread. The cursor pages Thread rows only.',
   parameters: {
     channelRef: { type: 'string', description: "Full branded Channel ref exactly as returned by Team tools, including the 'channel:' prefix. An unambiguous abbreviation of the first 6+ UUID hex characters also resolves." },
     limit: { type: 'number' }, cursor: { type: 'number' }, workspace: workspaceParam,
@@ -626,6 +629,7 @@ const teamView = defineTool({
       workspaces: { type: 'array', required: true, items: { type: 'object', additionalProperties: false, properties: { workspaceId: { type: 'string', required: true }, title: { type: 'string' }, default: { type: 'boolean', required: true } } } },
       members: { type: 'array', required: true, items: { type: 'object', additionalProperties: false, properties: {
         memberId: { type: 'string', required: true }, kind: { type: 'string', required: true }, handle: { type: 'string', required: true }, description: { type: 'string', required: true }, presence: { type: 'string', required: true },
+        contextStart: { type: 'string' },
       } } },
       threads: { type: 'array', required: true, items: { type: 'object', additionalProperties: false, properties: {
         threadRef: { type: 'string', required: true }, channelRef: { type: 'string', required: true }, revision: { type: 'number', required: true }, messageCount: { type: 'number', required: true }, subject: { type: 'string', required: true },
@@ -666,7 +670,7 @@ const teamView = defineTool({
       if (!continuation) {
         lines.push('', 'Members — current')
         if (value.members.length === 0) lines.push('No visible Members.')
-        else lines.push(...value.members.map(m => `${m.memberId} · @${m.handle} (${m.kind}, ${m.presence})${m.description === '' ? '' : ` — ${m.description}`}`))
+        else lines.push(...value.members.map(m => `${m.memberId} · @${m.handle} (${m.kind}, ${m.presence}${m.contextStart === undefined ? '' : `, ${m.contextStart}`})${m.description === '' ? '' : ` — ${m.description}`}`))
         lines.push('', 'Active task threads — work in flight right now')
         if (value.activeTaskThreads.length === 0) lines.push('No task thread is in flight in this Workspace.')
         else lines.push(...value.activeTaskThreads.map(t => `${t.threadRef} · ${t.channelRef} · ${t.status}${t.taskNumber === undefined ? '' : ` · #${t.taskNumber}`}${t.members.length === 0 ? '' : ` · ${t.members.map(m => `@${m.name}`).join(', ')}`} — ${t.subject} · last activity ${formatTeamTimestamp(t.lastActivityAt)}`))
@@ -690,7 +694,8 @@ const teamView = defineTool({
       members: [
         { memberId: view.humanMemberId, kind: 'human', handle: host.humanHandle(), description: 'Human Team Member', presence: 'available' },
         ...host.members().filter(status => visibleMemberIds.has(status.member.memberId)).map(status => ({ memberId: status.member.memberId,
-          kind: 'agent', handle: status.member.handle, description: status.member.description, presence: status.presence })),
+          kind: 'agent', handle: status.member.handle, description: status.member.description, presence: status.presence,
+          contextStart: status.member.contextStartPolicy === 'fresh' ? 'fresh context per task' : 'continues its context' })),
       ],
       threads: view.items.map(item => {
         const thread = item.thread

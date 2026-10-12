@@ -542,6 +542,13 @@ export interface AgentTeamSendMessageRequest {
    * and requires the parent to live in the same Channel.
    */
   readonly parentTaskRef?: AgentTeamTaskRef
+  /**
+   * The sender's fresh-context judgement for the Members this Message names:
+   * when true, the fresh-start policy's dispatch gate lets THIS delivery reach
+   * their live Session instead of renewing them first. A Host-consumed delivery
+   * intent only — never a durable Team fact, so the ledger records nothing.
+   */
+  readonly keepContext?: boolean
 }
 
 /** Upload one composer attachment into the Team attachment cache. */
@@ -705,6 +712,13 @@ export interface AgentTeamReplyRequest {
   /** Attachment cache IDs from the Human picker, resolved like sendMessage's. */
   readonly attachments?: readonly AgentTeamAttachmentId[] | undefined
   readonly confirmationToken?: AgentTeamConfirmationToken
+  /**
+   * Same sender-side fresh-context judgement as
+   * {@link AgentTeamSendMessageRequest.keepContext}: when true, the Members
+   * this reply names keep their live Session for this delivery instead of
+   * being renewed by the dispatch gate.
+   */
+  readonly keepContext?: boolean
 }
 
 /** A Human must send the same invitation one more time with this token. */

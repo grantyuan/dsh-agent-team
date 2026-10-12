@@ -46,9 +46,10 @@ import { listPrivateSkillNames } from './member-skills.ts'
 import { BlockAssembler, LlmError } from '@deepseek-ai/dsh-llm'
 import type { MemberSkillSelectionRef } from './member-skills.ts'
 import { classifyRecoverableError, RecoveryCoordinator, RECOVERY_MAX_CONSECUTIVE_ERRORS } from './recovery.ts'
-import { classifyAssistantResponse, RESPONSE_GUARD_MAX_CONSECUTIVE, RESPONSE_GUARD_NOTICE_SUMMARY, ResponseGuardCoordinator } from './response-guard.ts'
+import { assistantPlainText, classifyAssistantResponse, classifyStoppedTurnTail, COMPLETION_MARKER, RESPONSE_GUARD_MAX_CONSECUTIVE, RESPONSE_GUARD_NOTICE_SUMMARY, ResponseGuardCoordinator } from './response-guard.ts'
 import { MemberSupervisor, nextReplacementHandle, supervisionHandoffText, SUPERVISION_FAILURE_WINDOW_MS, SUPERVISION_HUNG_MS, SUPERVISION_MAX_CONSECUTIVE_FAILURES, SUPERVISION_MAX_RESTART_ATTEMPTS, SUPERVISION_WINDOW_FAILURES, type MemberSupervisionState, type SupervisionTrigger } from './supervisor.ts'
 import { CONTINUATION_NUDGE_MARKER, TaskContinuationWatcher, continuationNudgeText, type ContinuationLeader, type ContinuationTask } from './continuation-watcher.ts'
+import { CompletionLiaison, liaisonFeedbackText, liaisonReportCheckText, liaisonTaskPushText, type LiaisonLeader } from './completion-liaison.ts'
 import { StoredSessionReadError, StoredSessionReader, sessionFailureOf } from './stored-session-reader.ts'
 import { doctorAnalysisPrompt, renderFailureTranscript, transcriptEntryOf, type TranscriptEvent } from './failure-transcript.ts'
 import { agentTeamDomainSpec } from './spec.ts'
@@ -102,6 +103,7 @@ import type {
   AgentTeamLeaveWorkspaceRequest,
   AgentTeamLeaveWorkspaceResult,
   AgentTeamHumanActor,
+  AgentTeamDirectMarker,
   AgentTeamMemberActor,
   AgentTeamMessageAttachment,
   AgentTeamMemberId,
@@ -208,6 +210,22 @@ interface AgentTeamMemberFailureRecord {
 
 /** Idle-boundary attempts one scheduled background compaction gets before conversation wins and the request is dropped. */
 const MEMBER_COMPACT_BUSY_ATTEMPTS = 3
+
+/**
+ * Turn-boundary re-bindings one scheduled fresh-start reset may follow (a
+ * rollover or restart swaps the live generation while the body waits): the
+ * armed reset for a dispatched task survives a bounded number of context
+ * swaps instead of silently dropping with the handle it was scheduled on.
+ */
+const POLICY_RESET_MAX_BINDINGS = 5
+
+/**
+ * How recently a restored Member must have stopped for the boot-time continue
+ * reminder to fire: only work the last Host generation was cut into gets
+ * brought back; a Member that finished (faultily) long before this boot stays
+ * stopped until real work arrives. A marker tail arms regardless of age.
+ */
+const BOOT_FAULT_REMINDER_WINDOW_MS = 6 * 60 * 60 * 1000
 
 /**
  * Other-LLM summarizer attempts one failed compaction gets after its primary
@@ -560,8 +578,12 @@ export default class AgentTeam extends TypertRemoteService {
       setImmediate(() => {
         const agent = this.handles.get(memberId)?.agent
         if (agent === undefined) return
+        // Directive rather than a bare "continue": the live lane showed a
+        // model that answers a one-word nudge with another tool-less text
+        // round, spending the budget on narration. The reminder names both
+        // exits the protocol allows — keep working, or close with the marker.
         const message = createUserMessage({
-          content: [{ type: 'text', text: 'continue' }],
+          content: [{ type: 'text', text: `Your last response ended the turn without a tool call and without the ${COMPLETION_MARKER} closing marker, so the Team guard reads your work as unfinished. If work remains, make your next tool call now and keep going. If everything you owe is already delivered where your teammates can see it, post the completion record in the relevant Thread, then end your reply with ${COMPLETION_MARKER}.` }],
           source: { kind: AGENT_TEAM_PLUGIN_ID, form: 'notice', summary: RESPONSE_GUARD_NOTICE_SUMMARY },
         })
         try {
@@ -647,6 +669,38 @@ export default class AgentTeam extends TypertRemoteService {
     log: message => { this.ctx.logger.warn(`agent-team: ${message}`) },
   })
   /**
+   * The per-Member completion liaison: a Member that finishes on the 任务结束
+   * marker and stays idle gets checked — report to the designated leader, or
+   * an open-Task push to the Member itself when the Workspace has no leader,
+   * whose explicit refusal (a reply opening with 拒绝继续) is relayed to
+   * `@human`. See `completion-liaison.ts` for the pass policy and the three
+   * `*Liaison*` deliveries below for the message shapes; the read lambdas
+   * guard the pre-restore window exactly like the watcher's, and
+   * `reportedToLeaderSince` reads `true` (nothing to do) before the ledger
+   * exists.
+   */
+  private readonly completionLiaison = new CompletionLiaison({
+    workspacesOf: memberId => this.ledger?.workspacesOf(memberId) ?? [],
+    presenceOf: memberId => {
+      const member = this.ledger?.getMember(memberId)
+      return member === undefined ? 'unavailable' : this.memberStatus(member).presence
+    },
+    leaderOf: workspaceId => {
+      const ledger = this.ledger
+      if (ledger === undefined) return undefined
+      const leader = ledger.listMembers().find(member =>
+        member.state === 'enabled' && member.leader === true && ledger.workspacesOf(member.memberId).includes(workspaceId))
+      return leader === undefined ? undefined : { memberId: leader.memberId, handle: leader.handle }
+    },
+    reportedToLeaderSince: (memberId, leaderId, sinceSequence) => this.ledger?.memberReportedToSince(memberId, leaderId, sinceSequence) ?? true,
+    openTasksIn: workspaceId => (this.ledger?.incompleteTasksForWatch() ?? []).filter(task => task.workspaceId === workspaceId),
+    handleOf: memberId => this.ledger?.getMember(memberId)?.handle,
+    notifyLeader: async input => { await this.notifyLiaisonLeader(input) },
+    pushTasks: async input => { await this.pushLiaisonTasks(input) },
+    notifyHumanFeedback: async input => { await this.notifyLiaisonFeedback(input) },
+    log: message => { this.ctx.logger.warn(`agent-team: ${message}`) },
+  })
+  /**
    * Team's domain half of the continuity projection: the durable ref naming,
    * the Team-notice rule, and the boundary judgement (committed messages,
    * claim changes, first Thread arrivals). Its claim attribution resolves the
@@ -696,6 +750,32 @@ export default class AgentTeam extends TypertRemoteService {
    * settles (ran, dropped, or failed).
    */
   private readonly pendingPolicyResets = new Set<AgentTeamMemberId>()
+  /**
+   * Fresh-start Members whose last turn ended by announcing completion (the
+   * completion marker): the next dispatch — an Inbox wake carrying new unread
+   * work — renews their context first and the task is delivered into the fresh
+   * generation, so every task really starts from system context plus that
+   * task. A completion alone never renews; the arm waits for dispatch. Restored
+   * over a marker tail by a later boot as well, so a restart keeps the promise.
+   */
+  private readonly armedFreshStartReset = new Set<AgentTeamMemberId>()
+  /**
+   * Per Member, the ledger sequence up to which a sender explicitly declared
+   * "this work needs their live context" ({@link AgentTeamSendMessageRequest.keepContext}):
+   * the dispatch gate reads direct work newer than that sequence as a real new
+   * task and direct work at or before it as the exempted delivery. Process-local
+   * like the arm, and monotone by construction — a later dispatch always
+   * carries a higher sequence — so one exemption can never cover a second task.
+   */
+  private readonly keptDispatchSequence = new Map<AgentTeamMemberId, number>()
+  /**
+   * The Session id of the most recent context renewal committed for each
+   * Member, whatever path renewed it (Human menu, supervision, doctor, or the
+   * fresh-start policy). A waiting reset body reads it as "already renewed":
+   * the fresh-generation intent is satisfied, and the body must not stack a
+   * second erase onto a context someone else just made fresh.
+   */
+  private readonly renewedSessionByMember = new Map<AgentTeamMemberId, SessionId>()
   /** One in-flight auto-prune sweep per Member; the task-start twin of pendingPolicyResets. */
   private readonly pendingPruneSweeps = new Set<AgentTeamMemberId>()
   /**
@@ -923,6 +1003,23 @@ export default class AgentTeam extends TypertRemoteService {
         // defers to the next tick (an inbox mutation here would re-enter the
         // append) and then steers a still-open turn or opens the next one.
         this.responseGuard.onAssistantMessage(memberId, classifyAssistantResponse(event.data.message.content), event.data.interrupted === true)
+        // The completion liaison reads the same round's prose for the one
+        // contract it owns: a reply opening with 拒绝继续 declines an awaited
+        // Task push. Aborted prefixes are not the Member's decision.
+        if (event.data.interrupted !== true) this.completionLiaison.onAssistantText(memberId, assistantPlainText(event.data.message.content))
+      }
+      // The stop lane of the guard: a turn that ended is the moment the user
+      // sees. A clean completion (the marker) arms the fresh-start policy for
+      // the next dispatch; a stop that left work unfinished gets a bounded
+      // continue reminder even when the in-loop budget already stood down.
+      if (event.type === 'turn/end') {
+        const stopOutcome = this.responseGuard.onTurnStop(memberId, event.data.reason?.kind ?? 'unknown')
+        if (stopOutcome === 'marker') {
+          this.armFreshStartReset(memberId)
+          // The completion liaison opens one report-check episode and closes
+          // any Task-push decision the Member was mulling over.
+          this.completionLiaison.onCompletedStop(memberId, this.requireLedger().position())
+        }
       }
       // Context management reacts only after a successful durable tool/result;
       // the projection (not this listener) decides what that means.
@@ -935,6 +1032,7 @@ export default class AgentTeam extends TypertRemoteService {
       this.responseGuard.dispose()
       this.supervisor.dispose()
       this.continuationWatcher.dispose()
+      this.completionLiaison.dispose()
       this.contextManagement.dispose()
       this.pressurePolicy.dispose()
       if (this.attachmentGcTimer !== undefined) clearInterval(this.attachmentGcTimer)
@@ -943,6 +1041,9 @@ export default class AgentTeam extends TypertRemoteService {
       await this.lifecycleTail
       await Promise.all([...this.handles.values()].map(handle => handle.dispose()))
       this.handles.clear()
+      this.armedFreshStartReset.clear()
+      this.keptDispatchSequence.clear()
+      this.renewedSessionByMember.clear()
       this.modelSelections.clear()
       this.memberRuntime.disposeAll()
       this.runningAgents.clear()
@@ -976,6 +1077,9 @@ export default class AgentTeam extends TypertRemoteService {
     // otherwise read the activation window as all-idle with open Tasks.
     this.supervisor.start()
     this.continuationWatcher.start()
+    // The completion liaison reads presence and the ledger tail alike, so it
+    // rides the same restore gate as the two passes above.
+    this.completionLiaison.start()
   }
 
   /**
@@ -1627,6 +1731,14 @@ export default class AgentTeam extends TypertRemoteService {
       return Object.freeze({ receipt: result.value.receipt, member: result.value.member })
     }
     const renewed = result.value.member
+    // Record the fresh generation as satisfying any renewal intent: a policy
+    // body that later wakes on this swap sees "already renewed" and stands
+    // down instead of erasing the context another path just made fresh. The
+    // completion arm is spent by this renewal, so the fresh generation's own
+    // notifyMember below delivers the gated wake normally.
+    this.renewedSessionByMember.set(memberId, sessionId)
+    this.armedFreshStartReset.delete(memberId)
+    this.keptDispatchSequence.delete(memberId)
     await this.retireMemberGeneration(memberId, active, previousSessionId)
     // Defer the ordinary Inbox wake so the reset notice reads as the fresh
     // generation's first Team word; the wake is rederived right after it.
@@ -1744,54 +1856,113 @@ export default class AgentTeam extends TypertRemoteService {
 
   /**
    * Schedule the context reset one Member's fresh-start task-start policy
-   * calls for. Claim and Human atomic-start boundaries schedule; continue
-   * policy (the absent default) never does. One in-flight body per Member:
-   * concurrently overlapping claim and atomic-start schedules merge into
-   * a single reset.
+   * calls for. Claim and Human atomic-start boundaries schedule it directly;
+   * an armed Member (its last turn completed with the marker) schedules it
+   * when its next dispatch delivers new unread work. continue policy (the
+   * absent default) never does. One in-flight body per Member: concurrently
+   * overlapping schedules merge into a single reset. Returns whether a reset
+   * is now scheduled or already in flight — a false tells the caller to keep
+   * its own delivery (there is nothing to wait behind).
    */
-  private scheduleFreshStartReset(memberId: AgentTeamMemberId): void {
-    if (this.pendingPolicyResets.has(memberId)) return
+  private scheduleFreshStartReset(memberId: AgentTeamMemberId): boolean {
     const stored = this.ledger?.getMember(memberId)
-    if (stored?.contextStartPolicy !== 'fresh') return
+    if (stored?.contextStartPolicy !== 'fresh') return false
+    if (this.pendingPolicyResets.has(memberId)) return true
     const active = this.handles.get(memberId)
-    if (active === undefined) return
+    if (active === undefined) return false
     this.pendingPolicyResets.add(memberId)
     void this.runFreshStartReset(stored, active)
+    return true
+  }
+
+  /**
+   * Arm the fresh-start policy after one completed stop announced the marker:
+   * the renewal belongs to the next dispatch, never to the completion itself.
+   * continue Members never arm, and an already-armed Member re-arming is the
+   * same one pending reset.
+   */
+  private armFreshStartReset(memberId: AgentTeamMemberId): void {
+    if (this.ledger?.getMember(memberId)?.contextStartPolicy !== 'fresh') return
+    this.armedFreshStartReset.add(memberId)
   }
 
   /**
    * Background body of one scheduled fresh-start reset. A claim fires inside
    * the Member's own turn, so the reset waits for the turn boundary and
-   * converges like executeMemberTransition; then it re-reads the Member at
-   * the boundary (a concurrent edit may have changed the policy) and runs
-   * the same durable renewal the Human reset path uses. The queued body
-   * re-checks the policy once more, since lifecycle edits and suspensions
-   * can commit while it waits in the queue. Failures are logged, never
-   * thrown and never retried — the next claim or atomic start schedules
+   * converges like executeMemberTransition. A generation swap while it waits
+   * (a rollover, a restart resume, or any context change) re-binds the wait
+   * to the live handle instead of dropping the scheduled reset with the old
+   * one — bounded by {@link POLICY_RESET_MAX_BINDINGS} re-bindings. Then it
+   * re-reads the Member at the boundary (a concurrent edit may have changed
+   * the policy) and runs the same durable renewal the Human reset path uses.
+   * When the reset renews, the activation inside delivers the rederived Inbox
+   * wake — the queued dispatch reaches the fresh generation instead of the
+   * doomed context. When the body gives up (policy moved, Member gone, or the
+   * re-binding budget spent without renewing), it re-derives the wake on the
+   * live handle itself so a gated delivery is never lost. Failures are
+   * logged, never thrown and never retried — the next boundary schedules
    * its own reset.
    */
   private async runFreshStartReset(member: AgentTeamAgentMember, active: AgentHandle): Promise<void> {
     const memberId = member.memberId
+    // The generation this schedule was made against: a renewal of THAT
+    // session (by any path) satisfies the intent; a renewal that landed
+    // before this schedule does not — the new dispatch still owes a fresh
+    // context over the session the schedule found live.
+    const scheduledSession = member.sessionId
+    let current = active
+    let renewed = false
     try {
-      await this.memberRuntime.awaitTurnBoundary(active)
-      if (this.handles.get(memberId) !== active) return
-      if (this.runningAgents.has(active.agent.id)) await active.agent.whenIdle()
-      if (this.handles.get(memberId) !== active) return
-      const stored = this.ledger?.getMember(memberId)
-      if (stored?.contextStartPolicy !== 'fresh' || stored.state !== 'enabled') return
-      await this.enqueueLifecycle(async () => {
-        this.requireAccepting()
-        // Lifecycle edits and suspensions queue ahead of this body and can
-        // commit after the boundary re-read above; only a still-fresh,
-        // still-enabled Member renews.
-        const current = this.ledger?.getMember(memberId)
-        if (current?.contextStartPolicy !== 'fresh' || current.state !== 'enabled') return
-        await this.renewMemberContextNow(memberId, randomUUID() as AgentTeamRequestId, 'policy')
-      })
+      for (let binding = 0; binding < POLICY_RESET_MAX_BINDINGS; binding++) {
+        const stored = this.ledger?.getMember(memberId)
+        if (stored?.contextStartPolicy !== 'fresh' || stored.state !== 'enabled') return
+        const landed = this.renewedSessionByMember.get(memberId)
+        if (landed !== undefined && landed !== scheduledSession && landed === current.agent.session.id) {
+          renewed = true
+          return
+        }
+        if (!this.runningAgents.has(current.agent.id)) {
+          // The idle seam: the lifecycle body re-checks once more (edits and
+          // suspensions queue ahead of it), then renews. The renewal itself
+          // re-derives the gated Inbox wake behind the reset notice.
+          renewed = await this.enqueueLifecycle(async () => {
+            this.requireAccepting()
+            const storedMember = this.ledger?.getMember(memberId)
+            if (storedMember?.contextStartPolicy !== 'fresh' || storedMember.state !== 'enabled') return false
+            if (this.handles.get(memberId) !== current) return false
+            await this.renewMemberContextNow(memberId, randomUUID() as AgentTeamRequestId, 'policy')
+            return true
+          })
+          if (renewed) return
+          // The body skipped it (policy moved or handle swapped inside the
+          // queue): re-read the live handle and converge through the loop.
+          const latest = this.handles.get(memberId)
+          if (latest === undefined) return
+          current = latest
+          continue
+        }
+        await this.memberRuntime.awaitTurnBoundary(current)
+        const latest = this.handles.get(memberId)
+        if (latest === undefined) return
+        current = latest
+      }
+      this.ctx.logger.warn(`agent-team: fresh-start context reset for member '${member.handle}' gave up after ${POLICY_RESET_MAX_BINDINGS} turn-boundary bindings`)
     } catch (error) {
       this.ctx.logger.warn(`agent-team: fresh-start context reset for member '${member.handle}' failed: ${error instanceof Error ? error.message : String(error)}`)
     } finally {
       this.pendingPolicyResets.delete(memberId)
+      // A consumed arm stays consumed: the renewal path cleared it with the
+      // commit. A give-up releases the arm instead of keeping it armed —
+      // flushing below would otherwise re-meet the gate on the same unread
+      // dispatch and re-schedule this very body in a hot retry loop. The
+      // dispatch degrades to the pre-renewal context (the pre-gate behaviour);
+      // the Member's next marker-completed stop re-arms it for a later task.
+      if (!renewed) this.armedFreshStartReset.delete(memberId)
+      // Whatever happened, a wake this body held back must now be delivered —
+      // after a renewal the live handle is the fresh generation, exactly
+      // where the dispatch belongs.
+      const latest = this.handles.get(memberId)
+      if (latest !== undefined) this.notifyMember(latest.agent)
     }
   }
 
@@ -2390,6 +2561,15 @@ export default class AgentTeam extends TypertRemoteService {
   }
 
   /**
+   * Run one completion-liaison pass now: the periodic timer calls this, and a
+   * test or an operator can drive it with a chosen clock (the grace and
+   * cooldown windows measure against the passed time).
+   */
+  runCompletionLiaisonPass(now?: number): Promise<void> {
+    return this.completionLiaison.runPass(now)
+  }
+
+  /**
    * What supervision sees of one Member: a live Session whose preset composition
    * survived and no failure record. A context rollover or an in-flight turn is
    * `settling` (this policy never interrupts either) — except a turn that has
@@ -2544,6 +2724,81 @@ export default class AgentTeam extends TypertRemoteService {
       channelRef,
       body: continuationNudgeText({ leaderHandle: input.leader.handle, tasks: input.tasks }),
       recipients: [input.leader.memberId],
+      asTask: false,
+    })
+  }
+
+  /**
+   * Channel pick for a liaison delivery addressed at one Member: their own
+   * Channels in the Workspace, ranked by how many of the named open Tasks
+   * each holds (ties fall back to the oldest, like the continuation nudge),
+   * so the notice lands where the work actually lives.
+   */
+  private liaisonChannelFor(memberId: AgentTeamMemberId, workspaceId: WorkspaceId, tasks: readonly ContinuationTask[]): AgentTeamChannelRef | undefined {
+    const ledger = this.requireLedger()
+    const channels = ledger.channelsForMember(memberId, workspaceId)
+    if (channels.length === 0) return undefined
+    const namedRefs = new Set(tasks.map(task => task.taskRef))
+    const openByChannel = new Map<AgentTeamChannelRef, number>()
+    for (const row of ledger.tasksForWorkspace({ workspaceId }).tasks) {
+      if (!namedRefs.has(row.taskRef)) continue
+      openByChannel.set(row.channelRef, (openByChannel.get(row.channelRef) ?? 0) + 1)
+    }
+    return [...channels].sort((a, b) => (openByChannel.get(b) ?? 0) - (openByChannel.get(a) ?? 0))[0]
+  }
+
+  /**
+   * Report-check delivery: the Human admin's voice names the idle Member in
+   * the leader's oldest Channel of the Workspace, with the leader as the only
+   * explicit recipient — the ordinary Inbox path wakes them into a turn.
+   */
+  private async notifyLiaisonLeader(input: { readonly memberId: AgentTeamMemberId, readonly memberHandle: string, readonly workspaceId: WorkspaceId, readonly leader: LiaisonLeader }): Promise<void> {
+    const channelRef = this.requireLedger().channelsForMember(input.leader.memberId, input.workspaceId)[0]
+    if (channelRef === undefined) throw new Error(`leader '${input.leader.handle}' has no Channel in workspace '${input.workspaceId}'`)
+    await this.sendMessageAs(agentTeamHumanActor(), {
+      requestId: randomUUID() as AgentTeamRequestId,
+      workspaceId: input.workspaceId,
+      channelRef,
+      body: liaisonReportCheckText({ leaderHandle: input.leader.handle, memberHandle: input.memberHandle }),
+      recipients: [input.leader.memberId],
+      asTask: false,
+    })
+  }
+
+  /**
+   * Open-Task push for a leaderless Workspace: the Member's busiest Channel,
+   * the Member as the only explicit recipient. The mention is direct work, so
+   * a fresh-context Member armed at completion consumes its arm first and
+   * reads the Task list in the fresh generation.
+   */
+  private async pushLiaisonTasks(input: { readonly memberId: AgentTeamMemberId, readonly memberHandle: string, readonly workspaceId: WorkspaceId, readonly tasks: readonly ContinuationTask[] }): Promise<void> {
+    const channelRef = this.liaisonChannelFor(input.memberId, input.workspaceId, input.tasks)
+    if (channelRef === undefined) throw new Error(`member '${input.memberHandle}' has no Channel in workspace '${input.workspaceId}'`)
+    await this.sendMessageAs(agentTeamHumanActor(), {
+      requestId: randomUUID() as AgentTeamRequestId,
+      workspaceId: input.workspaceId,
+      channelRef,
+      body: liaisonTaskPushText({ memberHandle: input.memberHandle, tasks: input.tasks }),
+      recipients: [input.memberId],
+      asTask: false,
+    })
+  }
+
+  /**
+   * Declined-push relay: the refusing Member speaks in its own Channel (the
+   * auto-prune notice shape — a Human-voiced message could not deliver an
+   * `@human` mention), quoting its decision verbatim so only the Channel
+   * carries the feedback to the Human.
+   */
+  private async notifyLiaisonFeedback(input: { readonly memberId: AgentTeamMemberId, readonly memberHandle: string, readonly workspaceId: WorkspaceId, readonly feedbackText: string }): Promise<void> {
+    const openTasks = (this.ledger?.incompleteTasksForWatch() ?? []).filter(task => task.workspaceId === input.workspaceId)
+    const channelRef = this.liaisonChannelFor(input.memberId, input.workspaceId, openTasks)
+    if (channelRef === undefined) throw new Error(`member '${input.memberHandle}' has no Channel in workspace '${input.workspaceId}'`)
+    await this.sendMessageAs({ kind: 'member', memberId: input.memberId, handle: input.memberHandle }, {
+      requestId: randomUUID() as AgentTeamRequestId,
+      workspaceId: input.workspaceId,
+      channelRef,
+      body: liaisonFeedbackText({ feedbackText: input.feedbackText }),
       asTask: false,
     })
   }
@@ -4035,13 +4290,18 @@ export default class AgentTeam extends TypertRemoteService {
       ...(metadata.length === 0 ? {} : { resolvedAttachments: metadata }),
       actor,
     })
+    // The sender's fresh-context judgement is recorded before the commit is
+    // emitted: emitting synchronously derives each named Member's Inbox wake,
+    // and the dispatch gate reads the exemption from there.
+    if (request.keepContext === true && result.committed && result.value.kind === 'committed') this.keepFreshStartDispatch(result.value.directMarkers)
     this.emitCommittedOutcome(result)
     // A Human atomic start is the one creation boundary a fresh-start Member
     // cannot schedule itself: every mentioned fresh-policy Member resets at
-    // this boundary (teammate sends and taskless messages never do).
+    // this boundary (teammate sends and taskless messages never do) — unless
+    // the sender declared this work needs the Member's live context.
     const outcome = result.value
     if (actor.kind === 'human' && request.asTask !== false && outcome.kind === 'committed') {
-      for (const marker of outcome.directMarkers) this.scheduleFreshStartReset(marker.memberId)
+      if (request.keepContext !== true) for (const marker of outcome.directMarkers) this.scheduleFreshStartReset(marker.memberId)
       // The same atomic-start boundary sweeps auto-prune candidates for every
       // opted-in Member the task starts; the switch-off default never does.
       for (const marker of outcome.directMarkers) this.scheduleAutoPruneSweep(marker.memberId)
@@ -4057,8 +4317,20 @@ export default class AgentTeam extends TypertRemoteService {
       ...(metadata.length === 0 ? {} : { resolvedAttachments: metadata }),
       actor,
     })
+    if (request.keepContext === true && result.committed && result.value.kind === 'committed') this.keepFreshStartDispatch(result.value.directMarkers)
     this.emitCommittedOutcome(result)
     return result.value
+  }
+
+  /**
+   * Record one dispatch whose sender judged the work needs the named Members'
+   * live Session: their fresh-start arm stays armed but the direct work this
+   * Message creates (at this ledger sequence) no longer spends it. A later
+   * dispatch carries a higher sequence and renews as usual, so the exemption is
+   * exactly this delivery, never the next task.
+   */
+  private keepFreshStartDispatch(markers: readonly AgentTeamDirectMarker[]): void {
+    for (const marker of markers) this.keptDispatchSequence.set(marker.memberId, marker.sequence)
   }
 
   /** Fence one Human Remote call: accepting Host, known Workspace, Human actor. */
@@ -4272,6 +4544,45 @@ export default class AgentTeam extends TypertRemoteService {
       // wake legitimately append `turn/start` to this Session, and those must
       // never be mistaken for the generation having run on its own.
       const generationStarted = created.agent.session.ownEvents().some(event => event.type === 'turn/start')
+      // Restore-tail judgement for a persisted Session: the last turn decides
+      // what the restart owes this Member. A marker close carries the
+      // fresh-start arm across the restart (the next dispatch still renews
+      // first); a stop that left the work unfinished — a crash orphan, a
+      // shutdown dispose, a completed stop with no marker — gets the same
+      // bounded continue reminder a live faulty stop would have received, and
+      // only while it is recent work the last Host generation was cut into.
+      // A pending Inbox delivery is itself the wake-up: no reminder stacks
+      // beside it.
+      if (persisted) {
+        const tail = classifyStoppedTurnTail(created.agent.session.ownEvents())
+        if (tail.outcome === 'marker') {
+          this.armFreshStartReset(member.memberId)
+          // The completion liaison reads the same marker tail retroactively:
+          // a Member whose completed stop was cut into by the restart still
+          // earns its report check once the new process is watching, so idle
+          // unreported Members do not slip through on every deploy. Only a
+          // recent stop counts (same window as the boot fault reminder), and
+          // a pending DIRECT fact — a mention or DM that will wake the Member
+          // anyway — is the leader's own follow-up in flight, so no episode
+          // opens beside it. Pure follower chatter never suppresses: under
+          // point-to-point waking it summons no turn of its own.
+          const pendingDirect = this.requireLedger().notificationFacts(member.memberId).some(({ item }) => item.directCount > 0)
+          if (tail.at !== undefined
+            && Date.now() - tail.at <= BOOT_FAULT_REMINDER_WINDOW_MS
+            && !pendingDirect) {
+            this.completionLiaison.onCompletedStop(
+              member.memberId,
+              this.requireLedger().positionAtOccurredAt(new Date(tail.at).toISOString()),
+              tail.at,
+            )
+          }
+        } else if (tail.outcome === 'faulty'
+          && tail.at !== undefined
+          && Date.now() - tail.at <= BOOT_FAULT_REMINDER_WINDOW_MS
+          && !this.requireLedger().notificationFacts(member.memberId).some(({ item }) => item.directCount > 0)) {
+          this.responseGuard.onStoppedAtBoot(member.memberId, 'faulty')
+        }
+      }
       // A restart between a durable rollover intent and its swap replays the
       // old Session; the projection still carries the intent, so finish the
       // transition (or keep waiting for the containing turn) from here.
@@ -4508,9 +4819,23 @@ export default class AgentTeam extends TypertRemoteService {
         }
       }
     }
+    // Waking stays point-to-point on this per-commit broadcast: a Member is
+    // summoned only when the operation names them — an added Direct marker
+    // (mention or DM), an added Activity marker on their Task, or their own
+    // acting. Ordinary Thread chatter keeps its unread count in the Inbox
+    // projection and rides along with the next addressed delivery's summary,
+    // so shared-Thread traffic spends no turn per follower. Recovery- and
+    // restore-time hint re-derivation is a different question and still calls
+    // notifyMember directly from those paths.
+    const delta = 'inbox' in operation.data ? operation.data.inbox : undefined
     for (const memberId of ledger.affectedMembersOf(operation)) {
       const handle = this.handles.get(memberId)
-      if (handle !== undefined) this.notifyMember(handle.agent)
+      if (handle === undefined) continue
+      const named = (operation.actor.kind === 'member' && operation.actor.memberId === memberId)
+        || (delta?.directMarkers.added.some(marker => marker.memberId === memberId) ?? false)
+        || (delta?.activityMarkers.added.some(marker => marker.memberId === memberId) ?? false)
+      if (!named) continue
+      this.notifyMember(handle.agent)
     }
     // Task acceptance no longer schedules standalone auto compaction: it is
     // a semantic checkpoint/context cue (delivered as ordinary Team
@@ -4567,6 +4892,7 @@ export default class AgentTeam extends TypertRemoteService {
       this.notifiedInbox.delete(member.memberId)
       return
     }
+
     // Any ordinary next-turn input already queued (a rollover's or recovery's
     // carried messages) forces sequencing regardless of the caller: a steer
     // would claim the nearest step boundary and leapfrog the carried turn.
@@ -4577,6 +4903,30 @@ export default class AgentTeam extends TypertRemoteService {
       item.thread.threadRef, item.thread.revision, item.unreadCount, item.directCount, item.newestSequence,
     ]))
     if (this.notifiedInbox.get(member.memberId) === signature) return
+    // The fresh-start policy's dispatch gate: an armed Member (its last turn
+    // completed with the marker) renews BEFORE a dispatch wake is read — the
+    // new task lands in the fresh generation's system context, not the
+    // finished task's log. Only structured direct work (a mention's unread,
+    // directCount > 0) is a dispatch: Thread chatter, Task-activity notices
+    // (an acceptance the Member waits on), and DMs — which are pure session
+    // relay and never a new task — never spend the arm. A sender that marks
+    // its dispatch as needing the live context exempts that delivery by ledger
+    // sequence. While a reset is in flight every wake stays held behind it —
+    // except once the renewal has landed, because the renewal's own re-derived
+    // delivery runs through this same call and the signature dedupe would then
+    // swallow it. The body's exit re-derives any still-held delivery, so
+    // gating never loses the work.
+    if (member.contextStartPolicy === 'fresh') {
+      const renewalLanded = this.renewedSessionByMember.get(member.memberId) === member.sessionId
+      // A sender that declared this work needs the Member's live context
+      // exempts the direct work it named: only a mention newer than that
+      // declaration is a fresh task seam worth renewing behind.
+      const keptSequence = this.keptDispatchSequence.get(member.memberId) ?? 0
+      const directWork = notifications.some(({ item, facts }) =>
+        item.directCount > 0 && facts.some(fact => fact.direct && fact.fact.sequence > keptSequence))
+      const held = (directWork && this.armedFreshStartReset.has(member.memberId)) || (this.pendingPolicyResets.has(member.memberId) && !renewalLanded)
+      if (held && this.scheduleFreshStartReset(member.memberId)) return
+    }
     const pending = [...agent.inbox.nextStep, ...agent.inbox.nextTurn]
     // steerResume already combines the recovery instruction and these durable
     // facts. Its synchronous running transition must not replace that notice.

@@ -1718,6 +1718,41 @@ export class AgentTeamLedger {
     return undefined
   }
 
+  /**
+   * The ledger boundary to scan a Member's post-completion report from when
+   * the completion itself is a Session timestamp rather than an operation:
+   * the sequence of the last operation committed at or before the given
+   * `occurredAt` (ISO strings compare lexicographically). Sequence 0 means
+   * nothing was committed that early — everything in the log follows the stop.
+   */
+  positionAtOccurredAt(occurredAt: string): number {
+    for (let index = this.state.ordered.length - 1; index >= 0; index -= 1) {
+      const operation = this.state.ordered[index]!
+      if (operation.occurredAt <= occurredAt) return operation.sequence
+    }
+    return 0
+  }
+
+  /**
+   * Whether one Member addressed the Leader since a ledger position: a
+   * Channel message or Thread reply it sent whose delivered mentions name the
+   * Leader, or a DM from it to the Leader. The completion liaison reads this
+   * to decide whether a finished Member reported; the scan walks the ordered
+   * log backwards and stops at the first operation older than the boundary.
+   */
+  memberReportedToSince(memberId: AgentTeamMemberId, leaderId: AgentTeamMemberId, sinceSequence: number): boolean {
+    for (let index = this.state.ordered.length - 1; index >= 0; index -= 1) {
+      const operation = this.state.ordered[index]!
+      if (operation.sequence <= sinceSequence) return false
+      if (operation.kind === 'team/message-sent' || operation.kind === 'team/thread-replied') {
+        if (operation.data.message.sender === memberId && operation.data.mentions.includes(leaderId)) return true
+      } else if (operation.kind === 'team/dm-sent') {
+        if (operation.data.senderMemberId === memberId && operation.data.recipientMemberId === leaderId) return true
+      }
+    }
+    return false
+  }
+
   attentionStatus(actor: AgentTeamHumanActor | AgentTeamMemberActor, request: {
     workspaceId: WorkspaceId
     threadRef?: AgentTeamThreadRef | undefined

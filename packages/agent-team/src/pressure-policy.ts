@@ -156,6 +156,14 @@ export class PressurePolicyCoordinator {
    */
   private readonly forcedCompactions = new WeakMap<Agent, number>()
   /**
+   * Agents whose current route refuses dsh compaction outright with the
+   * `dsh_compaction_refused` marker: the routed proxy owns compression on
+   * that lane and keeps requests under the real model window, so the policy
+   * submits without dsh compaction instead of failing closed on a proof the
+   * lane can never produce (raw dsh-side tokens never drop there).
+   */
+  private readonly proxyOwnedLanes = new WeakSet<Agent>()
+  /**
    * Whether the one-shot notice was already delivered, folded incrementally per
    * Member. The scan below is a monotone "has this ever happened" fold over the
    * Session's own events, so a cursor can replace re-scanning the whole log on
@@ -274,6 +282,12 @@ export class PressurePolicyCoordinator {
         return true
       }
       this.options.log(`context-overflow recovery failed: ${error instanceof Error ? error.message : String(error)} (member ${member.memberId})`)
+      if (error instanceof Error ? error.message.includes('dsh_compaction_refused') : String(error).includes('dsh_compaction_refused')) {
+        // The routed proxy owns compression on this lane: never compact on the
+        // fallback routes either; surface the overflow instead.
+        this.proxyOwnedLanes.add(agent)
+        return false
+      }
       // Last resort on the primary engine's failure: the other configured LLM
       // routes. A fallback that advances the surface earns the same single
       // retry the prune-progress path grants.
@@ -303,6 +317,7 @@ export class PressurePolicyCoordinator {
    * @returns whether the request may proceed.
    */
   private async enforceHardLimit(agent: Agent, memberId: AgentTeamMemberId, sessionId: Agent['id'], hardLimit: number, signal: AbortSignal): Promise<boolean> {
+    if (this.proxyOwnedLanes.has(agent)) return true
     const engine = this.options.compactionForAgent(agent)
     if (engine === undefined) {
       const diagnostic = `${HARD_LIMIT_BLOCK_PREFIX} reached and compaction is unavailable in the Member scope; the request was blocked`
@@ -319,7 +334,16 @@ export class PressurePolicyCoordinator {
     try {
       await engine.compactIfNeeded(agent, 'context-overflow', signal)
     } catch (error) {
-      this.options.log(`${HARD_LIMIT_BLOCK_PREFIX} compaction failed: ${error instanceof Error ? error.message : String(error)}; trying fallback LLM routes (member ${memberId})`)
+      const message = error instanceof Error ? error.message : String(error)
+      if (message.includes('dsh_compaction_refused')) {
+        // The routed proxy owns compression on this lane and refuses dsh
+        // compaction outright; the raw-token proof below is unattainable and
+        // unnecessary there, so submit and stop forcing on this agent.
+        this.proxyOwnedLanes.add(agent)
+        this.options.log(`${HARD_LIMIT_BLOCK_PREFIX} reached, but the routed proxy owns compression on this lane (dsh compaction refused); submitting without dsh compaction (member ${memberId})`)
+        return true
+      }
+      this.options.log(`${HARD_LIMIT_BLOCK_PREFIX} compaction failed: ${message}; trying fallback LLM routes (member ${memberId})`)
       // Last resort before failing closed: the other configured LLM routes. A
       // fallback that advanced the surface still has to pass the same measured
       // below-limit proof every continuing request needs.

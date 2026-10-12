@@ -16,9 +16,15 @@ Team 是每个 DSH home 内唯一的协作域。append-only operation ledger 是
 - Member supervision（`supervisor.ts`）是 `recovery.ts` 之后的自动兜底。巡查每十分钟一趟——只在 startup 的 Member restore 落定后才挂上定时器，冷 Session 不会被误读为停止——观察对象是所有 enabled Members。Agent 活着且 turn 仍可能推进时读作 settling（活着但闲置且持有未竟 Claim 是按设计等待，不被打扰）；不处于 active、携带 error presence、或已运行但超过三十分钟没有任何 durable session event 时读作 stopped。stopped 的 Member 每个 pass 拉起一次、至多三次。
 - 压力策略的请求阻断是 bring-up nudge 唯一治不了的停止形态：当记录的失败是一次被阻断的请求——硬上限压缩失败或被拒绝、强制压缩预算已耗尽、路由容量未知——后续每一轮都会在任何模型调用之前被拒绝，因此 bring-up pass 会识别这类诊断并直接升级进入强制链的重置，而不是把 Member 再次 nudge 进同一个阻断。升级只读取属于 Member 当前 Session 的记录：失败记录绑定其发生的 Session 代际，随代际退役，并在 pre-step 证明压力已降到硬限之下时清除——来自早前代际的阻断、或同一 Session 内路由已自行恢复的阻断，都不会重置一个健康的上下文。
 - 反复失败不再当场替换，而是走强制链：三次 `agent/error` 之间没有任何干净回合结束、或二十分钟滚动窗口内出现三次失败，即开启强制。Host 亲自重置该 Member 的上下文——与 Human 菜单相同的 fresh-context 重置，且只私下提示被重置的 Member 本人；不再向团队发告警求援，重置消息也不进任何 Channel。归档与换代交接（下述）是最后手段，只在后续 pass 仍读出异常时才推进。任一时刻重新读作 healthy 都会结束强制链，被治好的 Member 重新武装温和的 bring-up。
-- 每一轮完成的模型请求都要通过返回结果检查：一轮在结束时既没有工具调用也没有可见文本——或文本没有以「任务结束」完成标记收尾——即视为一轮故障，Host 会投递一条 `continue` 提示让 Member 继续执行：仍在进行中的轮次用 steer 插入，否则开启下一轮。连续三次提示后熔断，任何健康的一轮（出现工具调用或以标记收尾）都会重置 episode；被中断的轮次是人为取消而非故障，且该提示在 context projection 中始终按纯提醒处理。
+- 每一轮完成的模型请求都要通过返回结果检查：一轮在结束时既没有工具调用也没有可见文本——或文本没有以「任务结束」完成标记收尾（标记之后跟随的标点或装饰字符仍被宽容接受）——即视为一轮故障，Host 会投递一条 `continue` 提示让 Member 继续执行：仍在进行中的轮次用 steer 插入，否则开启下一轮。连续三次提示后熔断，任何健康的一轮（出现工具调用或以标记收尾）都会重置 episode；该提示在 context projection 中始终按纯提醒处理。
+- guard 同时管辖停止边界：turn 以 `completed` 结束而末轮呈故障形态时——即使环内提示预算已经熔断——Host 会按 per-Member 冷却在停止边界补发一次停止提醒，并为该提醒开启的新一轮重新武装提示预算。被中断的轮次、用户中止与 error 停止是人为或 Host 事件而非模型故障——停止 lane 保持安静，等下一轮。
+- activation 会对持久化 Member 的 Session 日志做尾部扫描：近期一次未被提醒过的故障停止（六小时窗口内、且 Inbox 无待投递的 direct 工作）会补上停止提醒，而不是让中途停下的 Member 静默闲置。
 - 替换在一个串行化的 lifecycle step 内以普通 Host 生命周期完成：失败 Member 走同一条 `archiveMember`（其 Claims 照常以公开 `claims_released` Activities 释放），同角色的下一代以 Human 权限入队——handle 取该角色下一个空闲的 `-N` 代际，可变角色事实照搬，私有记忆（`memory.md` 与 `notes/`，`skills/` 有意不继承）在替补首次 activation 之前拷贝完成，前任的 Channel 参与关系逐一补授。
 - continuation watcher（`continuation-watcher.ts`）负责监督的反面：每个 Agent 都健康且正常停止，但仍有 Agent 还能推进的任务。每分钟一趟 pass——与监督共用同一个 restore gate——当所有 enabled Member 都读作 `available` 且存在这类任务时开始一段 quiet hold；任何 ledger 提交都会重启该 hold（Human 阅读也算），Agent 重新工作、任务格局变化、或一条提醒无人理会超过十分钟，都会重新武装。安静满两分钟后，Host 以 Human 管理员的口吻向该 Workspace 被指定 leader（`member.leader`）的 open work 最繁忙 Channel 发一条提醒，列出 open Tasks；`@` 提及经普通 Inbox 路径唤醒 leader。没有 enabled 指定 leader 的 Workspace 每 episode 只记一次日志而不提醒；投递失败记日志并在后续 pass 重试。计数器与监督同为进程内。
+- 完成联络员（`completion-liaison.ts`）负责 watcher 之后的 per-Member 时刻：Member 以「任务结束」标记停止且短暂宽限后仍静止时，Host 检查它完成后是否向指定负责人发过汇报（提及负责人的渠道消息或 DM，从完成位置向账本尾部扫描）；没有则以 Human 口吻在负责人自己的渠道发一条 report-check 提醒唤醒负责人。
+- 若该 Workspace 没有指定 enabled 负责人，联络员改为把未完成任务直接推送给该 Member，由其自主决策——推送正文声明拒绝的唯一契约：最终回复以「拒绝继续」开头。被捕获的拒绝使本进程内不再向其推送任务，并把其原话（截断）在该渠道转告 `@human`；决定继续则不播报。episode、决策、拒绝与冷却闩同为进程内，而每条提醒都是普通 ledger Message。
+- 指定负责人本人的标记完成不触发任何强行唤醒：既不自我推送任务，也不做自我检查——负责人对 Human 汇报是职责所在；负责人只有直接发生故障时才被唤起，且走 guard 与 supervision 的故障路径，绝不走联络员。
+- activation 尾部扫描也会补开 episode：Member 的标记收尾停止若发生在 Host 离线期间（同样以六小时窗口计为近期，且没有已在处理它的待投递 direct 工作），恢复后的第一趟 pass 仍会补上这次 report check——部署重启不会让静止未汇报的 Member 悄悄脱离策略。宽限从停止时刻计，TTL 从联络员知晓时刻计。
 - watcher 的 open 集合止于 `in_review`：Claims 全部完成的任务在等 Human 验收，这不是要提醒已停止 Agent 的工作，因此只剩这类任务的 Workspace 永不触发——Human 任务列表仍将其显示为进行中。
 - 随后替补在其继承的每个 Channel 各发一条不含 Task 的交接公告，逐条点名被释放的 Claim，并用显式 recipients 直接触达所有存活的其他 Member（包括 `@human` 管理员），让团队知道谁顶替了谁——以及替补继承了前任的设置与私有记忆——管理员则通过 ordinary Task routing 重新派工。计数器与观察名单是进程内的——重启即重新挣回预算，与压力策略同构——而一切 durable 结果都是 ledger operation，因此交接中途崩溃只会按正常台账重放，绝不会留下半真半假的 Team 事实。
 
@@ -36,6 +42,7 @@ Team 是每个 DSH home 内唯一的协作域。append-only operation ledger 是
 
 ## Attention 与 Inbox 权威
 - Thread Attention 是 private Member x Thread state。ordinary unread 来自当前 Attention；structured mentions 创建 direct markers；terminal Task changes 在 Attention 结束后仍可能保留稀疏 Activity markers。Host 是唯一 Inbox authority。Session history 可以保留有界 notification context（包括 direct Message bodies 和 Task/Claim transition summaries），但不能形成 parallel unread projection。
+- 逐提交的唤醒是点对点的：只有当操作点名了该 Member（新增 Direct marker——mention 或 DM、新增属于其 Task 的 Activity marker、或它自己的动作）才唤起其模型。无人点名的 Thread 围观更新只在 projection 里累计未读数，随下一次被点名投递以无正文摘要同行——共享 Thread 的流量不为每个 follower 花费一个回合。restore/resume/故障恢复时的提示重建是另一条路径，仍读取全部 durable 未读。
 
 ## Session 策略与上下文压力
 - Team 管理的 Agent sessions 使用显式 Team preset 和可信的 `danger-full-access` policy，这是面向可信 Workspace 的有意产品边界。
@@ -62,7 +69,10 @@ Team 是每个 DSH home 内唯一的协作域。append-only operation ledger 是
 - Member 在 `model` 与 `capabilities` 之外携带三个可选覆盖字段：`contextStartPolicy`（`continue` | `fresh`）、`contextWindow`（不小于 8192 的整数），以及 `prompt` 画像（`droppedSections`、`customPrompt`、`autoPrune`、`autoExecutePrune`）。 commit 校验将存储的 `customPrompt` 限制在 8192 个 UTF-8 字节内，并把空白段落归一化为缺省字段。每个字段都被消费：段落成为 Member 的 custom prompt section，`droppedSections` 过滤该 Member 的 assembly，auto-prune 二元组驱动用量 sweep——机制详见 Tools and preset。
 - 创建与编辑在 commit 时校验，记录 schema 镜像同一下限——低于下限的存储记录会拒绝重放。编辑遵循 `model` 的 absent-clears 语义；这些字段出现之前的旧 ledger 按普通 continue/跟随路由的 Member 重放。
 - 窗口覆盖只会从路由向下收窄压力预算、绝不放大：`routeLimitsForAgent` 以覆盖值与实时路由窗口的较小者计算预算，超过路由的覆盖值等于没有设置。未设置覆盖的 Member 行为与之前完全一致。
-- `fresh` 策略只在「被安排新任务」时重续 Member 上下文：Member 认领任务时，或 Human 原子开始的 committed 直接提及点名该 Member 时，Host 通过序列化 lifecycle 队列、走 Human 重置路径使用的同一个 `renewMemberContextNow` 持久操作安排一次上下文续期。调度器等待 Member 的 turn 边界，像 member transition 一样收敛运行中的 Agent。
+- `fresh` 策略只在「被安排新任务」时重续 Member 上下文：Member 认领任务时、Human 原子开始的 committed 直接提及点名该 Member 时、或队友的直接派发（提及或 DM 的 Inbox wake 携带未读 direct work）送达时，Host 通过序列化 lifecycle 队列、走 Human 重置路径使用的同一个 `renewMemberContextNow` 持久操作安排一次上下文续期。调度器等待 Member 的 turn 边界，像 member transition 一样收敛运行中的 Agent。
+- 续期在完成时被「武装」而非立即触发：`completed` 停止且末轮以完成标记收尾会把 Member 置为 armed（activation 尾部扫描发现最后一次持久停止就是标记收尾时同样置为 armed），任务完成本身从不当场续期。
+- 派发门会扣住携带 direct work 的 wake，直到续期落地——重置通知与全新系统上下文先于任务正文出现在新代际里；不携带 direct work 的通知（Thread 闲聊、Task activity 流转）绝不消耗 arm。续期落地后经同一道门重新推导那被扣住的 wake（landed-renewal 放行避免 signature dedupe 把它吞掉），重置 body 退出时也会再 flush 一次仍未送出的投递，因此 gating 从不丢失工作。
+- 最终放弃（give-up）则释放 arm、让该派发降级到旧上下文投递，而不是热循环重排。已排期的重置若在此期间遭遇 live handle 换代——restart、rollover 或 dispose——body 会重绑到当前 handle 并继续重试，上限五轮绑定，绝不把已排期的续期连同旧 handle 一起丢弃。
 - 完成工作不是分配：Claim 标 done 或 Task 被验收都不提交任何续期；读时验收指引对 `fresh` Member 也改为 keep 当前上下文而非建议 rollover，让完成总结在下一次分配续期前始终可在 live 日志中读到。
 - 提交前调度器重读存储的策略与状态：期间策略已被改掉、或 Member 已无法对其 Agent 进行 dispose 的情形跳过续期。已提交的重置只私下提示被其 fresh-start Task 策略续期的那个 Member；`continue` Member 从不经此路径续期。
 - `autoPrune` 开关在与 fresh 策略相同的任务边界附加一次用量 sweep。与 fresh 调度器一样，它等待 turn 边界、在那里重读存储的开关与状态（期间被编辑或暂停则跳过），并在串行 lifecycle queue 内执行。用量折叠要读整个 session 文件，因此先于队列完成。ask 模式只发 `@human` 收件箱通知。
