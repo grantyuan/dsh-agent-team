@@ -34,6 +34,7 @@ import AgentTeam, { AGENT_TEAM_HUMAN_MEMBER_ID, AGENT_TEAM_TOOL_NAMES, isTsxDevM
 import { checkpointRefFor, foldTeamContextProjection } from '../src/context-projection.ts'
 import { AGENT_TEAM_PLUGIN_ID, continuationCheckpointRefOf, handoffOf, isCheckpointContinuationMessage, isHandoffMessage } from '../src/context-source.ts'
 import { RECOVERY_DELAY_MS } from '../src/recovery.ts'
+import { RELEVANCE_JUDGE_SYSTEM_PREFIX } from '../src/context-relevance.ts'
 import { COMPLETION_MARKER } from '../src/response-guard.ts'
 import { CONTINUATION_NUDGE_MARKER, continuationNudgeText } from '../src/continuation-watcher.ts'
 import { LIAISON_REPORT_GRACE_MS } from '../src/completion-liaison.ts'
@@ -86,6 +87,35 @@ class ScriptedAdapter extends EmptyAdapter {
     const response = this.responses.shift()
     if (response === undefined) throw new Error('ScriptedAdapter response queue is empty')
     for (const chunk of response) yield chunk
+  }
+}
+
+/**
+ * The Host's dispatch-relevance call rides the same provider as Member turns, so
+ * this subclass answers it from a separate verdict queue keyed on the judge's own
+ * system line: relevance tests set the model's score without guessing how many
+ * Member turns happen to land in between.
+ */
+class JudgingAdapter extends ScriptedAdapter {
+  /** The system prompt of each relevance call, in order; its length is the call count. */
+  readonly judgements: string[] = []
+  private readonly verdicts: StreamChunk[][] = []
+
+  /** Queue one model verdict for the next relevance call. */
+  verdict(score: number | string): void {
+    this.verdicts.push(textResponse(typeof score === 'number' ? `{"relevance": ${score}}` : score))
+  }
+
+  override async * stream(options: GenerateOptions): AsyncIterable<StreamChunk> {
+    const system = typeof options.system === 'string' ? options.system : ''
+    if (!system.includes(RELEVANCE_JUDGE_SYSTEM_PREFIX)) {
+      yield* super.stream(options)
+      return
+    }
+    this.requests.push(options)
+    this.judgements.push(system)
+    const verdict = this.verdicts.shift() ?? textResponse('{"relevance": 0}')
+    for (const chunk of verdict) yield chunk
   }
 }
 
@@ -5157,7 +5187,7 @@ describe('Agent Team member context control (ticket 01)', () => {
   })
 
   it('renews an armed fresh Member before delivering a teammate\'s dispatch mention', async () => {
-    const adapter = new ScriptedAdapter()
+    const adapter = new JudgingAdapter()
     const { ctx, workspaceId, archived } = await realHarness(adapter)
     const channel = await ctx.agentTeam.createChannel({ requestId: requestId('armdisp-channel'), workspaceId, name: 'engineering', description: 'Engineering work' })
     const mgr = await ctx.agentTeam.addMember({ requestId: requestId('armdisp-mgr'), workspaceId, handle: 'manager', description: 'Dispatches work', presetId: 'team-member', channelRefs: [channel.channel.channelRef] })
@@ -5194,6 +5224,9 @@ describe('Agent Team member context control (ticket 01)', () => {
     expect(resetAt).toBeGreaterThanOrEqual(0)
     expect(inboxAt).toBeGreaterThanOrEqual(0)
     expect(resetAt).toBeLessThan(inboxAt)
+    // Nobody in this Workspace owns the judgement call: with no designated
+    // leader the relevance question is never asked and the policy simply renews.
+    expect(adapter.judgements).toHaveLength(0)
     expect(() => ctx.agentTeam.validateLedger()).not.toThrow()
   })
 
@@ -5232,6 +5265,60 @@ describe('Agent Team member context control (ticket 01)', () => {
     expect(next.kind).toBe('committed')
     const workerSession1 = await waitFor(() => sessionOf() !== workerSession0 ? sessionOf() : undefined)
     await waitForArchived(archived, workerSession0)
+    expect(() => ctx.agentTeam.validateLedger()).not.toThrow()
+  })
+
+  it('asks the model whether a dispatch continues the work, and only when a leader owns the call', async () => {
+    const adapter = new JudgingAdapter()
+    const { ctx, workspaceId, archived } = await realHarness(adapter)
+    const channel = await ctx.agentTeam.createChannel({ requestId: requestId('relevance-channel'), workspaceId, name: 'engineering', description: 'Engineering work' })
+    const mgr = await ctx.agentTeam.addMember({ requestId: requestId('relevance-mgr'), workspaceId, handle: 'manager', description: 'Dispatches work', presetId: 'team-member', channelRefs: [channel.channel.channelRef] })
+    const designated = await ctx.agentTeam.updateMember({ requestId: requestId('relevance-designate'), memberId: mgr.status.member.memberId, handle: 'manager', description: 'Dispatches work', leader: true })
+    if (!designated.status.member.leader) throw new Error('the roster never gained a designated leader')
+    const worker = await ctx.agentTeam.addMember({ requestId: requestId('relevance-worker'), workspaceId, handle: 'worker', description: 'Executes dispatched work', presetId: 'team-member', channelRefs: [channel.channel.channelRef], contextStartPolicy: 'fresh' })
+    const workerId = worker.status.member.memberId
+    for (let turn = 0; turn < 16; turn += 1) adapter.enqueue(textResponse('Acknowledged.'))
+    const sessionOf = (): SessionId => ctx.agentTeam.members().find(status => status.member.memberId === workerId)!.member.sessionId
+    const session0 = worker.status.member.sessionId
+    const HISTORY_BODY = '装配 kv_cache_unified.rs 的 KvCacheUnifiedConfig 三跳配置完成，收线跑 cargo test --features kv-cache protocol-redis 全量门 0 failed'
+
+    // The Member reports its finished work in its own words, then closes the
+    // turn on the marker: armed, and holding something the judge can read.
+    const workerAgent = ctx.agents.get(session0)!
+    let calls = 0
+    const authored = await ctx.tools.execute({ signal: new AbortController().signal, callId: ToolCallId(`relevance-author-${++calls}`), name: 'team_message',
+      arguments: { action: 'start', channelRef: channel.channel.channelRef, body: HISTORY_BODY }, agent: workerAgent })
+    expect(authored.isError, authored.isError ? authored.error.message : 'ok').toBe(false)
+    workerAgent.followup(createUserMessage({ content: [{ type: 'text', text: 'finish current work' }], source: { kind: 'user' } }))
+    await waitForIdle(ctx, workerAgent)
+    const mgrAgent = ctx.agents.get(mgr.status.member.sessionId)!
+
+    // The Leader dispatches a continuation and the model says so: no renewal,
+    // the assignment reaches the live Session the Member reported from.
+    adapter.verdict(0.92)
+    const continued = await ctx.agentTeam.sendMessageForAgent(mgrAgent, { requestId: requestId('relevance-continued'), workspaceId, channelRef: channel.channel.channelRef, body: '接着补 kv_cache_unified.rs 的第四跳 KvCacheUnifiedConfig @worker' })
+    expect(continued.kind).toBe('committed')
+    const liveTexts = (): string => workerAgent.session.ownEvents()
+      .filter(event => event.type === 'user/message')
+      .map(event => (event as { data: { content: ReadonlyArray<{ type: string; text?: string }> } }).data.content.map(block => block.text ?? '').join(''))
+      .join('\n')
+    await waitFor(() => (liveTexts().includes('接着补 kv_cache_unified.rs 的第四跳') ? true : undefined))
+    expect(adapter.judgements).toHaveLength(1)
+    // The call saw the Member's own recent work, not just the new assignment.
+    expect(JSON.stringify(adapter.requests.at(-1)!.messages)).toContain('KvCacheUnifiedConfig')
+    expect(liveTexts()).toContain('Team Inbox has unread work')
+    expect(sessionOf()).toBe(session0)
+    expect(archived).not.toContain(session0)
+
+    // The next dispatch: the model says it is a new task, so the renewal lands
+    // first and the assignment arrives in the fresh generation.
+    adapter.verdict(0.05)
+    const newCard = await ctx.agentTeam.sendMessageForAgent(mgrAgent, { requestId: requestId('relevance-new-card'), workspaceId, channelRef: channel.channel.channelRef, body: '新卡：把 README 的安装段落改成三步，另开分支 @worker' })
+    expect(newCard.kind).toBe('committed')
+    const session1 = await waitFor(() => sessionOf() !== session0 ? sessionOf() : undefined)
+    await waitForArchived(archived, session0)
+    expect(adapter.judgements).toHaveLength(2)
+    expect(session1).not.toBe(session0)
     expect(() => ctx.agentTeam.validateLedger()).not.toThrow()
   })
 

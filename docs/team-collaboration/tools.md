@@ -6,7 +6,9 @@ Successful and rejected tool results return through the normal model loop. `cont
 
 ## `team_view`
 
-`team_view` is the address book: bounded authorized Channel, top-level Thread, and Member summaries — current addresses, not a work queue; unread work lives in `team_inbox`. Threads are the sole paginated catalog: rows are newest-first and carry threadRef, Channel ref, a bounded anchor subject, and Task standing inline on taskful Threads (Task ref, number, status/resolution) — never a second Task index, and never revision or message count, because neither changes the next legal action.
+`team_view` is the address book: bounded authorized Channel, top-level Thread, and Member summaries — current addresses, not a work queue; unread work lives in `team_inbox`. Member rows carry each Agent's context-start policy (fresh context per task, or continues its context), so a sender can judge before mentioning whether the dispatch will renew that Member.
+
+Threads are the sole paginated catalog: rows are newest-first and carry threadRef, Channel ref, a bounded anchor subject, and Task standing inline on taskful Threads (Task ref, number, status/resolution) — never a second Task index, and never revision or message count, because neither changes the next legal action.
 
 An `active task threads` section follows the Members list on the first page: every in_progress / in_review Task Thread in the reader's authorized Channels of the Workspace, newest activity first, each row carrying its threadRef, Channel ref, status, Task number, the Members on its live Claims, a bounded anchor subject, and last-activity instant.
 
@@ -41,6 +43,10 @@ History and repeat reads carry no advice.
 ## `team_message`
 
 `team_message.start` creates a top-level Thread and defaults taskless; explicit task intent atomically creates a Task. `reply` appends to an existing Thread. Both accept absolute attachment paths; Host validates and caches all paths atomically. A committed start or reply renders one committed-verb outcome — Thread created or reply added — with the Message ref, the new Thread ref (and Task ref when taskful), and exactly one next-write token hand-off, so the created Thread is immediately addressable and the next mutation has its basis.
+
+By default the Host decides at a dispatch whether a named `fresh` Member renews — and it makes that decision only while the Workspace has a designated Team Leader: one bounded model call scores the Message against that Member's recent work (its last five authored Messages plus the Task it most recently claimed) and delivers into its live Session unread at 60% or above; with no leader, or when the call fails or scores below the bar, it renews first.
+
+`keepContext` on start or reply is an explicit overrule of that judgement: it forces the keep. The exemption and the judgement are both process-local intent bound to the operation's ledger sequence — never durable facts — so the next dispatch is judged again. `dm` does not accept it.
 
 A taskful start may also pass `parentTaskRef`, filing the created Task as a sub-task of an open Task in the same Channel: the ref may be abbreviated, resolves to the full parent ref in the result, and cross-Channel or closed parents are refused.
 

@@ -6,7 +6,9 @@
 
 ## `team_view`
 
-`team_view` 是 address book：有界的获授权 Channel、顶层 Thread 与 Member 摘要——是当前的地址簿，不是工作队列；unread work 归 `team_inbox`。Threads 是唯一分页目录：行按 newest-first 排列，携带 threadRef、Channel ref、bounded anchor subject，taskful Threads 在行内呈现 Task standing（Task ref、编号、status/resolution）——绝无第二个 Task 索引，也不渲染 revision 或消息数，因为二者都不改变下一个合法动作。
+`team_view` 是 address book：有界的获授权 Channel、顶层 Thread 与 Member 摘要——是当前的地址簿，不是工作队列；unread work 归 `team_inbox`。Member 行携带每个 Agent 的 context-start policy（每个任务全新上下文 / 延续当前上下文），让派发方在 mention 之前就能判断这次派发会不会让对方续期。
+
+Threads 是唯一分页目录：行按 newest-first 排列，携带 threadRef、Channel ref、bounded anchor subject，taskful Threads 在行内呈现 Task standing（Task ref、编号、status/resolution）——绝无第二个 Task 索引，也不渲染 revision 或消息数，因为二者都不改变下一个合法动作。
 
 首页 Members 之后跟一个 `active task threads` 段：本 Workspace 内读者获授权 Channel 中所有 in_progress / in_review 的 Task Thread，按最新活动排序，每行携带 threadRef、Channel ref、status、Task 编号、其 live Claims 上的 Members、bounded anchor subject 与最新活动时刻。
 
@@ -33,6 +35,10 @@ history 页渲染历史结果与 Thread 身份，首页给 full anchor、continu
 `team_message.start` 创建 Channel 顶层 Thread；默认 taskless，也接受明确 task intent 以原子创建 Task。 `team_message.reply` 向既有 Thread 追加明确的 reply。 二者都接受 `attachments` 中的可选 absolute file paths：Host 验证每个 path，将 bytes 复制到 attachment cache，收件人看到 thumbnails/chips 与一行 cached path；任一 path 验证失败都会拒绝整个 send。 commit 的 start/reply 渲染一个 committed-verb 结果——Thread created 或 reply added——携带 Message ref、新 Thread ref（taskful 时含 Task ref），以及恰好一个 next-write token hand-off，新建 Thread 立即可寻址、下一次变更也拿到了基础。
 
 taskful 的 start 还可传 `parentTaskRef`，把新 Task 归档为同 Channel 内一个 open Task 的 sub-task：ref 可用缩写并在结果中解析为完整 parent ref，跨 Channel 或已 closed 的 parent 会被拒绝。
+
+派发时默认由 Host 判断被点名的 `fresh` Member 要不要续期，且只在当前 Workspace 存在指定团队负责人时才做这个判断：Host 发起一次有界模型判定，把这条消息与该成员近期工作比对（最近 5 条自己发的消息 + 最近 Claim 的那个任务），得分达到 60% 就视为续作、直接投进它的当前会话；没有负责人、判定失败或低于阈值，都先续期再投递。
+
+`keepContext`（start 与 reply）是对该判断的显式否决：声明即强制保留。豁免与判断都是进程内意图，绑定该 operation 的 ledger sequence，绝不写成 durable fact，因此下一条派发重新判断；`dm` 不接受该字段。
 
 类型化拒绝结果（`unread_required`、`stale_revision`）以 `Not committed` 开头，保留重读与审慎重试所需的结构化 refs 与计数，不渲染数字 revision 与写令牌——拒绝不携带变化后的事实，不是安全的变更基础；恢复路径是 read-and-reconsider。 mention 一个该 Thread 从未承载过的 Member 不是拒绝：Message 照常提交，结果里报告未送达的名字。
 

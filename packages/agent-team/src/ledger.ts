@@ -1753,6 +1753,43 @@ export class AgentTeamLedger {
     return false
   }
 
+  /**
+   * The Member's recent authored Message bodies, newest first, bounded — the
+   * history window the Host's dispatch-relevance judgement reads. The scan
+   * walks the ordered log backwards and stops once the window fills, the same
+   * shape the liaison's report scan pays.
+   */
+  recentMemberMessageBodies(memberId: AgentTeamMemberId, limit: number): readonly string[] {
+    const bodies: string[] = []
+    for (let index = this.state.ordered.length - 1; index >= 0 && bodies.length < limit; index -= 1) {
+      const message = this.authoredMessageOf(this.state.ordered[index]!)
+      if (message !== undefined && message.sender === memberId) bodies.push(message.body)
+    }
+    return Object.freeze(bodies)
+  }
+
+  /**
+   * The content of the Task the Member most recently took part in: the anchor
+   * Message of the Thread behind its newest Claim — the Task's opening body,
+   * which is what an incoming assignment is measured against. Taking part means
+   * claiming, so a Member that finished a Task without posting in its Thread
+   * still has one; undefined when it never claimed anything.
+   */
+  latestTaskContentOf(memberId: AgentTeamMemberId): string | undefined {
+    for (let index = this.state.ordered.length - 1; index >= 0; index -= 1) {
+      const operation = this.state.ordered[index]!
+      if (operation.kind !== 'team/claim-created') continue
+      if (operation.data.claim.owner !== memberId) continue
+      return this.threadAnchor(operation.data.claim.threadRef).body
+    }
+    return undefined
+  }
+
+  /** The Message one send/reply operation authored; every other kind has none. */
+  private authoredMessageOf(operation: AgentTeamOperation): AgentTeamMessage | undefined {
+    return operation.kind === 'team/message-sent' || operation.kind === 'team/thread-replied' ? operation.data.message : undefined
+  }
+
   attentionStatus(actor: AgentTeamHumanActor | AgentTeamMemberActor, request: {
     workspaceId: WorkspaceId
     threadRef?: AgentTeamThreadRef | undefined

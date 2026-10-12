@@ -35,7 +35,11 @@ Agent 行菜单对 live Member 持有两个上下文动作，并对每一行提�
 
 重置成功后，Host 只私下提示被重置的 Member 本人：提示点明是谁触发了重置，说明 Session 已清空重来而 handle、设置与私有记忆不变、durable Team facts 不受影响，并要求它在继续工作前先凭注入的记忆与 durable Team history（`team_view`、`team_inbox`、`team_thread`）重新定位当前任务，读完仍不清楚的应在相关 Thread 回复或发私信询问队友而不是猜测；不再向任何 Channel 广播，该提示是运行时 notification intent 而非 ledger Message，投递失败只记日志。
 
-续期只发生在「被安排新任务」的接缝：`fresh` Member 在下一次 Claim 或 Human 原子开始时换新上下文，Claim 完成或 Task 验收绝不触发续期——live 日志因此保留刚完成的总结，直到下一次分配才清空。读时验收指引对 `fresh` Member 同样给出 keep 而非 roll over，理由一致；persona 约定每个 Claim 完成时先在 Task Thread 发布完成消息并附上简明总结，让成果在 durable ledger 中活过之后任何一次重置。
+续期只发生在「被安排新任务」的接缝，且在完成时先被「武装」：`fresh` Member 以一次以完成标记收尾的停止进入 armed，之后在下一次 Claim、Human 原子开始、或队友直接派发（mention 的 Inbox wake 携带未读 direct work）送达时换新上下文——续期排在派发之前，任务正文落在全新代际的系统上下文里；DM 是纯会话中继，不消耗 arm。Claim 完成或 Task 验收绝不触发续期——live 日志因此保留刚完成的总结，直到下一次分配才清空。
+
+要不要保留上下文由 Host 在派发那一步判断，且只在当前 Workspace 存在指定团队负责人时才做这个判断：Host 发起一次有界模型判定，把这条派发的正文与该成员近期工作比对——最近 5 条自己发的消息，加上最近 Claim 的那个任务的内容——得分达到 60% 视为同一件工作的续作，直接投进当前会话不续期；没有负责人，或判定失败、低于阈值，都先续期再投递。判定只针对本次派发，未读积压不参与。派发方仍可声明 `keepContext`（`team_message` 的 start/reply，Human 原子开始同样可携带）跳过判断强制保留；豁免绑定那一条 ledger sequence，绝不写成 durable fact，下一次派发重新判定。`team_view` 的 Agent 行显示该成员的上下文启动策略，判定分数写进日志。
+
+读时验收指引对 `fresh` Member 同样给出 keep 而非 roll over，理由一致；persona 约定每个 Claim 完成时先在 Task Thread 发布完成消息并附上简明总结，让成果在 durable ledger 中活过之后任何一次重置。
 
 后台运行等待 Member 的 idle 边界后，经一个瞬态 `BasicCompactionEngine` 强制一次缩减——该引擎把 Human 选定的摘要 LLM 携带在自己的 config 里（缺省回退到 Member 当前路由的模型）。持续 busy 的 Member 只记一行日志后放弃该请求——对话优先；失败的运行经压力策略同一条 compaction 失败槽上报。压缩不提交 ledger operation；只写入它自己的 Session history。模型发起的 rollover 期间（ledger 绑定已迁移、新 Session 尚未就绪），Member 状态短暂显示为 unavailable 并带 "context rollover in progress" diagnostic；若该 Member 的 Session 正嵌入右栏，Client 只在旧→新绑定变化且当前页面正是被观察的旧 live Session 时跟随一次到新 Session，归档视图不会跳转。
 
