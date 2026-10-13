@@ -51,6 +51,7 @@ import { buildRelevanceJudge, CONTEXT_RELEVANCE_THRESHOLD, DISPATCH_HISTORY_MESS
 import { MemberSupervisor, nextReplacementHandle, supervisionHandoffText, SUPERVISION_FAILURE_WINDOW_MS, SUPERVISION_HUNG_MS, SUPERVISION_MAX_CONSECUTIVE_FAILURES, SUPERVISION_MAX_RESTART_ATTEMPTS, SUPERVISION_WINDOW_FAILURES, type MemberSupervisionState, type SupervisionTrigger } from './supervisor.ts'
 import { CONTINUATION_NUDGE_MARKER, TaskContinuationWatcher, continuationNudgeText, type ContinuationLeader, type ContinuationTask } from './continuation-watcher.ts'
 import { CompletionLiaison, liaisonFeedbackText, liaisonReportCheckText, liaisonTaskPushText, type LiaisonLeader } from './completion-liaison.ts'
+import { TruncationEscalator, truncationEscalationText, type TruncationLeader } from './truncation-escalation.ts'
 import { StoredSessionReadError, StoredSessionReader, sessionFailureOf } from './stored-session-reader.ts'
 import { doctorAnalysisPrompt, renderFailureTranscript, transcriptEntryOf, type TranscriptEvent } from './failure-transcript.ts'
 import { agentTeamDomainSpec } from './spec.ts'
@@ -703,6 +704,27 @@ export default class AgentTeam extends TypertRemoteService {
     log: message => { this.ctx.logger.warn(`agent-team: ${message}`) },
   })
   /**
+   * Output-truncation escalation: a turn the provider cut off at the
+   * output-token cap leaves the Member idle on a truncated answer, and the
+   * designated leader — not the Host — decides how to proceed. See
+   * `truncation-escalation.ts` for the episode policy and
+   * `notifyLeaderOfTruncation` for the delivery; the read lambdas guard the
+   * pre-restore window exactly like the watcher's and the liaison's.
+   */
+  private readonly truncationEscalation = new TruncationEscalator({
+    workspacesOf: memberId => this.ledger?.workspacesOf(memberId) ?? [],
+    leaderOf: workspaceId => {
+      const ledger = this.ledger
+      if (ledger === undefined) return undefined
+      const leader = ledger.listMembers().find(member =>
+        member.state === 'enabled' && member.leader === true && ledger.workspacesOf(member.memberId).includes(workspaceId))
+      return leader === undefined ? undefined : { memberId: leader.memberId, handle: leader.handle }
+    },
+    handleOf: memberId => this.ledger?.getMember(memberId)?.handle,
+    notify: async input => { await this.notifyLeaderOfTruncation(input) },
+    log: message => { this.ctx.logger.warn(`agent-team: ${message}`) },
+  })
+  /**
    * Team's domain half of the continuity projection: the durable ref naming,
    * the Team-notice rule, and the boundary judgement (committed messages,
    * claim changes, first Thread arrivals). Its claim attribution resolves the
@@ -1022,8 +1044,16 @@ export default class AgentTeam extends TypertRemoteService {
       // the next dispatch; a stop that left work unfinished gets a bounded
       // continue reminder even when the in-loop budget already stood down.
       if (event.type === 'turn/end') {
-        const stopOutcome = this.responseGuard.onTurnStop(memberId, event.data.reason?.kind ?? 'unknown')
+        const reasonKind = event.data.reason?.kind ?? 'unknown'
+        const stopOutcome = this.responseGuard.onTurnStop(memberId, reasonKind)
+        // A stop the provider forced at the output-token cap leaves the Member
+        // idle on a truncated answer; the Host does not auto-continue it — the
+        // designated leader is told and decides what happens to the Member.
+        if (reasonKind === 'max-tokens') this.truncationEscalation.onTruncatedStop(memberId)
         if (stopOutcome === 'marker') {
+          // Closing a turn on the marker ends any open truncation episode: the
+          // Member is back to working through its work normally.
+          this.truncationEscalation.onCleanStop(memberId)
           this.armFreshStartReset(memberId)
           // The completion liaison opens one report-check episode and closes
           // any Task-push decision the Member was mulling over.
@@ -1042,6 +1072,7 @@ export default class AgentTeam extends TypertRemoteService {
       this.supervisor.dispose()
       this.continuationWatcher.dispose()
       this.completionLiaison.dispose()
+      this.truncationEscalation.dispose()
       this.contextManagement.dispose()
       this.pressurePolicy.dispose()
       if (this.attachmentGcTimer !== undefined) clearInterval(this.attachmentGcTimer)
@@ -2883,6 +2914,25 @@ export default class AgentTeam extends TypertRemoteService {
       workspaceId: input.workspaceId,
       channelRef,
       body: liaisonReportCheckText({ leaderHandle: input.leader.handle, memberHandle: input.memberHandle }),
+      recipients: [input.leader.memberId],
+      asTask: false,
+    })
+  }
+
+  /**
+   * Truncation-escalation delivery: the Human admin's voice names the
+   * truncated Member in the leader's Channel for the Workspace, with the
+   * leader as the only explicit recipient — the ordinary Inbox path wakes
+   * them into a turn where they decide what happens to the Member.
+   */
+  private async notifyLeaderOfTruncation(input: { readonly memberId: AgentTeamMemberId, readonly memberHandle: string, readonly workspaceId: WorkspaceId, readonly leader: TruncationLeader }): Promise<void> {
+    const channelRef = this.requireLedger().channelsForMember(input.leader.memberId, input.workspaceId)[0]
+    if (channelRef === undefined) throw new Error(`leader '${input.leader.handle}' has no Channel in workspace '${input.workspaceId}'`)
+    await this.sendMessageAs(agentTeamHumanActor(), {
+      requestId: randomUUID() as AgentTeamRequestId,
+      workspaceId: input.workspaceId,
+      channelRef,
+      body: truncationEscalationText({ leaderHandle: input.leader.handle, memberHandle: input.memberHandle }),
       recipients: [input.leader.memberId],
       asTask: false,
     })

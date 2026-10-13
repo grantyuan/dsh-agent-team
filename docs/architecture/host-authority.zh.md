@@ -25,6 +25,8 @@ Team 是每个 DSH home 内唯一的协作域。append-only operation ledger 是
 - 若该 Workspace 没有指定 enabled 负责人，联络员改为把未完成任务直接推送给该 Member，由其自主决策——推送正文声明拒绝的唯一契约：最终回复以「拒绝继续」开头。被捕获的拒绝使本进程内不再向其推送任务，并把其原话（截断）在该渠道转告 `@human`；决定继续则不播报。episode、决策、拒绝与冷却闩同为进程内，而每条提醒都是普通 ledger Message。
 - 指定负责人本人的标记完成不触发任何强行唤醒：既不自我推送任务，也不做自我检查——负责人对 Human 汇报是职责所在；负责人只有直接发生故障时才被唤起，且走 guard 与 supervision 的故障路径，绝不走联络员。
 - activation 尾部扫描也会补开 episode：Member 的标记收尾停止若发生在 Host 离线期间（同样以六小时窗口计为近期，且没有已在处理它的待投递 direct 工作），恢复后的第一趟 pass 仍会补上这次 report check——部署重启不会让静止未汇报的 Member 悄悄脱离策略。宽限从停止时刻计，TTL 从联络员知晓时刻计。
+- 输出截断升级（`truncation-escalation.ts`）负责 provider 强制的停止形态：turn 以每请求输出 token 上限（`max-tokens` 停止原因）截尾时，Member 的回答被截断但保留在其 Session 里；guard 的环内提示很可能为重跑同一条超长回答烧尽——此后 Member 就保持停止，正是 Web 端提示 Human「发送继续」的那种局面。此时 Host 不代替团队决策：对 Member 所在的每个 Workspace，以 Human 口吻在其指定负责人（`member.leader`，须为 Member 之外）的渠道发一条升级提醒，经普通 Inbox 路径唤醒负责人裁决——让该 Member 分块续作（写入文件、分段发布，避免再次触顶）、把未竟工作改派他人，或留其停止等待 Human。
+- 升级按 (Member, Workspace) 十分钟闩一次：窗口内的再次截断是同一个未决局面，不再重复提醒；以「任务结束」标记收尾的干净停止结束 episode，下一次截断重新升级；没有合格负责人的 Member 每 episode 只记一次日志。闩为进程内，每条提醒都是普通 ledger Message；有意地，activation 尾部扫描不补发跨重启的截断升级——被截断的 Session 恢复后保持安静，直到该 Member 再次运转。
 - watcher 的 open 集合止于 `in_review`：Claims 全部完成的任务在等 Human 验收，这不是要提醒已停止 Agent 的工作，因此只剩这类任务的 Workspace 永不触发——Human 任务列表仍将其显示为进行中。
 - 随后替补在其继承的每个 Channel 各发一条不含 Task 的交接公告，逐条点名被释放的 Claim，并用显式 recipients 直接触达所有存活的其他 Member（包括 `@human` 管理员），让团队知道谁顶替了谁——以及替补继承了前任的设置与私有记忆——管理员则通过 ordinary Task routing 重新派工。计数器与观察名单是进程内的——重启即重新挣回预算，与压力策略同构——而一切 durable 结果都是 ledger operation，因此交接中途崩溃只会按正常台账重放，绝不会留下半真半假的 Team 事实。
 
