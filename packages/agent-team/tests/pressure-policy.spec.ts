@@ -3,7 +3,19 @@ import { createUserMessage } from '@deepseek-ai/dsh-llm'
 import { CONTEXT_WINDOW_EXCEEDED_CODE } from '@deepseek-ai/dsh-llm'
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import type { CompactionEngine, CompactionResult } from '@deepseek-ai/dsh-compaction'
-import { contextPressureNoticeText, CONTEXT_PRESSURE_NOTICE_SUMMARY, isPressureRequestBlockDiagnostic, PRESSURE_NOTICE_FOLD, PressurePolicyCoordinator } from '../src/pressure-policy.ts'
+import {
+  contextPressureMandateText,
+  contextPressureNoticeText,
+  CONTEXT_PRESSURE_ENFORCE_AFTER_STEPS,
+  CONTEXT_PRESSURE_MANDATE_AFTER_STEPS,
+  CONTEXT_PRESSURE_MANDATE_SUMMARY,
+  CONTEXT_PRESSURE_NOTICE_SUMMARY,
+  isContextCapacityFailureDiagnostic,
+  isPressureRequestBlockDiagnostic,
+  PRESSURE_MANDATE_FOLD,
+  PRESSURE_NOTICE_FOLD,
+  PressurePolicyCoordinator,
+} from '../src/pressure-policy.ts'
 import { AGENT_TEAM_PLUGIN_ID } from '../src/context-source.ts'
 import { advanceSessionEventCursor, initSessionEventCursor } from '../src/session-event-cursor.ts'
 
@@ -75,6 +87,7 @@ function coordinator(options?: {
   readonly limits?: { usageTokens: number; hardLimit: number; handoffAt: number } | undefined
   readonly failures?: string[]
   readonly healed?: string[]
+  readonly escalations?: string[]
   readonly steered?: unknown[]
 }): { policy: PressurePolicyCoordinator; engine: ReturnType<typeof fakeEngine>; steered: unknown[] } {
   const engine = fakeEngine(options?.engineBehavior ?? 'advance')
@@ -88,6 +101,7 @@ function coordinator(options?: {
     runningJobLabels: () => [],
     failed: (_memberId, _sessionId, diagnostic) => { options?.failures?.push(diagnostic) },
     healed: memberId => { options?.healed?.push(memberId) },
+    escalate: (_memberId, diagnostic) => { options?.escalations?.push(diagnostic) },
     log: () => {},
   })
   return { policy, engine, steered: steered as unknown[] }
@@ -141,6 +155,118 @@ describe('Agent Team pressure policy (ticket 03)', () => {
     const fresh = await second.policy.onPreStep(agent, new AbortController().signal)
     expect(fresh.kind).toBe('notice')
     expect(steer.messages).toHaveLength(2)
+  })
+
+  it('the notice binds the Member to a reduction and names the consequence', async () => {
+    const { policy } = coordinator({ limits: { usageTokens: 200_000, hardLimit: 256_000, handoffAt: 200_000 } })
+    const { agent, steer } = fakeAgent({ tokens: 200_000 })
+    await policy.onPreStep(agent, new AbortController().signal)
+    const text = (steer.messages[0] as { content: { text: string }[] }).content[0]!.text
+    expect(text).toContain('binding')
+    expect(text).toContain('private memory')
+    expect(text).toContain('context_rollover')
+    expect(text).toContain('the Host acts on the context itself')
+  })
+
+  it('steps that ignore the notice spend an allowance and then earn one order', async () => {
+    const escalations: string[] = []
+    const { policy } = coordinator({ limits: { usageTokens: 210_000, hardLimit: 256_000, handoffAt: 200_000 }, escalations })
+    const { agent, steer } = fakeAgent({ tokens: 210_000 })
+    await policy.onPreStep(agent, new AbortController().signal)
+    expect(steer.messages).toHaveLength(1)
+    // The allowance: the atomic action the notice told the Member to finish,
+    // plus its memory write and its own reduction call.
+    for (let step = 0; step < CONTEXT_PRESSURE_MANDATE_AFTER_STEPS; step += 1) {
+      expect((await policy.onPreStep(agent, new AbortController().signal)).kind).toBe('continue')
+    }
+    expect(steer.messages).toHaveLength(1)
+    // Past it, the advice becomes an order carrying its own durable marker.
+    expect((await policy.onPreStep(agent, new AbortController().signal)).kind).toBe('notice')
+    const order = steer.messages[1] as { source?: { summary?: string }; content: { text: string }[] }
+    expect(order.source?.summary).toBe(CONTEXT_PRESSURE_MANDATE_SUMMARY)
+    expect(order.content[0]!.text).toContain('private memory')
+    expect(order.content[0]!.text).toContain('context_rollover')
+    expect(order.content[0]!.text).toContain('retired in favor of a fresh generation')
+    // The order is once per generation too, and nothing has been escalated yet.
+    expect((await policy.onPreStep(agent, new AbortController().signal)).kind).toBe('continue')
+    expect(steer.messages).toHaveLength(2)
+    expect(escalations).toEqual([])
+  })
+
+  it('a second order earns its own allowance and the Host reduces the context for the Member', async () => {
+    const escalations: string[] = []
+    const { policy, engine } = coordinator({ engineBehavior: 'advance', limits: { usageTokens: 210_000, hardLimit: 256_000, handoffAt: 200_000 }, escalations })
+    const { agent, steer, usage } = fakeAgent({ tokens: 210_000 })
+    for (let step = 0; step <= CONTEXT_PRESSURE_ENFORCE_AFTER_STEPS; step += 1) {
+      await policy.onPreStep(agent, new AbortController().signal)
+    }
+    expect(steer.messages).toHaveLength(2)
+    // Past the order's allowance the Host runs the reduction the Member refused.
+    const decision = await policy.onPreStep(agent, new AbortController().signal)
+    expect(decision.kind).toBe('continue')
+    expect(engine.calls).toEqual(['pressure'])
+    expect(usage.totalTokens).toBeLessThan(200_000)
+    expect(escalations).toEqual([])
+  })
+
+  it('a reduction that cannot prove the budget is met blocks the request and opens the reset chain', async () => {
+    const failures: string[] = []
+    const escalations: string[] = []
+    const { policy, engine } = coordinator({ engineBehavior: 'noop', limits: { usageTokens: 210_000, hardLimit: 256_000, handoffAt: 200_000 }, failures, escalations })
+    const { agent } = fakeAgent({ tokens: 210_000 })
+    for (let step = 0; step <= CONTEXT_PRESSURE_ENFORCE_AFTER_STEPS; step += 1) {
+      await policy.onPreStep(agent, new AbortController().signal)
+    }
+    expect((await policy.onPreStep(agent, new AbortController().signal)).kind).toBe('reject')
+    expect(engine.calls).toEqual(['pressure'])
+    expect(failures).toHaveLength(1)
+    // The recorded block is the class the supervision chain treats as a stop no
+    // bring-up nudge can heal, and the policy hands it over on the spot.
+    expect(isPressureRequestBlockDiagnostic(failures[0]!)).toBe(true)
+    expect(escalations).toEqual(failures)
+    // A further step spends nothing more: one forced reduction per episode.
+    failures.length = 0
+    engine.calls.length = 0
+    expect((await policy.onPreStep(agent, new AbortController().signal)).kind).toBe('reject')
+    expect(engine.calls).toEqual([])
+    expect(failures).toHaveLength(1)
+  })
+
+  it('a lane whose proxy owns compression is left to that route', async () => {
+    const escalations: string[] = []
+    const failures: string[] = []
+    const engine = {
+      calls: [] as string[],
+      compactIfNeeded: async () => {
+        engine.calls.push('pressure')
+        throw new Error('422: {"code":"dsh_compaction_refused","message":"dsh native compaction call refused: the proxy owns compression on this lane"}')
+      },
+      compactNow: async () => null,
+      compactRegion: async () => { throw new Error('unused') },
+    }
+    const policy = new PressurePolicyCoordinator({
+      agentForMember: () => undefined,
+      memberForAgent: agent => ({ memberId: 'member:test' as never, sessionId: agent.id }),
+      compactionForAgent: () => engine as unknown as CompactionEngine,
+      limitsForAgent: () => ({ usageTokens: 210_000, hardLimit: 256_000, handoffAt: 200_000 }),
+      activeClaimLabels: () => [],
+      runningJobLabels: () => [],
+      failed: (_memberId, _sessionId, diagnostic) => { failures.push(diagnostic) },
+      escalate: (_memberId, diagnostic) => { escalations.push(diagnostic) },
+      log: () => {},
+    })
+    const { agent } = fakeAgent({ tokens: 210_000 })
+    for (let step = 0; step <= CONTEXT_PRESSURE_ENFORCE_AFTER_STEPS; step += 1) {
+      await policy.onPreStep(agent, new AbortController().signal)
+    }
+    expect((await policy.onPreStep(agent, new AbortController().signal)).kind).toBe('continue')
+    expect(engine.calls).toEqual(['pressure'])
+    expect(escalations).toEqual([])
+    expect(failures).toEqual([])
+    // Marked as a proxy lane, so the Host stops trying to rewrite it every episode.
+    engine.calls.length = 0
+    await policy.onPreStep(agent, new AbortController().signal)
+    expect(engine.calls).toEqual([])
   })
 
   it('at the hard limit the request is forced through compaction and proven below the limit before continuing', async () => {
@@ -364,6 +490,59 @@ describe('Agent Team pressure policy (ticket 03)', () => {
     // generation.
     const queued = advanceSessionEventCursor(initSessionEventCursor(PRESSURE_NOTICE_FOLD), [plain, spliced] as never, 0, 2, PRESSURE_NOTICE_FOLD)
     expect(queued.value).toBe(true)
+  })
+
+  it('the order fold reads only its own marker, never the advice it followed', () => {
+    const advice = { type: 'user/message', seq: 0, data: { source: { kind: AGENT_TEAM_PLUGIN_ID, form: 'notice', summary: CONTEXT_PRESSURE_NOTICE_SUMMARY } } }
+    const order = { type: 'user/message', seq: 1, data: { source: { kind: AGENT_TEAM_PLUGIN_ID, form: 'notice', summary: CONTEXT_PRESSURE_MANDATE_SUMMARY } } }
+    const cold = (events: readonly unknown[]): boolean => events.reduce<boolean>((state, event) => PRESSURE_MANDATE_FOLD.step(state, event as never), PRESSURE_MANDATE_FOLD.start)
+    expect(cold([advice])).toBe(false)
+    expect(cold([advice, order])).toBe(true)
+    const advanced = advanceSessionEventCursor(initSessionEventCursor(PRESSURE_MANDATE_FOLD), [advice, order] as never, 0, 2, PRESSURE_MANDATE_FOLD)
+    expect(advanced.value).toBe(true)
+    expect(advanced.foldedThrough).toBe(2)
+  })
+
+  it('a dip back under the budget re-arms the allowance before the Host intervenes', async () => {
+    const escalations: string[] = []
+    const limits = { usageTokens: 210_000, hardLimit: 256_000, handoffAt: 200_000 }
+    const { policy, engine } = coordinator({ engineBehavior: 'advance', limits, escalations })
+    const { agent } = fakeAgent({ tokens: 210_000 })
+    for (let step = 0; step <= CONTEXT_PRESSURE_ENFORCE_AFTER_STEPS; step += 1) {
+      await policy.onPreStep(agent, new AbortController().signal)
+    }
+    expect(engine.calls).toEqual([])
+    // The Member came back under the budget: the episode is over, and the next
+    // crossing re-earns a whole allowance instead of being reduced at once.
+    limits.usageTokens = 150_000
+    expect((await policy.onPreStep(agent, new AbortController().signal)).kind).toBe('continue')
+    limits.usageTokens = 210_000
+    for (let step = 0; step < CONTEXT_PRESSURE_ENFORCE_AFTER_STEPS; step += 1) {
+      expect((await policy.onPreStep(agent, new AbortController().signal)).kind).toBe('continue')
+    }
+    expect(engine.calls).toEqual([])
+    expect((await policy.onPreStep(agent, new AbortController().signal)).kind).toBe('continue')
+    expect(engine.calls).toEqual(['pressure'])
+    expect(escalations).toEqual([])
+  })
+
+  it('classifies a context that no longer fits its route, and nothing else', () => {
+    expect(isContextCapacityFailureDiagnostic('502: {"code":"preflight_compress_failed","message":"context ~127173 tokens exceeds the model window 112500"}')).toBe(true)
+    expect(isContextCapacityFailureDiagnostic('context ~105899 tokens exceeds the model window 112500')).toBe(true)
+    expect(isContextCapacityFailureDiagnostic('context window exceeded for provider tensorfold')).toBe(true)
+    expect(isContextCapacityFailureDiagnostic('manual context compaction failed: engine failure')).toBe(false)
+    expect(isContextCapacityFailureDiagnostic('fetch failed')).toBe(false)
+  })
+
+  it('the order text commands both duties and states the reset', () => {
+    const text = contextPressureMandateText({ usageTokens: 210_000, handoffAt: 200_000, hardLimit: 256_000, activeClaims: ['claim:a (unify forms)'], runningJobs: ['build'] })
+    expect(text).toContain('210000')
+    expect(text).toContain('200000')
+    expect(text).toContain('claim:a (unify forms)')
+    expect(text).toContain('1 running')
+    expect(text).toContain('private memory')
+    expect(text).toContain('context_rollover')
+    expect(text).toContain('fresh generation')
   })
 
   it('the pressure notice text stays concise and covers limits, claims, jobs, and the default action', () => {

@@ -4847,6 +4847,34 @@ describe('Member supervision handover', () => {
     expect(() => ctx.agentTeam.validateLedger()).not.toThrow()
   })
 
+  it('resets a Member whose provider keeps refusing an oversized context, instead of nudging it on', async () => {
+    const { ctx, workspaceId } = await realHarness()
+    const { added, memberId, agent, taskRef } = await setupClaimedMember(ctx, workspaceId, 'supervise-oversize')
+
+    // The dev-judy shape: the route's own preflight compression cannot bring the
+    // context back under the model window, so every turn ends with the same
+    // refusal and no Team-side budget ever sees it. One such failure may still be
+    // cleared by a route change, so it keeps its gentle bring-up; the second,
+    // with no clean turn in between, proves the nudge only re-pays for the same
+    // rejected request — and the Host replaces the context instead of asking
+    // the Member to try that oversized context again.
+    ctx.emit('agent/error', { agent, turn: 1, step: 1, error: new Error('context ~105899 tokens exceeds the model window 112500 (model=Qwen3.8-27B), with 0 compressible range(s) still visible') })
+    const previousSessionId = added.status.member.sessionId
+    ctx.emit('agent/error', { agent, turn: 2, step: 1, error: new Error('502: {"type":"server_error","code":"preflight_compress_failed","message":"context ~127173 tokens exceeds the model window 112500; raise the model context window or restart the session"}') })
+
+    await vi.waitFor(() => {
+      const status = ctx.agentTeam.members().find(status => status.member.memberId === memberId)
+      expect(status!.member.sessionId).not.toBe(previousSessionId)
+      expect(status).toMatchObject({ availability: 'active' })
+    })
+    // A reset, not a handover: nothing was broadcast, the roster is unchanged,
+    // and the claimed Task stays with the same Member in its fresh generation.
+    expect(ctx.agentTeam.view({ workspaceId }).items.map(item => item.message).filter(message => message.body.includes('Supervision'))).toHaveLength(0)
+    expect(ctx.agentTeam.members().map(status => status.member.handle)).toEqual(['builder'])
+    expect(ctx.agentTeam.view({ workspaceId }).tasks.find(task => task.taskRef === taskRef)).toMatchObject({ status: 'in_progress' })
+    expect(() => ctx.agentTeam.validateLedger()).not.toThrow()
+  })
+
   it('broadcasts the handover on every inherited Channel and mentions every live fellow Member', async () => {
     const { ctx, workspaceId, presets } = await realHarness()
     const { channel, added, memberId } = await setupClaimedMember(ctx, workspaceId, 'supervise-wide')

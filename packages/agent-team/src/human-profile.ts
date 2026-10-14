@@ -57,15 +57,25 @@ export const HUMAN_PROFILE_VERSION = bundleVersionOf(readInstalledManifest())
 
 /**
  * Schemastery schema of the Human profile: the Team Host row's Config. Both
- * fields are volatile, which is what lets an edit reach the running Host
- * without remounting it — and what makes the settings service derive a form
- * from this schema at all.
+ * profile fields are volatile, which is what lets an edit reach the running
+ * Host without remounting it — and what makes the settings service derive a
+ * form from this schema at all.
  */
 export const HUMAN_PROFILE_SETTINGS_SCHEMA = z.object({
   name: z.string().default(HUMAN_PROFILE_DEFAULT_NAME).volatile(),
   // Schemastery fields are optional unless `.required()`: a missing avatarRef
   // simply resolves absent, which the profile reads as "no custom avatar".
   avatarRef: z.string().volatile(),
+  /**
+   * Not a profile field: the directory holding the shared SQLite ledger file,
+   * where the Host claims its single-writer lock (see ledger-fence.ts).
+   * Composition input shipped on the Host row beside the SQLite route; a Host
+   * that was never told it (test harnesses, non-file media) simply runs
+   * unfenced. Static by design — the medium's location is fixed at boot.
+   * The row is presentation-owned (`auto: false`), so this field never
+   * renders as a settings control.
+   */
+  ledgerDirectory: z.string(),
 })
 
 /** Normalize one candidate display name the way Member handles normalize. */

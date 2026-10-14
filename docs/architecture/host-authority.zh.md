@@ -10,12 +10,17 @@ Team 是每个 DSH home 内唯一的协作域。append-only operation ledger 是
 - mutation 进入 Host authority，并提交一条 durable operation。
 - Projections、Inbox results、tools、commands、Remote responses 和 UI 都从已提交的 operations 派生。
 - Client code 不得解释 ledger records，也不得创建 parallel authority。
+- 每份 ledger 文件只有一个写入者，由 Team 层强制（`ledger-fence.ts`）：sequence 号来自 Host 进程内的 replay 计数，而 Harness storage domain 明确声明跨进程写协调不在其职责内——两个活跃 ledger 共享一个介质就会交错写入、分叉 operation chain，且要到下一次 replay 校验才 fail-closed 检出。
+- 若 Host 的 composition config 给出了共享 SQLite ledger 目录（`ledgerDirectory`，随 SQLite 路由一起 ship 在 Host 行上），挂载时就在该目录抢占一把锁（后 claim 者胜，合法 remount 永远不会被它正要替换的旧实例挡住）；此前每个持有者——同进程的 patch-reload 残留实例或其他 Host 进程——会在下一次 ledger 调用时失败、自行闭锁为 superseded，并从此不再提交。从未被告知该目录的 Host（memory 后端的测试 harness）不加围栏，也不碰 DSH home 里的任何东西；围栏只把双写窗口收窄到一次在途 commit，不能替代 Harness 并不提供的 storage 层 compare-and-swap。
 
 ## Lifecycle 与通知
 - Agent lifecycle、JSON/SQLite replay、authorization、idempotency 和 revision checks 都留在 Host 侧。durable unread 变化可以通过 public Agent safe-boundary API 产生一条有界、合并后的 Agent context notification：direct mentions 携带其 Message 和 source，Task/Claim Activities 携带简要状态变化，ordinary unread 只携带不含正文的 Thread-first route（若存在则带 Task overlay）。Promotion 与其他 Task transition 一样是 Task activity，通过 Activity markers 到达 followers。这类 notification 不是第二权威，也不保证模型恰好处理一次。
-- Member supervision（`supervisor.ts`）是 `recovery.ts` 之后的自动兜底。巡查每十分钟一趟——只在 startup 的 Member restore 落定后才挂上定时器，冷 Session 不会被误读为停止——观察对象是所有 enabled Members。Agent 活着且 turn 仍可能推进时读作 settling（活着但闲置且持有未竟 Claim 是按设计等待，不被打扰）；不处于 active、携带 error presence、或已运行但超过三十分钟没有任何 durable session event 时读作 stopped。stopped 的 Member 每个 pass 拉起一次、至多三次。
-- 压力策略的请求阻断是 bring-up nudge 唯一治不了的停止形态：当记录的失败是一次被阻断的请求——硬上限压缩失败或被拒绝、强制压缩预算已耗尽、路由容量未知——后续每一轮都会在任何模型调用之前被拒绝，因此 bring-up pass 会识别这类诊断并直接升级进入强制链的重置，而不是把 Member 再次 nudge 进同一个阻断。升级只读取属于 Member 当前 Session 的记录：失败记录绑定其发生的 Session 代际，随代际退役，并在 pre-step 证明压力已降到硬限之下时清除——来自早前代际的阻断、或同一 Session 内路由已自行恢复的阻断，都不会重置一个健康的上下文。
-- 反复失败不再当场替换，而是走强制链：三次 `agent/error` 之间没有任何干净回合结束、或二十分钟滚动窗口内出现三次失败，即开启强制。Host 亲自重置该 Member 的上下文——与 Human 菜单相同的 fresh-context 重置，且只私下提示被重置的 Member 本人；不再向团队发告警求援，重置消息也不进任何 Channel。归档与换代交接（下述）是最后手段，只在后续 pass 仍读出异常时才推进。任一时刻重新读作 healthy 都会结束强制链，被治好的 Member 重新武装温和的 bring-up。
+- Member supervision（`supervisor.ts`）是 `recovery.ts` 之后的自动兜底。每十分钟一趟 tick——只在 startup 的 Member restore 落定后才挂上定时器，冷 Session 不会被误读为停止——观察对象是所有 enabled Members。一趟 tick 先推进 Host 手上未结束的强制链（重试那次没有落地的重置，随后交接给重置也没治好的 Member），再执行拉起 pass，因此已开启的强制链不会卡住、退化成无休止的「继续」提示。
+- Agent 活着且 turn 仍可能推进时读作 settling（活着但闲置且持有未竟 Claim 是按设计等待，不被打扰）；不处于 active、携带 error presence、或已运行但超过三十分钟没有任何 durable session event 时读作 stopped。尚未被强制链接管的 stopped Member 每个 pass 拉起一次、至多三次；已被强制链接管的 Member 留给该链，因为 nudge 只会让它一直跑过那一步等待的 turn boundary。
+- 「上下文已经装不进这条路由」是 bring-up nudge 治不了的停止形态，记录下来的失败会以两种口吻说出同一件事：压力策略自己的请求阻断（硬上限压缩失败或被拒绝、强制压缩预算已耗尽、路由容量未知、被下令压缩却既没执行也无法由 Host 证明完成），此时后续每一轮都会在任何模型调用之前被拒绝；或者 provider 自己的拒绝（超出模型窗口、或路由的前置压缩无法把请求压回窗口内）。
+- 阻断记录绑定 Member 当前的 Session，并在 pre-step 证明压力已降到硬限之下时清除——来自早前代际的阻断、或同一 Session 内路由已自行恢复的阻断，都不会重置一个健康的上下文。
+- 反复失败不再当场替换，而是走强制链：三次 `agent/error` 之间没有任何干净回合结束、二十分钟滚动窗口内出现三次失败、或连续两次失败都指向上下文超限，即开启强制——最后一种在拉起预算耗尽之前就触发，因为 nudge 只会把刚被拒绝的那份上下文再发一遍。
+- 强制链的第一步是 Host 亲自重置该 Member 的上下文——与 Human 菜单相同的 fresh-context 重置，只私下提示被重置的 Member 本人，不进任何 Channel。归档与换代交接（下述）是最后手段，只在后续 tick 仍读出异常时才推进。任一时刻重新读作 healthy 都会结束强制链，被治好的 Member 重新武装温和的 bring-up。
 - 每一轮完成的模型请求都要通过返回结果检查：一轮在结束时既没有工具调用也没有可见文本——或文本没有以「任务结束」完成标记收尾（标记之后跟随的标点或装饰字符仍被宽容接受）——即视为一轮故障，Host 会投递一条 `continue` 提示让 Member 继续执行：仍在进行中的轮次用 steer 插入，否则开启下一轮。连续三次提示后熔断，任何健康的一轮（出现工具调用或以标记收尾）都会重置 episode；该提示在 context projection 中始终按纯提醒处理。
 - guard 同时管辖停止边界：turn 以 `completed` 结束而末轮呈故障形态时——即使环内提示预算已经熔断——Host 会按 per-Member 冷却在停止边界补发一次停止提醒，并为该提醒开启的新一轮重新武装提示预算。被中断的轮次、用户中止与 error 停止是人为或 Host 事件而非模型故障——停止 lane 保持安静，等下一轮。
 - activation 会对持久化 Member 的 Session 日志做尾部扫描：近期一次未被提醒过的故障停止（六小时窗口内、且 Inbox 无待投递的 direct 工作）会补上停止提醒，而不是让中途停下的 Member 静默闲置。
@@ -50,6 +55,8 @@ Team 是每个 DSH home 内唯一的协作域。append-only operation ledger 是
 - Team 管理的 Agent sessions 使用显式 Team preset 和可信的 `danger-full-access` policy，这是面向可信 Workspace 的有意产品边界。
 - Host 激活 Member 时，会通过 session-title service 用其 handle 命名没有标题的 Member session，使普通 Session list 显示 Member identity。显式 rename 或任何已有 title 始终优先，命名失败不会导致 activation 失败。
 - 已接受 Task 的自动 compaction 已退役。Member 上下文压力由 Host 压力策略持有（见 Tools and preset）：预算阈值从当前 route 的 context window 派生，handoff 预算每 generation 一条通知，硬上限强制原地 compaction 且只有实测压力被证明降到硬限之下才放行该 step（否则 fail closed，每次恢复链只一次强制压缩），provider context-overflow 获得一条有界 compact-and-retry。Pending/error bookkeeping 只在进程内维护；只有进入 transaction 的 compactions 才会写入 durable Session history，绝不写入 Team ledger。
+- handoff 预算那条通知是命令而不是建议。超出预算的 step 消耗完一份有界额度后，每 generation 下发一条压缩令，要求 Member 先把必须留存的内容写进自己的 private memory、再自行压缩上下文；再耗尽第二份额度时由 Host 代它执行这次压缩。
+- Host 无法证明压回预算之内的上下文会阻断该请求，并当场把 Member 交给 supervision 强制链的 fresh-context 重置。两条通知都是 durable Session marker，重启后回读而不重复下发；直接拒绝 Host 压缩的 route 仍交回它自带的压缩，以及 provider 的超限拒绝。
 
 ## 私有记忆、归档与身份效应
 - `$DSH_HOME/agent-team/members/` 下的 private-memory directories 是 Member identity 的 Host-owned effects，不是第二权威。Member activation 确保 private-memory directory、`notes/` 和缺失的 `memory.md` 存在；startup 不会清理 ledger 不知道的 `member:` directories。显式 Member removal 会归档其 Session 并移除该 Member 的 private-memory directory；Team removal path 之外的 entries 保持不动。这项删除与 activation 时对旧式 colon 目录的改名都限定在当前进程自己的 members root 之内——记录里的 `privateMemoryPath` 是一条 durable 绝对事实，指向「当初添加该 Member 的那个 DSH home」里的目录；因此解析到另一个 home 的进程会拒绝搬移或删除它（并告警），而不是把 Member 的真实私有记忆搬出它自己的 home。

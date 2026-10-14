@@ -39,6 +39,7 @@ import { createTeamContextManagement, TEAM_CONTEXT_CODEC } from './context-conti
 import { AGENT_TEAM_PLUGIN_ID, isAgentTeamSource } from './context-source.ts'
 import { boundaryByRef, carriedInputOf, checkpointByRef, checkpointRefFor, createTeamContextProjectionConfig, createTeamContextProjectionDefinition, foldTeamContextProjection, retainedTopicsThrough, TeamContextProjectionHost } from './context-projection.ts'
 import { AGENT_TEAM_HUMAN_MEMBER_ID, AgentTeamLedger, agentTeamHumanActor, type AgentTeamDurableMemberResult } from './ledger.ts'
+import { LedgerFence, ledgerFenceFor } from './ledger-fence.ts'
 import { AGENT_TEAM_TOOL_NAMES, BUNDLED_SKILLS_DIRECTORY, deepCopyCapabilities, deepCopyPrompt, isProtectedPromptSection, memberMemoryDirectoryName, memberMemoryDirectoryPath, MemberRuntime, promptSectionByteLength, sectionToolMapping } from './member-runtime.ts'
 import { PRUNE_WINDOW_DAYS, PRUNE_WINDOW_TURNS, foldLineageUsage, type UsageFold } from './member-section-usage.ts'
 import { CURATE_MAX_TOKENS, CURATE_TIMEOUT_MS, buildCurateMessages, parseCurateProposal, type CuratePromptInput } from './member-prompt-curation.ts'
@@ -459,15 +460,21 @@ interface PromptSectionProjection {
 }
 
 /**
- * Config of the Team Host row: the Human profile (see human-profile.ts). The
- * settings service derives every form from the owning plugin's Config, so the
- * profile is this plugin's own config rather than a section of its own; both
- * fields arrive volatile, which is what lets an edit reach the running Host
- * without remounting it.
+ * Config of the Team Host row: the Human profile (see human-profile.ts) plus
+ * the composition-only `ledgerDirectory`. The settings service derives every
+ * form from the owning plugin's Config, so the profile is this plugin's own
+ * config rather than a section of its own; both profile fields arrive volatile,
+ * which is what lets an edit reach the running Host without remounting it.
+ * `ledgerDirectory` is static boot input naming the directory that holds the
+ * shared SQLite ledger file, where the Host claims its single-writer lock (see
+ * ledger-fence.ts); a Host never told it (test harnesses, non-file media) runs
+ * unfenced. The row is presentation-owned (`auto: false`), so it renders no
+ * settings control.
  */
 export interface Config {
   name: Volatile<string>
   avatarRef: Volatile<string | undefined>
+  ledgerDirectory?: string
 }
 
 /** Host owner of the single Agent Team in one dshHome. */
@@ -628,6 +635,13 @@ export default class AgentTeam extends TypertRemoteService {
     stateOf: memberId => this.supervisionStateOf(memberId),
     restart: async memberId => { await this.restartMemberUnderSupervision(memberId) },
     replace: async (memberId, trigger, restartAttempts) => { await this.escalateSupervisedMember(memberId, trigger, restartAttempts) },
+    // The periodic tick is the chain's only driver in production: it advances
+    // every open escalation (retrying a reset that never committed, then handing
+    // over a Member the reset did not heal) before any fresh bring-up budget is
+    // spent. A pass that only brought Members up would keep nudging a Member
+    // whose chain had already opened and stalled.
+    advanceEscalations: () => this.advanceSupervisionEscalations(),
+    escalationOpen: memberId => this.supervisionEscalation.has(memberId),
     log: message => { this.ctx.logger.warn(`agent-team: ${message}`) },
   })
   /**
@@ -759,6 +773,15 @@ export default class AgentTeam extends TypertRemoteService {
   })
   private lifecycleTail: Promise<void> = Promise.resolve()
   private accepting = true
+  /**
+   * Single-writer claim on the ledger's file medium, taken in `init` and
+   * released on dispose. A leaked patch-reload survivor of an earlier mount
+   * sees itself superseded here and stops committing before it can fork the
+   * chain; see ledger-fence.ts. Undefined for hosts whose ledger medium is not
+   * the shared SQLite file (memory-backend test harnesses), which own the
+   * ledger in-process and must not touch the DSH home.
+   */
+  private fence: LedgerFence | undefined
   /** One adoption attempt per boot: the two readiness edges fire once each, and this keeps their attempt single. */
   private legacyAdoptionStarted = false
   /**
@@ -841,6 +864,14 @@ export default class AgentTeam extends TypertRemoteService {
       },
       healed: memberId => {
         if (this.clearMemberFailure(memberId, 'compaction')) this.emitAutoCompactionChanged(memberId)
+      },
+      // The policy ran out of gentle means: an ordered reduction the Member did
+      // not run and the Host could not carry out is the supervision chain's
+      // reset, taken on the spot instead of waiting for the next ten-minute pass
+      // to read the block back.
+      escalate: (memberId, diagnostic) => {
+        this.ctx.logger.warn(`agent-team: context pressure policy handing member '${this.memberLabel(memberId)}' to the supervision chain: ${diagnostic}`)
+        this.supervisor.onBlockedStop(memberId)
       },
       compactWithFallback: (agent, memberId, signal) => this.policyCompactWithFallback(memberId, agent, signal),
       log: message => { this.ctx.logger.warn(`agent-team: ${message}`) },
@@ -981,7 +1012,7 @@ export default class AgentTeam extends TypertRemoteService {
       const kind = classifyRecoverableError(message)
       if (kind !== undefined) this.ctx.logger.warn(`agent-team: member '${member.handle}' hit a recoverable ${kind} error; recording a consecutive error occurrence`)
       this.recovery.onError(member.memberId, message)
-      this.supervisor.onError(member.memberId)
+      this.supervisor.onError(member.memberId, message)
       this.emitMemberPresenceChanged(member)
     })
     this.ctx.on('agent/status', ({ agent, status }) => {
@@ -1064,6 +1095,14 @@ export default class AgentTeam extends TypertRemoteService {
       // the projection (not this listener) decides what that means.
       this.contextManagement.onSessionEvent(memberId, handle.agent, event)
     })
+    // Claim the single-writer authority before opening the domain: any older
+    // live ledger for this storage is superseded from here on, and its own
+    // next ledger call fails the fence instead of interleaving a fork.
+    const fenceDirectory = this.ledgerFenceDirectory()
+    if (fenceDirectory !== undefined) {
+      this.fence = ledgerFenceFor(fenceDirectory)
+      await this.fence.claim()
+    }
     const domain = await this.ctx.storageDomain.open(agentTeamDomainSpec)
     this.ctx.effect(() => async () => {
       this.accepting = false
@@ -1090,10 +1129,19 @@ export default class AgentTeam extends TypertRemoteService {
       this.runningAgents.clear()
       this.memberActivity.clear()
       this.supervisionEscalation.clear()
+      await this.fence?.release()
       await domain.close()
     }, 'agentTeam.dispose')
     this.domain = domain
-    const ledger = new AgentTeamLedger(domain.table('operations'))
+    // Supersession is global for this instance, not just a commit refusal:
+    // once the fence answers false, the Remote entry points must fail fast
+    // too, so a leaked old mount stops serving instead of answering reads
+    // from a projection that a newer host has already moved past.
+    const ledger = new AgentTeamLedger(domain.table('operations'), this.fence === undefined ? {} : { ownsAuthority: async () => {
+      const owned = await this.fence!.owns()
+      if (!owned) this.accepting = false
+      return owned
+    } })
     this.ledger = ledger
     // A live Config edit in the constructor's window may have arrived before
     // the ledger existed; sync once here so @ matching starts from the stored
@@ -2703,15 +2751,15 @@ export default class AgentTeam extends TypertRemoteService {
   }
 
   /**
-   * Run one supervision pass now: the periodic timer calls this, and a test or an
-   * operator can drive it directly. Overlapping passes are skipped by the policy,
-   * never queued, so a slow handover cannot pile up more work behind itself.
-   * Open escalation steps advance before the pass's own bring-up budget runs:
-   * the chain keeps moving even while the supervisor keeps trying to heal the
-   * Member it flagged.
+   * Run one supervision tick now: the periodic timer calls this, and a test or an
+   * operator can drive it directly. Open escalation steps advance before the
+   * pass's own bring-up budget runs — the same order the timer uses, so a chain
+   * that stalled on a failed reset is retried here rather than nudged past.
+   * Overlapping ticks are skipped by the policy, never queued, so a slow
+   * handover cannot pile up more work behind itself.
    */
   runSupervisionPass(): Promise<void> {
-    return this.advanceSupervisionEscalations().then(() => this.supervisor.runPass())
+    return this.supervisor.runTick()
   }
 
   /**
@@ -4974,6 +5022,16 @@ export default class AgentTeam extends TypertRemoteService {
 
   private requireAccepting(): void {
     if (!this.accepting) throw new Error('agent-team service is shutting down')
+  }
+
+  /**
+   * The storage directory the composition layer ships beside the SQLite ledger
+   * route (`ledgerDirectory`); undefined means this Host was never given a
+   * shared file medium to fence (a memory-backend test harness owns its ledger
+   * in-process), and it runs unfenced and touches nothing in the DSH home.
+   */
+  private ledgerFenceDirectory(): string | undefined {
+    return this.config.ledgerDirectory
   }
 
   private emitCommitted(receipt: AgentTeamOperationReceipt): void {

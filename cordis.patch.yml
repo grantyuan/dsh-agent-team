@@ -194,6 +194,13 @@
                     tailChars: 1024
         - id: wowyuarm-agent-team-host
           name: '@wowyuarm/dsh-agent-team/host'
+          config:
+            # Where the shared SQLite ledger file lives: the Host claims its
+            # single-writer lock in this directory (see ledger-fence.ts). Keep
+            # this beside the `storage-sqlite` path row below — they name the
+            # same location, and a user-layer patch overriding this row's whole
+            # config must restate it or the Host silently runs unfenced.
+            ledgerDirectory: !!js dshHomePath('storages')
     - id: wowyuarm-agent-team-client
       name: '@wowyuarm/dsh-agent-team'
     # Team-owned ledger divergence guard. Harness retired its runtime invariant

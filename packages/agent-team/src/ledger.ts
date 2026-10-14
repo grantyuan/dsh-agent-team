@@ -149,6 +149,9 @@ export const AGENT_TEAM_HUMAN_MEMBER_ID = 'member:human' as AgentTeamMemberId
  */
 export const AGENT_TEAM_HUMAN_HANDLE = 'human'
 
+/** One superseded-instance failure text: the fence, not the ledger content, refused this call. */
+export const AGENT_TEAM_AUTHORITY_LOST_MESSAGE = 'agent-team ledger lost write authority to a newer host; this instance is superseded and commits nothing further'
+
 /** Idempotency identity of the one Host bootstrap operation. */
 export const AGENT_TEAM_INITIALIZE_REQUEST_ID = 'agent-team:initialize:v1' as AgentTeamRequestId
 
@@ -301,6 +304,14 @@ export interface AgentTeamLedgerOptions {
   readonly operationId?: () => AgentTeamOperationId
   readonly occurredAt?: () => string
   readonly ref?: (kind: 'channel' | 'message' | 'task' | 'thread' | 'claim' | 'activity') => string
+  /**
+   * Single-writer fence (see ledger-fence.ts): consulted before every queued
+   * ledger call. A false answer means another host claimed the ledger's write
+   * authority, so this instance marks itself superseded and refuses further
+   * calls instead of interleaving a fork. Absent means an unfenced ledger,
+   * which is every in-process test and any host that does not wire the fence.
+   */
+  readonly ownsAuthority?: () => Promise<boolean>
 }
 
 /** Internal append result indicating whether this call committed a new record. */
@@ -592,6 +603,10 @@ export class AgentTeamLedger {
    */
   private readonly workspacePositionCache = new Map<WorkspaceId, number>()
 
+  private readonly ownsAuthority: (() => Promise<boolean>) | undefined
+  /** Latched once the fence answers false: later calls fail without re-reading the lock. */
+  private authorityLost = false
+
   constructor(
     private readonly table: KvTable<AgentTeamOperationId, AgentTeamOperation>,
     options: AgentTeamLedgerOptions = {},
@@ -599,6 +614,7 @@ export class AgentTeamLedger {
     this.createOperationId = options.operationId ?? (() => `operation:${randomUUID()}` as AgentTeamOperationId)
     this.createOccurredAt = options.occurredAt ?? (() => new Date().toISOString())
     this.createRef = options.ref ?? (kind => `${kind}:${randomUUID()}`)
+    this.ownsAuthority = options.ownsAuthority
     this.replay()
     const head = this.state.ordered.at(-1)
     this.bootValidation = Object.freeze({
@@ -4965,7 +4981,17 @@ export class AgentTeamLedger {
   }
 
   private enqueue<T>(operation: () => Promise<T>): Promise<T> {
-    const result = this.operationTail.then(operation)
+    const guarded = this.ownsAuthority === undefined
+      ? operation
+      : async () => {
+          if (this.authorityLost) throw new Error(AGENT_TEAM_AUTHORITY_LOST_MESSAGE)
+          if (!(await this.ownsAuthority!())) {
+            this.authorityLost = true
+            throw new Error(AGENT_TEAM_AUTHORITY_LOST_MESSAGE)
+          }
+          return operation()
+        }
+    const result = this.operationTail.then(guarded)
     this.operationTail = result.then(() => {}, () => {})
     return result
   }

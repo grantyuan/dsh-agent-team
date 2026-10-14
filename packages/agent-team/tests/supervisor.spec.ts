@@ -21,6 +21,10 @@ interface HarnessOptions {
   readonly candidates?: readonly AgentTeamMemberId[]
   readonly restartError?: Error
   readonly replaceError?: Error
+  /** Members the coercion chain already owns. */
+  readonly escalationOpen?: readonly AgentTeamMemberId[]
+  /** When set, the escalation-advance hook throws it. */
+  readonly advanceError?: Error
 }
 
 /** A supervisor with scripted Host hooks: every action is recorded, nothing runs. */
@@ -29,8 +33,10 @@ function harness(options: HarnessOptions = {}) {
   const states = new Map<AgentTeamMemberId, MemberSupervisionState>(
     Object.entries(options.states ?? {}).map(([memberId, state]) => [memberId as AgentTeamMemberId, state!]),
   )
+  const opened = new Set<AgentTeamMemberId>(options.escalationOpen ?? [])
   const restarts: AgentTeamMemberId[] = []
   const replacements: Array<{ memberId: AgentTeamMemberId; trigger: SupervisionTrigger; restartAttempts: number }> = []
+  const advances: number[] = []
   const logs: string[] = []
   const supervisor = new MemberSupervisor({
     candidates: () => [...candidates],
@@ -44,9 +50,14 @@ function harness(options: HarnessOptions = {}) {
       replacements.push({ memberId, trigger, restartAttempts })
       candidates.delete(memberId)
     },
+    advanceEscalations: async () => {
+      advances.push(advances.length)
+      if (options.advanceError !== undefined) throw options.advanceError
+    },
+    escalationOpen: memberId => opened.has(memberId),
     log: message => { logs.push(message) },
   })
-  return { supervisor, candidates, states, restarts, replacements, logs }
+  return { supervisor, candidates, states, opened, restarts, replacements, advances, logs }
 }
 
 describe('replacement handle naming', () => {
@@ -261,6 +272,72 @@ describe('MemberSupervisor blocked stops', () => {
     supervisor.onBlockedStop(builder)
     expect(replacements).toEqual([])
   })
+
+  it('escalates a repeated context refusal before the failure streak is spent', () => {
+    const { supervisor, replacements } = harness()
+    supervisor.onError(builder, 'context ~105899 tokens exceeds the model window 112500 (model=Qwen3.8-27B)')
+    supervisor.onError(builder, '502: {"code":"preflight_compress_failed","message":"context ~127173 tokens exceeds the model window 112500"}')
+    expect(replacements).toEqual([{ memberId: builder, trigger: 'context-oversize', restartAttempts: 0 }])
+  })
+
+  it('counts the policy\'s own request block in the same run', () => {
+    const { supervisor, replacements } = harness()
+    supervisor.onError(builder, 'context hard limit reached and the forced-compaction budget for this recovery chain is already spent; the request was blocked')
+    supervisor.onError(builder, 'context pressure policy: the handoff-budget order was not honored and the forced reduction threw: engine failure')
+    expect(replacements).toEqual([{ memberId: builder, trigger: 'context-oversize', restartAttempts: 0 }])
+  })
+
+  it('a clean turn ends the context-refusal run', () => {
+    const { supervisor, replacements } = harness()
+    supervisor.onError(builder, 'context ~105899 tokens exceeds the model window 112500')
+    supervisor.onCleanTurn(builder)
+    supervisor.onError(builder, 'context ~107899 tokens exceeds the model window 112500')
+    expect(replacements).toEqual([])
+  })
+
+  it('an unrelated failure does not feed the context-refusal run', () => {
+    const { supervisor, replacements } = harness()
+    supervisor.onError(builder, 'context ~105899 tokens exceeds the model window 112500')
+    supervisor.onError(builder, 'fetch failed')
+    expect(replacements).toEqual([])
+  })
+})
+
+describe('MemberSupervisor tick', () => {
+  it('advances the Host chain before any bring-up budget is spent', async () => {
+    const { supervisor, advances, restarts } = harness({ states: { [builder]: 'stopped' } })
+    await supervisor.runTick()
+    expect(advances).toHaveLength(1)
+    expect(restarts).toEqual([builder])
+  })
+
+  it('leaves a Member the chain already owns to the chain instead of nudging it', async () => {
+    const { supervisor, states, opened, restarts, advances } = harness({ states: { [builder]: 'stopped' }, escalationOpen: [builder] })
+    await supervisor.runTick()
+    await supervisor.runTick()
+    // The chain drives the Member; the bring-up lane spends nothing on it, so a
+    // stalled chain can no longer turn into an endless stream of continues.
+    expect(advances).toHaveLength(2)
+    expect(restarts).toEqual([])
+    opened.delete(builder)
+    states.set(builder, 'stopped')
+    await supervisor.runTick()
+    expect(restarts).toEqual([builder])
+  })
+
+  it('still runs the bring-up pass when the chain advance throws', async () => {
+    const { supervisor, restarts, logs } = harness({ states: { [builder]: 'stopped' }, advanceError: new Error('ledger is fenced') })
+    await supervisor.runTick()
+    expect(restarts).toEqual([builder])
+    expect(logs.some(log => log.includes('ledger is fenced'))).toBe(true)
+  })
+
+  it('spends no escalation advance on a pass driven directly', async () => {
+    const { supervisor, advances, restarts } = harness({ states: { [builder]: 'stopped' } })
+    await supervisor.runPass()
+    expect(advances).toHaveLength(0)
+    expect(restarts).toEqual([builder])
+  })
 })
 
 describe('MemberSupervisor lifecycle', () => {
@@ -272,13 +349,16 @@ describe('MemberSupervisor lifecycle', () => {
   })
 
   it('arms one interval and disarms on dispose', async () => {
-    const { supervisor, restarts } = harness({ states: { [builder]: 'stopped' } })
+    const { supervisor, restarts, advances } = harness({ states: { [builder]: 'stopped' } })
     supervisor.start()
     supervisor.start()
     expect(vi.getTimerCount()).toBe(1)
 
     await vi.advanceTimersByTimeAsync(SUPERVISION_INTERVAL_MS)
     expect(restarts).toEqual([builder])
+    // The timer drives the whole tick: a pass that only brought Members up would
+    // leave an opened coercion chain stalled and nudge the Member forever.
+    expect(advances).toHaveLength(1)
 
     supervisor.dispose()
     expect(vi.getTimerCount()).toBe(0)
@@ -324,7 +404,7 @@ describe('handover notice', () => {
     expect(body).toContain('- none (its Claims were already released)')
   })
 
-  it('names the context-policy block as the cause when that is what replaced the Member', () => {
+  it('names the oversized context as the cause when that is what replaced the Member', () => {
     const body = supervisionHandoffText({
       failedHandle: 'builder',
       replacementHandle: 'builder-2',
@@ -336,6 +416,7 @@ describe('handover notice', () => {
       maxFailureWindowMs: SUPERVISION_FAILURE_WINDOW_MS,
       releasedClaims: [],
     })
-    expect(body).toContain('`builder` kept having every model request blocked by its own context pressure policy')
+    expect(body).toContain('`builder` could not fit its work into its context any more')
+    expect(body).toContain('by its own context policy or by the provider itself')
   })
 })

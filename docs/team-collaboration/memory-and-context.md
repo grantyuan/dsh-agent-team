@@ -10,7 +10,11 @@ Upkeep craft (what earns a line, the three tiers, compaction and demotion) is ow
 ## Context pressure ownership
 The Host owns Member context pressure end to end.
 
-Two budget thresholds derive from the Member's live routed selection — the selection captured for the current step when it entered prompt assembly, its current selection otherwise — resolved through the LLM service (capped at 200K handoff / 256K hard, with a safety reserve). At the handoff budget the Member receives one structured pressure notice per generation advising a `context_rollover` rollover — repeating is suppressed for that generation and re-armed after a rollover.
+Two budget thresholds derive from the Member's live routed selection — the selection captured for the current step when it entered prompt assembly, its current selection otherwise — resolved through the LLM service (capped at 200K handoff / 256K hard, with a safety reserve). At the handoff budget the Member receives one binding pressure notice per generation: persist what must outlive the context into private memory, then reduce it (`context_rollover`, or the route's own compression). Repeating is suppressed for that generation and re-armed after a rollover.
+
+A Member that keeps stepping above the handoff budget then receives one reduction order per generation, and past that order's own allowance the Host runs the reduction on its behalf. A context the Host cannot prove back under the budget blocks the request and is handed to the supervision chain's fresh-context reset: the Member keeps its identity, private memory, and Channels, and re-orients from them.
+
+A route that refuses Host compaction outright is left to its own compression, and there it is the provider that names an oversized context — which supervision treats as a stop no continue nudge can heal.
 
 At the hard limit the Host forces an in-place compaction before the next model request is forwarded, and releases the step only when the measured pressure is provably below the hard limit — an unmeasurable or still over-limit compaction fails closed, the step being rejected rather than submitted over the Team limit. One forced compaction is budgeted per recovery chain, re-armed only by a clean model response or a reading below the limit, so a context that will not shrink stops paying for repeated per-step rewrites that bust the provider prompt cache.
 

@@ -107,6 +107,9 @@ describe('Agent Team shipping contract', () => {
     // colliding id inside an insert list would duplicate the shipped row and
     // fail the boot sweep.
     expect(patch).toContain("name: '@wowyuarm/dsh-agent-team/sqlite-backend'")
+    // The single-writer fence's home ships on the Host row beside the SQLite
+    // route: without this wiring the production Host would run unfenced.
+    expect(patch).toContain('ledgerDirectory: !!js dshHomePath(\'storages\')')
     // The old host-package row must stay gone: re-adding it reintroduces the
     // Desktop boot block this vendoring exists to fix (GitHub issue #28).
     expect(patch).not.toContain('@deepseek-ai/dsh-storage-sqlite')
@@ -136,13 +139,16 @@ describe('Agent Team shipping contract', () => {
     expect(scopeStart).toBeGreaterThanOrEqual(0)
     expect(scopeEnd).toBeGreaterThan(scopeStart)
     expect(patch.slice(scopeStart, scopeEnd)).toMatch(new RegExp(`^ {8}- id: ${HUMAN_PROFILE_SETTINGS_NAMESPACE}$`, 'm'))
-    // The composition mounts it as that group's nested row, with no `config`
-    // of its own: the schema defaults are the profile until the Human edits it.
+    // The composition mounts it as that group's nested row. Its only own
+    // config field is the fence's `ledgerDirectory` — the shared SQLite ledger
+    // directory, shipped beside the `storage-sqlite` path row and naming the
+    // same location (see ledger-fence.ts). The profile itself rides schema
+    // defaults until the Human edits it.
     const scopeGroup = composed.find(entry => entry.id === 'wowyuarm-agent-team-scope')
     const nestedRows = (Array.isArray(scopeGroup?.config) ? scopeGroup.config : []) as { id?: string; name?: string; config?: unknown }[]
     const hostRow = nestedRows.find(entry => entry.id === HUMAN_PROFILE_SETTINGS_NAMESPACE)
     expect(hostRow?.name).toBe('@wowyuarm/dsh-agent-team/host')
-    expect(hostRow?.config).toBeUndefined()
+    expect(hostRow?.config).toEqual({ ledgerDirectory: { __jsExpr: "dshHomePath('storages')" } })
     // Both fields must be volatile: rc.1 derives one settings form per ACTIVE
     // plugin instance from that instance's Config schema, and a non-volatile
     // field yields no form at all while a write to it throws. This is the

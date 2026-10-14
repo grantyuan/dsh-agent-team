@@ -16,9 +16,14 @@
  *   no clean turn end between them, or {@link SUPERVISION_WINDOW_FAILURES}
  *   occurrences inside {@link SUPERVISION_FAILURE_WINDOW_MS} however separated,
  *   prove it cannot make progress even while it runs;
+ * - {@link SUPERVISION_MAX_CONTEXT_FAILURES} occurrences in a row whose
+ *   diagnostic names an oversized context prove it sooner, because the next
+ *   turn re-sends the very context the refusal rejected;
  * - a stopped Member whose failure signature proves the bring-up nudge futile
- *   — its own context policy refusing every model request — skips the nudge
- *   and enters the chain on the spot via {@link onBlockedStop}.
+ *   — its context no longer fits the route, either because its own context
+ *   policy refuses every model request or because the provider reported a
+ *   context-window or preflight-compression failure — skips the nudge and
+ *   enters the chain on the spot via {@link onBlockedStop}.
  *
  * Once proven, the Host resets the Member's context itself — the same
  * fresh-context renewal the Human menu performs, privately noticed to the
@@ -29,6 +34,13 @@
  * the failed Member's role, private memory, and Channel reach — never its
  * Session log — and asks the Human admin in Channel to reassign the released
  * work.
+ *
+ * The chain is driven by {@link MemberSupervisor.runTick}, which the periodic
+ * pass runs: the Host's open escalations advance first, so a reset that never
+ * committed is retried and a reset that did not heal reaches the handover, and
+ * a Member the chain already owns is left to it instead of being spent more
+ * bring-up nudges. A pass that only ran the bring-up budget would keep waking a
+ * Member whose chain had stalled — nudges that change nothing, forever.
  *
  * "Abnormally stopped" is deliberately the dead-or-erroring shape, not the
  * merely-unproductive one: `unavailable` (no live Session, failed activation) or
@@ -44,6 +56,7 @@
  */
 
 import type { AgentTeamMemberId } from './types.ts'
+import { isContextCapacityFailureDiagnostic, isPressureRequestBlockDiagnostic } from './pressure-policy.ts'
 
 /** How often one supervision pass runs once the Host has restored its Members. */
 export const SUPERVISION_INTERVAL_MS = 10 * 60 * 1000
@@ -65,6 +78,18 @@ export const SUPERVISION_WINDOW_FAILURES = 3
 
 /** The rolling window {@link SUPERVISION_WINDOW_FAILURES} failures are counted in. */
 export const SUPERVISION_FAILURE_WINDOW_MS = 20 * 60 * 1000
+
+/**
+ * Consecutive `agent/error` occurrences whose diagnostic says the context no
+ * longer fits its route (a Team-side request block or a provider context-window
+ * or preflight-compression failure) that end the bring-up lane: one of them may
+ * still be cleared by a route change or a reduction the Member runs itself, so
+ * the first keeps its gentle nudge, and the second — the same wall met again
+ * with no clean turn in between — goes straight to the coercion chain's reset.
+ * A member that keeps being nudged into an oversized context only re-pays for
+ * the same failing request.
+ */
+export const SUPERVISION_MAX_CONTEXT_FAILURES = 2
 
 /**
  * A Member whose Agent has been running with no durable Session event for this
@@ -100,6 +125,19 @@ export interface SupervisorOptions {
    * verbatim.
    */
   readonly replace: (memberId: AgentTeamMemberId, trigger: SupervisionTrigger, restartAttempts: number) => Promise<void>
+  /**
+   * Advance the Host's open coercion chains, run by {@link MemberSupervisor.runTick}
+   * ahead of every periodic bring-up pass: a reset that never committed retries
+   * here, and a reset that did not heal becomes the handover. Absent, the tick
+   * degenerates to the bring-up pass alone (a policy-only harness).
+   */
+  readonly advanceEscalations?: () => Promise<void>
+  /**
+   * Whether the coercion chain already owns this Member. While it does, the
+   * pass spends no bring-up nudge: the chain's own step is the remedy, and a
+   * nudge only keeps the Member running past the boundary that step waits on.
+   */
+  readonly escalationOpen?: (memberId: AgentTeamMemberId) => boolean
   /** Log one coordinator diagnostic. */
   readonly log: (message: string) => void
   readonly intervalMs?: number
@@ -107,11 +145,17 @@ export interface SupervisorOptions {
   readonly maxConsecutiveFailures?: number
   readonly windowFailures?: number
   readonly failureWindowMs?: number
+  readonly maxContextFailures?: number
 }
 
 interface WatchedMember {
   restartAttempts: number
   consecutiveFailures: number
+  /**
+   * Consecutive failures whose diagnostic names an oversized context — a Team
+   * request block or a provider capacity refusal — since the last clean turn.
+   */
+  contextFailures: number
   /** Timestamps of recent `agent/error` occurrences, pruned to the rolling window. */
   failureTimes: number[]
 }
@@ -123,8 +167,11 @@ export class MemberSupervisor {
   private readonly maxConsecutiveFailures: number
   private readonly windowFailures: number
   private readonly failureWindowMs: number
+  private readonly maxContextFailures: number
   private timer: ReturnType<typeof setInterval> | undefined
   private passRunning = false
+  /** Serializes the whole periodic tick (escalation advance plus bring-up pass). */
+  private tickRunning = false
   private disposed = false
 
   constructor(private readonly options: SupervisorOptions) {
@@ -133,12 +180,13 @@ export class MemberSupervisor {
     this.maxConsecutiveFailures = options.maxConsecutiveFailures ?? SUPERVISION_MAX_CONSECUTIVE_FAILURES
     this.windowFailures = options.windowFailures ?? SUPERVISION_WINDOW_FAILURES
     this.failureWindowMs = options.failureWindowMs ?? SUPERVISION_FAILURE_WINDOW_MS
+    this.maxContextFailures = options.maxContextFailures ?? SUPERVISION_MAX_CONTEXT_FAILURES
   }
 
   /** Begin the periodic pass; called once the Host has restored every Member. */
   start(): void {
     if (this.disposed || this.timer !== undefined) return
-    this.timer = setInterval(() => { void this.runPass() }, this.intervalMs)
+    this.timer = setInterval(() => { void this.runTick() }, this.intervalMs)
     this.timer.unref?.()
   }
 
@@ -160,18 +208,33 @@ export class MemberSupervisor {
    * is counted: an erroring Member with no open Claim has nothing to hand
    * over yet, and the pass leaves it to the operator exactly as
    * `recovery.ts` does.
+   *
+   * `diagnostic` is the recorded failure text, which carries its own shorter
+   * route: {@link SUPERVISION_MAX_CONTEXT_FAILURES} occurrences in a row that
+   * name an oversized context escalate on the spot, because a bring-up nudge
+   * re-sends exactly the context the refusal rejected. A caller with no text to
+   * classify passes none and is judged on the failure counts alone.
    */
-  onError(memberId: AgentTeamMemberId): void {
+  onError(memberId: AgentTeamMemberId, diagnostic = ''): void {
     if (this.disposed || !this.watched.has(memberId) && !this.options.candidates().includes(memberId)) return
     const watched = this.entryFor(memberId)
     const now = Date.now()
     watched.failureTimes.push(now)
     watched.failureTimes = watched.failureTimes.filter(time => now - time <= this.failureWindowMs)
     watched.consecutiveFailures += 1
+    watched.contextFailures = isPressureRequestBlockDiagnostic(diagnostic) || isContextCapacityFailureDiagnostic(diagnostic)
+      ? watched.contextFailures + 1
+      : 0
     if (watched.consecutiveFailures >= this.maxConsecutiveFailures) {
       const attempts = watched.restartAttempts
       this.watched.delete(memberId)
       void this.replace(memberId, 'consecutive-failures', attempts)
+      return
+    }
+    if (watched.contextFailures >= this.maxContextFailures) {
+      const attempts = watched.restartAttempts
+      this.watched.delete(memberId)
+      void this.replace(memberId, 'context-oversize', attempts)
       return
     }
     if (watched.failureTimes.length < this.windowFailures) return
@@ -185,15 +248,19 @@ export class MemberSupervisor {
     const watched = this.watched.get(memberId)
     if (watched === undefined) return
     watched.consecutiveFailures = 0
+    watched.contextFailures = 0
   }
 
   /**
    * One proven un-bring-up-able stop, reported by the Host when a stopped
-   * Member's failure signature proves a continuation nudge cannot heal it:
-   * the Member's own context policy is refusing every model request (a failed
-   * or refused hard-limit compaction, a spent forced-compaction budget, an
-   * unknown route capacity — see `isPressureRequestBlockDiagnostic`). The next
-   * turn is refused before any model call, so the gentle bring-up is skipped
+   * Member's failure signature proves a continuation nudge cannot heal it: the
+   * Member's context no longer fits its route, either because its own context
+   * policy is refusing every model request (a failed or refused hard-limit
+   * compaction, a spent forced-compaction budget, an unknown route capacity, a
+   * pressure notice the Member never acted on — see
+   * `isPressureRequestBlockDiagnostic`) or because the provider itself reported
+   * a context-window or preflight-compression failure no further turn can fix
+   * (see `isContextCapacityFailureDiagnostic`). The gentle bring-up is skipped
    * and the coercion chain starts on the spot, exactly like a fully spent
    * failure streak: the Host's private context reset first, the
    * archive-and-replace handover only while the Member still reads abnormal
@@ -204,6 +271,30 @@ export class MemberSupervisor {
     const attempts = this.watched.get(memberId)?.restartAttempts ?? 0
     this.watched.delete(memberId)
     void this.replace(memberId, 'context-oversize', attempts)
+  }
+
+  /**
+   * One periodic supervision tick: the Host's open coercion chains advance
+   * first, then the bring-up pass runs. The whole tick is serialized like a
+   * single pass — a slow chain step skips its turn rather than queueing another
+   * tick behind it — so escalation and bring-up never run concurrently for the
+   * same Member.
+   */
+  async runTick(): Promise<void> {
+    if (this.disposed || this.tickRunning) return
+    this.tickRunning = true
+    try {
+      if (this.options.advanceEscalations !== undefined) {
+        try {
+          await this.options.advanceEscalations()
+        } catch (error) {
+          this.options.log(`supervision escalation advance threw: ${error instanceof Error ? error.message : String(error)}`)
+        }
+      }
+      await this.runPass()
+    } finally {
+      this.tickRunning = false
+    }
   }
 
   /**
@@ -228,6 +319,11 @@ export class MemberSupervisor {
           this.watched.delete(memberId)
           continue
         }
+        // A Member the coercion chain already owns waits on the chain's next
+        // step, not on another nudge: bring-up attempts spent while a reset is
+        // pending only keep the Member running past the boundary that reset
+        // needs.
+        if (this.options.escalationOpen?.(memberId) === true) continue
         if (watched.restartAttempts >= this.maxRestartAttempts) {
           const attempts = watched.restartAttempts
           this.watched.delete(memberId)
@@ -249,7 +345,7 @@ export class MemberSupervisor {
   private entryFor(memberId: AgentTeamMemberId): WatchedMember {
     const existing = this.watched.get(memberId)
     if (existing !== undefined) return existing
-    const created: WatchedMember = { restartAttempts: 0, consecutiveFailures: 0, failureTimes: [] }
+    const created: WatchedMember = { restartAttempts: 0, consecutiveFailures: 0, contextFailures: 0, failureTimes: [] }
     this.watched.set(memberId, created)
     return created
   }
@@ -332,7 +428,7 @@ export function supervisionHandoffText(input: {
     : input.trigger === 'failure-rate'
       ? `failed ${input.maxWindowFailures} times within ${Math.round(input.maxFailureWindowMs / 60000)} minutes`
       : input.trigger === 'context-oversize'
-        ? 'kept having every model request blocked by its own context pressure policy'
+        ? 'could not fit its work into its context any more — every model request was refused, by its own context policy or by the provider itself'
         : `failed ${input.maxConsecutiveFailures} turns in a row without finishing any of them`
   const claims = input.releasedClaims.length === 0
     ? '- none (its Claims were already released)'

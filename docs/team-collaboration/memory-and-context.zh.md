@@ -6,7 +6,11 @@
 `memory.md` 是有界路由索引而非仓库：只装身份与职责、必须每步生效的长期规则、当前在手，以及每个主题簇一行；`notes/` 按需读取、从不注入。成员把索引常态保持在 8 KiB 以内、硬顶 16 KiB——超过硬顶索引整块不再注入，注入块始终自带用量。维护手艺（什么配得上一行、三层结构、压实与降级）归内置 `member-memory-manager` core skill，与 skill 写作归 `member-skill-manager` 同一套路；persona 只常驻「索引必须有界、细节留在它点名的那篇笔记里」这一条，成员首次生成的 `memory.md` 脚手架陈述同样的小节。
 
 ## 上下文压力归属
-Host 端到端拥有 Member 的上下文压力管理。两个预算阈值从该 Member 的 live routed selection 派生——当前 step 已进入 prompt assembly 时取其捕获的 selection，否则取 current selection——经 LLM 服务解析（handoff 预算上限 200K、硬上限 256K，并留安全 reserve）：达到 handoff 预算时，Member 在该 generation 内收到一条结构化压力通知，建议 `context_rollover` rollover——同一 generation 不重复，rollover 后重新武装。
+Host 端到端拥有 Member 的上下文压力管理。两个预算阈值从该 Member 的 live routed selection 派生——当前 step 已进入 prompt assembly 时取其捕获的 selection，否则取 current selection——经 LLM 服务解析（handoff 预算上限 200K、硬上限 256K，并留安全 reserve）：达到 handoff 预算时，Member 在该 generation 内收到一条结构化压力通知，且它是命令而非建议——先把必须超出这份上下文存活的内容写进 private memory，再压缩上下文（`context_rollover`，或该 route 自带的压缩）——同一 generation 不重复，rollover 后重新武装。
+
+持续在 handoff 预算之上推进的 Member 随后会收到该 generation 唯一一条压缩令；再耗尽压缩令自己的额度后，由 Host 代它执行这次压缩。Host 无法证明压回预算之内的上下文会阻断该请求，并被交给 supervision 强制链的 fresh-context 重置：Member 保住自己的 identity、private memory 与 Channels，并据此重新定位。
+
+直接拒绝 Host 压缩的 route 仍交回它自带的压缩，那里由 provider 指明上下文超限——supervision 把这种停止当作「继续」提示治不了的一类。
 
 达到硬上限时，Host 在转发下一个模型请求前强制一次原地 compaction，只有实测压力被证明降到硬上限之下才放行该 step——无法测量或仍超标即 fail closed（拒绝该 step，不超限提交）。每次恢复链只一次强制压缩，仅在干净响应或低于硬限的读数后重新武装，压不下来的上下文不再每步重复压缩重写、击穿 provider prompt cache。Provider context-overflow 失败获得一条有界的 compact-and-retry 序列后再上浮。无法测量窗口的 route 会显式拒绝，绝不静默超限提交。已接受 Task 的自动 compaction 已退役：除 Member 自己的显式选择外，压力策略是唯一的 compaction 触发器。
 
