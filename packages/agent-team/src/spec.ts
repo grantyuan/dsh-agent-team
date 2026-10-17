@@ -10,6 +10,7 @@ import type {
   AgentTeamChannelRef,
   AgentTeamClaimRef,
   AgentTeamContextCheckpointRef,
+  AgentTeamInterruptRef,
   AgentTeamMemberId,
   AgentTeamMessageRef,
   AgentTeamOperation,
@@ -31,6 +32,7 @@ const messageRefSchema = z.string().regex(/^message:[^:]+$/).transform(value => 
 const taskRefSchema = z.string().regex(/^task:[^:]+$/).transform(value => value as AgentTeamTaskRef)
 const threadRefSchema = z.string().regex(/^thread:[^:]+$/).transform(value => value as AgentTeamThreadRef)
 const claimRefSchema = z.string().regex(/^claim:[^:]+$/).transform(value => value as AgentTeamClaimRef)
+const interruptRefSchema = z.string().regex(/^interrupt:[^:]+$/).transform(value => value as AgentTeamInterruptRef)
 const activityRefSchema = z.string().regex(/^activity:[^:]+$/).transform(value => value as AgentTeamActivityRef)
 const attachmentIdSchema = z.string().min(1).transform(value => value as AgentTeamAttachmentId)
 
@@ -567,6 +569,40 @@ const storedAgentTeamOperationSchema = z.discriminatedUnion('kind', [
       recipientMemberId: memberIdSchema,
       body: z.string().min(1),
     }).strict(),
+  }).strict(),
+  z.object({
+    ...operationBase,
+    previousOperationId: operationIdSchema.nullable(),
+    kind: z.literal('team/member-interrupt-recorded'),
+    data: z.object({
+      workspaceId: workspaceIdSchema,
+      interrupt: z.object({
+        interruptRef: interruptRefSchema,
+        memberId: memberIdSchema,
+        workspaceId: workspaceIdSchema,
+        checkpointRef: contextCheckpointRefSchema,
+        sessionId: sessionIdSchema,
+        label: z.string().min(1),
+        incompleteState: z.string().min(1),
+        taskRef: taskRefSchema.optional(),
+        threadRef: threadRefSchema.optional(),
+        notePath: z.string().min(1).optional(),
+        recordedSequence: z.number().int().positive(),
+        recordedAt: z.string().datetime(),
+      }).strict().transform(omitUndefined),
+    }).strict(),
+  }).strict(),
+  z.object({
+    ...operationBase,
+    previousOperationId: operationIdSchema.nullable(),
+    kind: z.literal('team/member-interrupt-resolved'),
+    data: z.object({
+      workspaceId: workspaceIdSchema,
+      interruptRef: interruptRefSchema,
+      memberId: memberIdSchema,
+      resolution: z.enum(['resumed', 'released']),
+      reason: z.string().min(1).optional(),
+    }).strict().transform(omitUndefined),
   }).strict(),
 ])
 

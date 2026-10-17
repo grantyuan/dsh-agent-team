@@ -24,7 +24,9 @@ Workspace 概览是当前页时它携带 `aria-current='page'`，与原先被选
 
 活跃成员（availability active）另有两个上下文动作：「重置」经 `clearMemberContext` 换新 Member Session（破坏性确认后执行，嵌入的会话页重绑到新 Session）；「压缩」经 `compactMemberContext` 调度一次 context 压缩，可在编辑器同款模型选择器中指定摘要 LLM——弹层在提交即确认，Host 把压缩排在成员当前动作之后执行。Member 依旧可经 `context_rollover` 工具自管上下文。
 
-每一行还有「历史会话」：只读弹层按新旧排列成员的 Session 世代（当前世代带标记），经 `memberSessions` 与 `memberSessionTranscript` 分页展示所选世代的有界转录；它从不激活或写入 Session，归档日志因此可直读。
+每一行还有「历史会话」：在对话席位打开该成员的只读历史会话审计页面——按新旧排列 Session 世代（当前世代带标记），经 `memberSessions` 与 `memberSessionTranscript` 分页展示所选世代的有界转录，按 lane 以原始 Markdown 渲染；它从不激活或写入 Session，归档日志因此可直读。
+
+每一行还有「已暂停任务」：经 `memberInterrupts` 打开该 Member 的 durable pending 打断栈对话框——按新→旧列出条目，附 Host 的可返回判定（lineage 遍历当日无法证明的锚点呈现为未验证，绝不乐观地显示为可返回），每个条目带一个经 `resolveMemberInterrupt` 的「释放」操作。栈对所有 lifecycle 状态可读，因为它是 ledger 读取；`resumed` 关闭始终是 Host 自己的，不在此提供。
 
 频道编辑器（`编辑频道`）：名称/说明输入框 + 成员增删字段集。保存钮无改动即禁用（dirty 门），提交走 `updateChannel` Remote（幂等 request 同载荷复用），成功后由投影刷新回填行文案——不做乐观行内改名；成员增删仍走既有 join/remove Remote（request 按 方向+成员+频道 键复用）。
 
@@ -64,7 +66,7 @@ slot 选举摘不掉别的插件注册的列表行、入口文案又是本地化
 
 Inbox 页作为屏上面孔时卡片/图标携带 `aria-current='page'`，窄轨那枚图标还带上卡片同款当前页底色——rail 没有文字，底色是它唯一能说「你在这」的东西；被嵌入的成员会话覆盖期间它只是被记住的位置，不携带高亮。
 
-`TeamConversation` 第五个面：Thread | Channel | Inbox | Tasks | welcome。选 Inbox 或 Tasks 清掉 Channel/Thread 面并互斥；选 Workspace、Channel 或 Thread 清掉两者。从 Inbox 行进入 Thread 后，Back 落在该行 Thread 的频道——Inbox 不进返回栈；再进 Inbox 走左侧卡片或窄轨图标。
+`TeamConversation` 第五个面：Thread | Channel | Inbox | Tasks | welcome。选 Inbox 或 Tasks 清掉 Channel/Thread 面并互斥；选 Workspace、Channel 或 Thread 清掉两者。从 Inbox 或 Tasks 行进入的 Thread 记住来处：Back 读作「返回收件箱列表」或「返回任务列表」并回到那张列表，从 Channel 进入的 Thread 则保持 Back 落在频道时间线。来处是持久的，刷新后 Back 仍指向正确目标。
 
 Tasks 页保持与 Inbox 相同的全局位置纪律：持久的导航 face、跨 Workspace 合并、无 scope 订阅；行点击经与 Inbox 行相同的 select-Thread 路径落到该 Task 的 Thread。
 
@@ -73,6 +75,10 @@ Tasks 页保持与 Inbox 相同的全局位置纪律：持久的导航 face、�
 页面走**共享对话座位**——与 Channel/Thread 相同的页头带、880px 居中阅读列、`clamp(18px, 3vw, 36px)` 边距与稳定 scrollbar gutter。页头除 h1 外还有一行计数，形态是**分段而不是句子**：Thread 数、页面真正关心的整片未读数（primary 600 墨色，两侧保持 secondary）、以及提及总数（**仅当队列里真有提及时才出现**）。
 
 分段之间只靠间距分隔，窄座位换行时不会把标点拖到行首——每一段本来就自带单位词。
+
+页头带右缘只有一个 `排序` 控件：带 label 的原生 select，提供 最新回复（默认）、创建时间、未读数量、提及数量。两片都按所选键重排，Host 自己的行序做破平；选择写进本浏览器 `localStorage`（`dsh.agent-team.inbox-sort`），是呈现偏好、不是 Team fact。
+
+「最近活跃」的五条上限先按 Host 顺序切出、再按读者的键重排，所以换排序只是给同样五条返回工作现场的路换个次序，不会换掉在屏上的 Thread。
 
 ### 两片与合并顺序
 
@@ -105,6 +111,12 @@ Tasks 页保持与 Inbox 相同的全局位置纪律：持久的导航 face、�
 (4) 最新时刻跟在计数之后收在身份行末端，11px tertiary `tabular-nums`——时间形态见「排版体系」表的 Inbox 行时间，精确本地 `YYYY-MM-DD HH:mm` 挂在元素的 `title` 上。
 
 这条身份行自己是 size container：计数胶囊下限 18px、8px 间距与时刻 28px 合计 62px（两位计数时 70px），线宽不足时**整个不绘制**时刻——装不下两者的队列行留住计数与自己的边界，而不是把时刻挂到边界之外；行仍是两行形态，精确时刻由 Thread 给出。
+
+(5) 行仍是两行，新增的记号都活在这两行里。决策 chip——`--dsw-alias-state-business-primary` 墨色、与 Task marker 同一枚发丝线形状的 `待你决策`——只在 `needsHumanDecision` 成立时坐在身份行的计数旁：某个 open Task 在等验收，或最新一条点名 Human 的 Message 确实在向他要决定（单纯点名不算）。
+
+时钟缀在摘要行的右端，11px tertiary `tabular-nums` 的安静墨色：`创建于 …` 取自 Host 的 `createdOccurredAt`，其后 `@name 回复于 …` 取自 `latestReplyActor` 与 `latestReplyOccurredAt`；每段各自的精确时刻挂在自己的 `title` 上，回复者若是读者本人，就画 Client 自己那份 Human 身份。
+
+缺席与让位还是老规矩画零：没人回复过的 Thread 不打印回复段，不等谁的 Thread 不打印 chip；摘要行同样自己是 size container——窄于 340px 的座位整段让掉时钟，而不是把行折成第三行，正如身份行装不下就让掉时刻。
 
 ### 段计数与行激活
 

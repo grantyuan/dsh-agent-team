@@ -2,21 +2,23 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type {
   AgentTeamAddMemberRequest,
   AgentTeamClientMemberStatus,
+  AgentTeamInterruptRef,
+  AgentTeamInterruptView,
   AgentTeamModelSelection,
 } from '@wowyuarm/dsh-agent-team/types'
 import type { WorkspaceId } from '@deepseek-ai/dsh-api-workspace-controller/client'
-import { Button, IconArchiveOutlineRegular, IconClockOutlineRegular, IconEditOutlineRegular, IconGaugeOutlineRegular, IconInspectOutlineRegular, IconNewChatOutlineRegular, IconPlayOutlineRegular, IconPlusOutlineRegular, IconRefreshOutlineRegular, Input, Modal, Tooltip } from '@deepseek-ai/dsh-client-ui-primitives'
+import { Button, IconArchiveOutlineRegular, IconClockOutlineRegular, IconEditOutlineRegular, IconGaugeOutlineRegular, IconInspectOutlineRegular, IconNewChatOutlineRegular, IconPauseOutlineRegular, IconPlayOutlineRegular, IconPlusOutlineRegular, IconRefreshOutlineRegular, Input, Modal, Tooltip } from '@deepseek-ai/dsh-client-ui-primitives'
+import { formatAbsoluteTime } from './team-formatters.ts'
 import type { TeamSidebarProps } from './slots.ts'
 import { TeamMemberIdentity } from './TeamMemberRow.tsx'
 import { SortableRow, useSidebarRowDrag } from './sidebar-drag.tsx'
 import { moveSidebarItem, useSidebarOrder } from './sidebar-order.ts'
 import { useSidebarSectionOpen, setSidebarSectionOpen } from './sidebar-sections.ts'
 import { mintRequestId } from './requests.ts'
-import { diagnosticText, restartOffered } from './TeamPresenceDot.tsx'
+import { diagnosticText } from './TeamPresenceDot.tsx'
 import { TeamRowMenu } from './TeamRowMenu.tsx'
 import { TeamSidebarSection } from './TeamSidebarSection.tsx'
 import { AgentEditorDialog, ContextPickerField, MemberPromptDialog, ModelPickerField, parseContextWindow, sameModel, warmModelCatalog } from './TeamMemberEditor.tsx'
-import { TeamSessionHistoryDialog } from './TeamSessionHistoryDialog.tsx'
 import { TeamAgentImport } from './TeamAgentImport.tsx'
 import createCss from './create.module.css'
 import css from './sidebar.module.css'
@@ -32,8 +34,9 @@ interface TeamAgentsPanelProps {
   readonly recoverMember: TeamSidebarProps['recoverMember']
   readonly clearMemberContext: TeamSidebarProps['clearMemberContext']
   readonly compactMemberContext: TeamSidebarProps['compactMemberContext']
-  readonly loadMemberSessions: TeamSidebarProps['loadMemberSessions']
-  readonly loadMemberSessionTranscript: TeamSidebarProps['loadMemberSessionTranscript']
+  readonly loadMemberInterrupts: TeamSidebarProps['loadMemberInterrupts']
+  readonly releaseMemberInterrupt: TeamSidebarProps['releaseMemberInterrupt']
+  readonly selectSessionHistory: TeamSidebarProps['selectSessionHistory']
   readonly diagnoseMember: TeamSidebarProps['diagnoseMember']
   readonly archiveMember: TeamSidebarProps['archiveMember']
   readonly joinWorkspace: TeamSidebarProps['joinWorkspace']
@@ -46,7 +49,7 @@ interface TeamAgentsPanelProps {
   readonly t: TeamSidebarProps['t']
 }
 
-export function TeamAgentsPanel({ workspaceId, loadMembers, subscribeChanges, addMember, updateMember, loadPromptView, curateMemberPrompt, recoverMember, clearMemberContext, compactMemberContext, loadMemberSessions, loadMemberSessionTranscript, diagnoseMember, archiveMember, joinWorkspace, leaveWorkspace, loadModels, memberSessionId, openMemberSession, onCreatingChange, t }: TeamAgentsPanelProps) {
+export function TeamAgentsPanel({ workspaceId, loadMembers, subscribeChanges, addMember, updateMember, loadPromptView, curateMemberPrompt, recoverMember, clearMemberContext, compactMemberContext, loadMemberInterrupts, releaseMemberInterrupt, selectSessionHistory, diagnoseMember, archiveMember, joinWorkspace, leaveWorkspace, loadModels, memberSessionId, openMemberSession, onCreatingChange, t }: TeamAgentsPanelProps) {
   const [members, setMembers] = useState<readonly AgentTeamClientMemberStatus[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string>()
@@ -316,7 +319,7 @@ export function TeamAgentsPanel({ workspaceId, loadMembers, subscribeChanges, ad
         <div className={css.agentList}>
           {orderedMembers.map(status => (
             <SortableRow key={status.member.memberId} drag={drag} orderKey={status.member.memberId}>
-              <AgentRow workspaceId={workspaceId} leaveWorkspace={leaveWorkspace} status={status} {...(memberSessionId === undefined ? {} : { current: status.member.sessionId === memberSessionId })} updateMember={updateMember} loadPromptView={loadPromptView} curateMemberPrompt={curateMemberPrompt} recoverMember={recoverMember} clearMemberContext={clearMemberContext} compactMemberContext={compactMemberContext} loadMemberSessions={loadMemberSessions} loadMemberSessionTranscript={loadMemberSessionTranscript} diagnoseMember={diagnoseMember} archiveMember={archiveMember} loadModels={loadModels} openMemberSession={openMemberSession} onUpdated={refresh} t={t} />
+              <AgentRow workspaceId={workspaceId} leaveWorkspace={leaveWorkspace} status={status} {...(memberSessionId === undefined ? {} : { current: status.member.sessionId === memberSessionId })} updateMember={updateMember} loadPromptView={loadPromptView} curateMemberPrompt={curateMemberPrompt} recoverMember={recoverMember} clearMemberContext={clearMemberContext} compactMemberContext={compactMemberContext} loadMemberInterrupts={loadMemberInterrupts} releaseMemberInterrupt={releaseMemberInterrupt} selectSessionHistory={selectSessionHistory} diagnoseMember={diagnoseMember} archiveMember={archiveMember} loadModels={loadModels} openMemberSession={openMemberSession} onUpdated={refresh} t={t} />
             </SortableRow>
           ))}
         </div>
@@ -336,7 +339,7 @@ export function TeamAgentsPanel({ workspaceId, loadMembers, subscribeChanges, ad
  * conversation page, the avatar carries identity plus the presence badge, and
  * the row menu opens the editor.
  */
-function AgentRow({ workspaceId, leaveWorkspace, status, current, updateMember, loadPromptView, curateMemberPrompt, recoverMember, clearMemberContext, compactMemberContext, loadMemberSessions, loadMemberSessionTranscript, diagnoseMember, archiveMember, loadModels, openMemberSession, onUpdated, t }: {
+function AgentRow({ workspaceId, leaveWorkspace, status, current, updateMember, loadPromptView, curateMemberPrompt, recoverMember, clearMemberContext, compactMemberContext, loadMemberInterrupts, releaseMemberInterrupt, selectSessionHistory, diagnoseMember, archiveMember, loadModels, openMemberSession, onUpdated, t }: {
   readonly workspaceId: WorkspaceId
   readonly leaveWorkspace: TeamSidebarProps['leaveWorkspace']
   readonly status: AgentTeamClientMemberStatus
@@ -348,8 +351,9 @@ function AgentRow({ workspaceId, leaveWorkspace, status, current, updateMember, 
   readonly recoverMember: TeamSidebarProps['recoverMember']
   readonly clearMemberContext: TeamSidebarProps['clearMemberContext']
   readonly compactMemberContext: TeamSidebarProps['compactMemberContext']
-  readonly loadMemberSessions: TeamSidebarProps['loadMemberSessions']
-  readonly loadMemberSessionTranscript: TeamSidebarProps['loadMemberSessionTranscript']
+  readonly loadMemberInterrupts: TeamSidebarProps['loadMemberInterrupts']
+  readonly releaseMemberInterrupt: TeamSidebarProps['releaseMemberInterrupt']
+  readonly selectSessionHistory: TeamSidebarProps['selectSessionHistory']
   readonly diagnoseMember: TeamSidebarProps['diagnoseMember']
   readonly archiveMember: TeamSidebarProps['archiveMember']
   readonly loadModels: TeamSidebarProps['loadModels']
@@ -359,10 +363,10 @@ function AgentRow({ workspaceId, leaveWorkspace, status, current, updateMember, 
 }) {
   const [menuOpen, setMenuOpen] = useState(false)
   const [editing, setEditing] = useState(false)
+  const [interruptsOpen, setInterruptsOpen] = useState(false)
   const [archiving, setArchiving] = useState(false)
   const [resetting, setResetting] = useState(false)
   const [compacting, setCompacting] = useState(false)
-  const [historyOpen, setHistoryOpen] = useState(false)
   const [rowAlert, setRowAlert] = useState<string>()
   const [archivePending, setArchivePending] = useState(false)
   const [resetPending, setResetPending] = useState(false)
@@ -497,7 +501,7 @@ function AgentRow({ workspaceId, leaveWorkspace, status, current, updateMember, 
                 { id: 'resume', label: t('resumeAgent'), icon: <IconPlayOutlineRegular /> },
                 { id: 'diagnose', label: t('analyzeAgent'), icon: <IconInspectOutlineRegular /> },
               ] : []),
-              ...(status.availability === 'unavailable' && restartOffered(status) ? [{ id: 'restart', label: t('restartAgent'), icon: <IconRefreshOutlineRegular /> }] : []),
+              ...(status.availability === 'unavailable' ? [{ id: 'restart', label: t('restartAgent'), icon: <IconRefreshOutlineRegular /> }] : []),
               // Both context actions need a live Member Session: the Host
               // rollover replaces the active log, and compaction is scheduled
               // behind the active Agent's current activity.
@@ -509,13 +513,18 @@ function AgentRow({ workspaceId, leaveWorkspace, status, current, updateMember, 
               // lifecycle state, because archived logs survive suspensions
               // and renewals alike.
               { id: 'history', label: t('sessionHistory'), icon: <IconClockOutlineRegular /> },
+              // The interrupt stack is a durable ledger read: the Host annotates
+              // the return verdict only while the Member is live, and the dialog
+              // degrades to unverified entries otherwise.
+              { id: 'interrupts', label: t('interrupts'), icon: <IconPauseOutlineRegular /> },
               { id: 'archive', label: t(withdrawing ? 'withdrawAgent' : 'archiveAgent'), icon: <IconArchiveOutlineRegular size={16} />, danger: true },
             ]}
             onSelect={(id) => {
               if (id === 'edit') setEditing(true)
               else if (id === 'archive') setArchiving(true)
               else if (id === 'reset') setResetting(true)
-              else if (id === 'history') setHistoryOpen(true)
+              else if (id === 'history') selectSessionHistory(status.member.memberId)
+              else if (id === 'interrupts') setInterruptsOpen(true)
               else if (id === 'compact') {
                 setCompactModel(undefined)
                 setCompacting(true)
@@ -578,15 +587,6 @@ function AgentRow({ workspaceId, leaveWorkspace, status, current, updateMember, 
           {rowAlert !== undefined && <p className={createCss.error} role="alert">{rowAlert}</p>}
         </Modal>
       )}
-      {historyOpen && (
-        <TeamSessionHistoryDialog
-          status={status}
-          loadMemberSessions={loadMemberSessions}
-          loadMemberSessionTranscript={loadMemberSessionTranscript}
-          onClose={() => { setHistoryOpen(false) }}
-          t={t}
-        />
-      )}
       {editing && (
         <AgentEditorDialog
           status={status}
@@ -599,6 +599,92 @@ function AgentRow({ workspaceId, leaveWorkspace, status, current, updateMember, 
           t={t}
         />
       )}
+      {interruptsOpen && (
+        <MemberInterruptsDialog
+          workspaceId={workspaceId}
+          status={status}
+          loadMemberInterrupts={loadMemberInterrupts}
+          releaseMemberInterrupt={releaseMemberInterrupt}
+          onClose={() => { setInterruptsOpen(false) }}
+          t={t}
+        />
+      )}
     </>
+  )
+}
+
+/** Abbreviated anchor display: the full ref rides the row's title. */
+const shortCheckpointRef = (ref: string): string => ref.length > 30 ? `${ref.slice(0, 24)}…` : ref
+
+/**
+ * One Member's pending interrupt stack, newest first: the durable memory the
+ * Member pinned when its work was interrupted, each entry annotated with the
+ * Host's live verdict on whether the anchor can still be returned to. The
+ * Human can release an entry the Member will never resume; `resumed` closes
+ * stay the Host's own and are never offered here.
+ */
+function MemberInterruptsDialog({ workspaceId, status, loadMemberInterrupts, releaseMemberInterrupt, onClose, t }: {
+  readonly workspaceId: WorkspaceId
+  readonly status: AgentTeamClientMemberStatus
+  readonly loadMemberInterrupts: TeamSidebarProps['loadMemberInterrupts']
+  readonly releaseMemberInterrupt: TeamSidebarProps['releaseMemberInterrupt']
+  readonly onClose: () => void
+  readonly t: TeamSidebarProps['t']
+}) {
+  const [items, setItems] = useState<readonly AgentTeamInterruptView[]>()
+  const [error, setError] = useState<string>()
+  const [releasingRef, setReleasingRef] = useState<AgentTeamInterruptRef>()
+  const reload = useCallback(async () => {
+    try {
+      const result = await loadMemberInterrupts({ workspaceId, memberId: status.member.memberId })
+      if (result.ok) {
+        setItems(result.value.items)
+        setError(undefined)
+      } else {
+        setError(t('interruptsLoadFailed', { message: result.error.message }))
+      }
+    } catch (cause) {
+      setError(t('interruptsLoadFailed', { message: cause instanceof Error ? cause.message : String(cause) }))
+    }
+  }, [loadMemberInterrupts, workspaceId, status.member.memberId, t])
+  useEffect(() => { void reload() }, [reload])
+  const release = async (interruptRef: AgentTeamInterruptRef): Promise<void> => {
+    if (releasingRef !== undefined) return
+    setReleasingRef(interruptRef)
+    try {
+      const result = await releaseMemberInterrupt({ requestId: mintRequestId(), workspaceId, memberId: status.member.memberId, interruptRef })
+      if (!result.ok) setError(t('interruptsReleaseFailed', { message: result.error.message }))
+      await reload()
+    } catch (cause) {
+      setError(t('interruptsReleaseFailed', { message: cause instanceof Error ? cause.message : String(cause) }))
+    } finally {
+      setReleasingRef(undefined)
+    }
+  }
+  return (
+    <Modal
+      open
+      onClose={onClose}
+      title={t('interruptsTitle', { name: status.member.handle })}
+      closeLabel={t('close')}
+      contentClassName={createCss.dialogContent!}
+      footer={<Button variant="outline" onClick={onClose}>{t('close')}</Button>}
+    >
+      {items === undefined && error === undefined && <p className={createCss.state}>{t('interruptsLoading')}</p>}
+      {items !== undefined && items.length === 0 && <p className={createCss.state}>{t('interruptsEmpty')}</p>}
+      {items !== undefined && items.length > 0 && <ul className={createCss.sectionList}>
+        {items.map(item => (
+          <li key={item.interruptRef} className={createCss.sectionRow}>
+            <span className={createCss.badge}>{item.restorable ? t('interruptsRestorable') : t('interruptsNotRestorable')}</span>
+            <span>{item.label}</span>
+            <small>{item.incompleteState}</small>
+            <small title={item.checkpointRef}>{t('interruptsCheckpoint', { ref: shortCheckpointRef(item.checkpointRef) })} · {formatAbsoluteTime(item.recordedAt)}</small>
+            {!item.restorable && item.reason !== undefined && <small>{item.reason}</small>}
+            <Button variant="outline" disabled={releasingRef !== undefined} onClick={() => { void release(item.interruptRef) }}>{releasingRef === item.interruptRef ? t('interruptsReleasing') : t('interruptsRelease')}</Button>
+          </li>
+        ))}
+      </ul>}
+      {error !== undefined && <p className={createCss.error} role="alert">{error}</p>}
+    </Modal>
   )
 }

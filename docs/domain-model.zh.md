@@ -98,7 +98,7 @@ Agent Member 的进程内可用性投影，不是 ledger 事实。它使用 avai
 
 ## Member Diagnostic（成员诊断）
 
-非正常 presence/availability 行背后的结构化原因，绝不持久化：`session-refused`（激活所需 Session 的确定性格式拒绝；可携带被拒 artifact 路径，以及一次修复尝试是否证明存在可修内容）、`session-unreadable`（missing、corrupt、io 或 unknown 的 Session 读取失败）、`preset-composition`（preset 装载/校验失败，通常是安装与运行时分裂）、`rollover`（换窗的短暂提交窗口）、`runtime`（运行中的 loop 或 compaction 失败）、`activation`（未分类的激活失败）。`class` 决定哪种恢复动作真正有效：不可修复的拒绝与换窗窗口不提供重启，其余均可通过重启尝试恢复。
+非正常 presence/availability 行背后的结构化原因，绝不持久化：`session-refused`（激活所需 Session 的确定性格式拒绝；可携带被拒 artifact 路径，以及一次修复尝试是否证明存在可修内容）、`session-unreadable`（missing、corrupt、io 或 unknown 的 Session 读取失败）、`preset-composition`（preset 装载/校验失败，通常是安装与运行时分裂）、`rollover`（换窗的短暂提交窗口）、`runtime`（运行中的 loop 或 compaction 失败）、`activation`（未分类的激活失败）。`class` 描述失败形态；所有 unavailable 行都提供重启，Host 的 `recoverMember` 依据实时状态选择修复方式——完成一次 durable 绑定已前移而 live handle 尚未跟上的上下文转换、重跑失败的激活、重建被孤立的 composition，或向运行中的 Session 注入一条 continuation。
 
 ## Context Generation（上下文代际）
 

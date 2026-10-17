@@ -21,6 +21,13 @@ function inboxRow(workspaceId: string, threadRef: string, overrides: Record<stri
     unreadCount: 1,
     directCount: 1,
     previewText: 'Decision needed on the rollout',
+    // The row's own clocks the Host computes from the Thread: the anchor's
+    // instant, the newest reply after it with its author, and whether the
+    // Thread still waits on the Human.
+    createdOccurredAt: '2026-09-12T08:00:00.000Z',
+    latestReplyOccurredAt: '2026-09-13T04:00:00.000Z',
+    latestReplyActor: { memberId: 'member:iris', name: 'iris' },
+    needsHumanDecision: true,
     newestSequence: 9,
     newestOccurredAt: '2026-09-13T04:00:00.000Z',
     // The Host resolves who the row's instant came from, so a row never needs a
@@ -328,7 +335,7 @@ describe('Team Inbox surfaces', () => {
     await b.runtime.dispose()
   })
 
-  it('opens the row Thread through selectWorkspace + selectThread, drops the unread dot, and lands Back on its Channel', async () => {
+  it('opens the row Thread through selectWorkspace + selectThread, drops the unread dot, and lands Back on the Inbox list', async () => {
     const b = await runtimeWithTeam({ mode: 'team', workspaceId: 'w1', seededMessages: [{ body: 'Thread opener', occurredAt: '2026-09-13T03:00:00.000Z' }], remainingUnreadCounts: [0], initialChannels: true, seedThreadRef: 'thread:w2' })
     const card = await b.view.findByRole('button', { name: '收件箱' })
     b.seedInbox([inboxRow('w2', 'thread:w2')])
@@ -338,18 +345,21 @@ describe('Team Inbox surfaces', () => {
     const row = await b.view.findByRole('button', { name: /#engineering/ })
     fireEvent.click(row)
     // The row's own Workspace is selected first, then the Thread: the durable
-    // read consumes the mention, and the persisted location is Thread + its
-    // Channel — never the Inbox.
+    // read consumes the mention, and the persisted location keeps the Thread
+    // and its Channel plus the Inbox origin it was entered from.
     await waitFor(() => expect(b.readThread).toHaveBeenCalled())
     // The dot drops from the completed read itself — reads never ride a
     // changes wake.
     await waitForEntryUnread(card, 0)
-    expect(JSON.parse(localStorage.getItem(STORAGE_KEY) ?? '')).toMatchObject({ mode: 'team', workspaceId: 'w2', channelRef: 'channel:engineering', threadRef: 'thread:w2' })
+    expect(JSON.parse(localStorage.getItem(STORAGE_KEY) ?? '')).toMatchObject({ mode: 'team', workspaceId: 'w2', channelRef: 'channel:engineering', threadRef: 'thread:w2', threadOrigin: 'inbox' })
     expect(JSON.parse(localStorage.getItem(STORAGE_KEY) ?? '')).not.toHaveProperty('inbox')
-    // Back goes to the Thread's Channel, not the Inbox.
-    fireEvent.click(await b.view.findByRole('button', { name: '返回频道' }))
-    await waitFor(() => expect(JSON.parse(localStorage.getItem(STORAGE_KEY) ?? '')).not.toHaveProperty('threadRef'))
-    expect(b.view.container.querySelector('[data-team-inbox]')).toBeNull()
+    // Back goes to the Inbox list this Thread was entered from.
+    fireEvent.click(await b.view.findByRole('button', { name: '返回收件箱列表' }))
+    await waitFor(() => expect(JSON.parse(localStorage.getItem(STORAGE_KEY) ?? '')).toMatchObject({ mode: 'team', workspaceId: 'w2', inbox: true }))
+    expect(JSON.parse(localStorage.getItem(STORAGE_KEY) ?? '')).not.toHaveProperty('threadRef')
+    expect(JSON.parse(localStorage.getItem(STORAGE_KEY) ?? '')).not.toHaveProperty('threadOrigin')
+    await b.view.findByText('收件箱是空的')
+    expect(b.view.container.querySelector('[data-team-inbox]')).toBeTruthy()
     await b.runtime.dispose()
   })
 
@@ -445,6 +455,58 @@ describe('Team Inbox surfaces', () => {
     // The precise instant stays on the element behind the relative label.
     expect(olderTime?.getAttribute('title')).toMatch(/^\d{4}-\d{2}-\d{2} 09:30$/)
     expect(olderTime?.getAttribute('dateTime')).toBe(older.toISOString())
+    await b.runtime.dispose()
+  })
+
+  it('draws the row clocks — created, newest reply with its author — and the decision chip only when the Thread waits', async () => {
+    const b = await runtimeWithTeam({ mode: 'team', workspaceId: 'w1' })
+    const card = await b.view.findByRole('button', { name: '收件箱' })
+    b.seedInbox([
+      inboxRow('w1', 'thread:meta-waiting', { previewText: 'waiting row' }),
+      inboxRow('w1', 'thread:meta-quiet', { previewText: 'quiet row', needsHumanDecision: false }),
+      inboxRow('w1', 'thread:meta-unanswered', { previewText: 'no reply yet', needsHumanDecision: false, latestReplyOccurredAt: undefined, latestReplyActor: undefined }),
+    ])
+    fireEvent.click(card)
+    const metaRow = await b.view.findByRole('button', { name: /waiting row/ })
+    expect(metaRow.textContent).toContain('创建于')
+    expect(metaRow.textContent).toContain('@iris 回复于')
+    expect(metaRow.textContent).toContain('待你决策')
+    // A Thread that waits on nobody prints no chip, and one without a reply
+    // prints no reply segment — zero is the absence of the mark.
+    const quietRow = await b.view.findByRole('button', { name: /quiet row/ })
+    expect(quietRow.textContent).not.toContain('待你决策')
+    const unanswered = await b.view.findByRole('button', { name: /no reply yet/ })
+    expect(unanswered.textContent).not.toContain('回复于')
+    expect(unanswered.textContent).toContain('创建于')
+    await b.runtime.dispose()
+  })
+
+  it("leads the queue by newest reply and re-lays it under the reader's own key, kept in this browser", async () => {
+    const b = await runtimeWithTeam({ mode: 'team', workspaceId: 'w1' })
+    const card = await b.view.findByRole('button', { name: '收件箱' })
+    b.seedInbox([
+      inboxRow('w1', 'thread:sort-created', { previewText: 'created newest', directCount: 0, newestSequence: 30, createdOccurredAt: '2026-09-14T02:00:00.000Z', latestReplyOccurredAt: '2026-09-10T02:00:00.000Z' }),
+      inboxRow('w1', 'thread:sort-reply', { previewText: 'reply newest', directCount: 0, newestSequence: 20, createdOccurredAt: '2026-09-01T02:00:00.000Z', latestReplyOccurredAt: '2026-09-15T02:00:00.000Z' }),
+    ])
+    fireEvent.click(card)
+    const previews = async (): Promise<readonly (string | null | undefined)[]> => {
+      await waitFor(() => expect(b.view.container.querySelectorAll('[data-team-inbox] button[class*="row"]')).toHaveLength(2))
+      return [...b.view.container.querySelectorAll('[data-team-inbox] button[class*="row"] [class*="rowPreview"]')].map(node => node.textContent)
+    }
+    // Default: the newest reply leads, even though the other row is the newer
+    // Thread and carries the higher ledger sequence.
+    expect(await previews()).toEqual(['reply newest', 'created newest'])
+    const sort = b.view.getByLabelText('排序') as HTMLSelectElement
+    expect(sort.value).toBe('latestReply')
+    fireEvent.change(sort, { target: { value: 'created' } })
+    expect(await previews()).toEqual(['created newest', 'reply newest'])
+    // The taste rides this browser's storage, and a returning reader gets it
+    // back without touching the control again.
+    expect(localStorage.getItem('dsh.agent-team.inbox-sort')).toBe('created')
+    fireEvent.click(b.view.getByRole('button', { name: '任务' }))
+    fireEvent.click(b.view.getByRole('button', { name: '收件箱' }))
+    expect(((await b.view.findByLabelText('排序')) as HTMLSelectElement).value).toBe('created')
+    expect(await previews()).toEqual(['created newest', 'reply newest'])
     await b.runtime.dispose()
   })
 })

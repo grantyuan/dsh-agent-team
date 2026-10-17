@@ -14,11 +14,13 @@ import type {
 import type { WorkspaceId } from '@deepseek-ai/dsh-api-workspace-controller/client'
 import { Button, DisclosureRow, IconChevronLeftOutlineRegular, IconChecklistOutlineRegular, Modal, Pill } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { TeamConversationProps } from './slots.ts'
+import type { TeamThreadOrigin } from './navigation.ts'
 import type { TeamDraftKey, TeamDraftStore } from './drafts.ts'
 import { TeamComposer } from './TeamComposer.tsx'
 import { diagnosticText, TeamPresenceDot } from './TeamPresenceDot.tsx'
 import { TeamMessage } from './TeamMessage.tsx'
 import { TeamRunDivider } from './TeamRunDivider.tsx'
+import { TeamThreadDigest } from './TeamThreadDigest.tsx'
 import { firstSentence, formatActivity, formatClaimState, formatRiskClass, formatTaskStatus, formatTaskTitle, mentionNameOf, mentionNamesOf, mentionedMemberIds, taskStatusDot, type MentionHandle } from './team-formatters.ts'
 import { TeamStateDot } from './TeamStateDot.tsx'
 import { mintRequestId, uploadComposerFiles } from './requests.ts'
@@ -39,11 +41,14 @@ interface TeamThreadPageProps {
   readonly taskRef?: AgentTeamTaskRef
   readonly threadRef: AgentTeamThreadRef
   readonly taskNumber?: number
-  readonly backToWorkspace: TeamConversationProps['backToWorkspace']
+  /** The Team list this Thread was entered from, deciding where Back lands. */
+  readonly threadOrigin?: TeamThreadOrigin
+  readonly backFromThread: TeamConversationProps['backFromThread']
   readonly loadChannels: TeamConversationProps['loadChannels']
   readonly readThread: TeamConversationProps['readThread']
   readonly loadThreadHistory: TeamConversationProps['loadThreadHistory']
   readonly threadObservations: TeamConversationProps['threadObservations']
+  readonly summarizeThread: TeamConversationProps['summarizeThread']
   readonly subscribeChanges: TeamConversationProps['subscribeChanges']
   readonly loadMembers: TeamConversationProps['loadMembers']
   readonly drafts: TeamDraftStore
@@ -107,8 +112,8 @@ function readMeta(facts: readonly AgentTeamThreadReadFact[]): ReadonlyMap<Thread
 
 export function TeamThreadPage(props: TeamThreadPageProps) {
   const {
-    workspaceId, humanName, humanAvatarUrl, channelRef, taskRef, threadRef, taskNumber, backToWorkspace, selectChannel, selectThread, resolveTaskRefs, resolveThreadRefs, openMemberSession, putAttachment,
-    loadChannels, readThread, loadThreadHistory, threadObservations,
+    workspaceId, humanName, humanAvatarUrl, channelRef, taskRef, threadRef, taskNumber, threadOrigin, backFromThread, selectChannel, selectThread, resolveTaskRefs, resolveThreadRefs, openMemberSession, putAttachment,
+    loadChannels, readThread, loadThreadHistory, threadObservations, summarizeThread,
     subscribeChanges, loadMembers, drafts, getAttachment, reply, changeTask, promoteThread, t,
   } = props
   const threadRequest = { threadRef, ...(taskRef === undefined ? {} : { taskRef }) }
@@ -752,13 +757,17 @@ export function TeamThreadPage(props: TeamThreadPageProps) {
       full: detail === '' ? t('statusError') : detail,
     }]
   })
-  // Threads are always entered through a Channel page, so a Channel origin
-  // returns to its timeline; a Thread restored without one returns further.
-  const backLabel = channelRef === undefined ? t('backToWorkspace') : t('backToChannel')
+  // The Team list this Thread was entered from owns the Back target: an Inbox
+  // or Tasks origin returns to that list, a Channel origin returns to its
+  // timeline, and a Thread restored without either returns further.
+  const backLabel = threadOrigin === 'inbox' ? t('backToInbox')
+    : threadOrigin === 'tasks' ? t('backToTasks')
+    : channelRef === undefined ? t('backToWorkspace')
+    : t('backToChannel')
 
   return <main className={css.surface} data-team-thread={threadRef}>
     <div className={css.surfaceHeader}>
-      <div className={css.backRow}><Button size="sm" icon={<IconChevronLeftOutlineRegular />} onClick={backToWorkspace}>{backLabel}</Button></div>
+      <div className={css.backRow}><Button size="sm" icon={<IconChevronLeftOutlineRegular />} onClick={backFromThread}>{backLabel}</Button></div>
       <header className={css.headerRow}>
         <div className={css.headerCopy}>
           <div className={threadCss.titleLine}>
@@ -842,6 +851,20 @@ export function TeamThreadPage(props: TeamThreadPageProps) {
 
     <section ref={timeline.ref} onScroll={handleTimelineScroll} className={css.timeline} aria-label={t('timelineLabel')}>
       <div className={css.timelineContent}>
+        {/* The plain-language recap opens the scroll column itself — the first
+            block of the very Thread it explains, so it reads top-down with the
+            conversation and its async growth stays inside the scroller that
+            keeps a bottom-pinned reader pinned. */}
+        {projection !== undefined && thread !== undefined && <TeamThreadDigest
+          workspaceId={workspaceId}
+          threadRef={threadRef}
+          {...(projection.task === undefined ? {} : { taskRef: projection.task.taskRef })}
+          revision={thread.revision}
+          summarizeThread={summarizeThread}
+          reply={reply}
+          disabled={pending}
+          t={t}
+        />}
         {loading && projection === undefined && error === undefined && <div className={css.emptySurface}><p className={css.loadingState}><span className={css.loadingMark} aria-hidden="true" />{t('loadingThread')}</p></div>}
         {projection === undefined && error !== undefined && <div className={css.errorState} role="alert"><span>{error}</span><Button size="sm" variant="outline" onClick={() => { void readCurrent() }}>{t('retry')}</Button></div>}
         {olderFacts.length > 0 && <section className={threadCss.historySection} aria-label={t('olderHistory')}><h2>{t('olderHistory')}</h2>{renderFactBlocks(olderFacts, undefined)}</section>}

@@ -182,18 +182,109 @@
     display: none;
   }
 }
+/* The row's second line: the gist is its subject and the clocks trail it on
+   the same column. The line is its own size container so the clocks answer
+   the width the row actually gets, exactly as the identity line answers for
+   its instant one line above. */
+.rowSecond {
+  align-items: baseline;
+  container-type: inline-size;
+  display: flex;
+  gap: 0 8px;
+  grid-column: 2;
+  grid-row: 2;
+  min-width: 0;
+}
 /* The gist is evidence for the identity above it, not the row's subject: it
    starts on the identity's own column and speaks in secondary ink, one line. */
 .rowPreview {
   color: var(--dsw-alias-label-secondary);
+  flex: 1 1 auto;
   font-size: 13px;
-  grid-column: 2;
-  grid-row: 2;
   line-height: 20px;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+/* The row's clocks, quiet 11px tabular ink at the second line's right edge:
+   creation instant, and the newest reply with its author. A squeezed seat
+   yields them entirely rather than fold the row — the row keeps its two-line
+   shape, and the Thread states the exact instants. */
+.rowMeta {
+  align-items: baseline;
+  color: var(--dsw-alias-label-tertiary);
+  display: flex;
+  flex: none;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  gap: 0 8px;
+  line-height: 16px;
+  white-space: nowrap;
+}
+.rowMetaItem {
+  white-space: nowrap;
+}
+/* The same give as the instant above: a seat too narrow for the clocks drops
+   them entirely instead of folding the row into a third line, and the Thread
+   carries the exact instants. */
+@container (max-width: 340px) {
+  .rowMeta {
+    display: none;
+  }
+}
+/* And the identity line answers for its chip the way it answers for the
+   instant: the crushed phone seat with the sidebar forced open yields the
+   chip before it lets a fixed mark push the row past its own edge. */
+@container (max-width: 130px) {
+  .rowDecision {
+    display: none;
+  }
+}
+/* The decision chip is the identity line's one mark that asks for action, so
+   it carries the business hue inside the same hairline shape the Task marker
+   uses — one chip grammar down the queue, and a Thread that waits on nobody
+   simply draws no chip. */
+.rowDecision {
+  border: 1px solid var(--dsw-alias-border-l2);
+  border-radius: var(--dsw-radius-sm, 6px);
+  color: var(--dsw-alias-state-business-primary);
+  flex: none;
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 15px;
+  padding: 0 5px;
+  white-space: nowrap;
+}
+
+/* The queue's ordering is the reader's taste, and it lives in the header band
+   beside the totals the same order reads — a labeled native select, the
+   control rhythm the shipped surfaces already keep. */
+.sortControl {
+  align-items: center;
+  display: flex;
+  flex: none;
+  gap: 6px;
+}
+.sortLabel {
+  color: var(--dsw-alias-label-tertiary);
+  font-size: 12px;
+  white-space: nowrap;
+}
+.sortSelect {
+  background: transparent;
+  border: 1px solid var(--dsw-alias-border-l2);
+  border-radius: var(--dsw-radius-sm, 6px);
+  color: var(--dsw-alias-label-primary);
+  cursor: pointer;
+  font: inherit;
+  font-size: 12px;
+  padding: 2px 6px;
+}
+.sortSelect:focus-visible {
+  outline: var(--dsw-focus-ring-width, 2px) solid var(--dsw-focus-ring-color, var(--dsw-alias-state-business-primary));
+  outline-offset: -1px;
 }
 
 /* The page's two slices — 「需要我」 is the queue, 「最近活跃」 the way back into

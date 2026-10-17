@@ -243,4 +243,48 @@ describe('context tools render the model-facing decision surface', () => {
     const seeded = renderText(tools.get('context_rollover')!, {}, { mode: 'from-checkpoint', status: 'scheduled' })
     expect(seeded).toContain('from-checkpoint')
   })
+
+  it('context_interrupt renders every listed verdict with its resume instruction and cites only restorable anchors', () => {
+    const tools = contextTools()
+    expect(tools.has('context_interrupt')).toBe(true)
+    expect([...AGENT_TEAM_TOOL_NAMES]).toContain('context_interrupt')
+    const restorableRef = 'context-checkpoint-' + 'e'.repeat(64)
+    const staleRef = 'context-checkpoint-' + 'f'.repeat(64)
+    const text = renderText(tools.get('context_interrupt')!, { action: 'list' }, {
+      kind: 'listed',
+      items: [
+        {
+          interruptRef: 'interrupt:aaa', label: 'Paused migration', incompleteState: 'Step 3 of 5 remains',
+          checkpointRef: restorableRef, recordedAt: '2026-10-16T09:00:00+08:00', restorable: true, taskRef: 'task:11111111',
+        },
+        {
+          interruptRef: 'interrupt:bbb', label: 'Paused audit', incompleteState: 'Awaiting evidence',
+          checkpointRef: staleRef, recordedAt: '2026-10-15T09:00:00+08:00', restorable: false,
+          reason: 'the anchor is not listed in this Member\'s current lineage window, so the return cannot be proven',
+        },
+      ],
+    })
+    // The LIFO order and the resume instruction are the decision surface: a
+    // restorable row must carry its exact anchor ref for context_rollover.
+    expect(text).toContain('newest first')
+    expect(text).toContain('Paused migration')
+    expect(text).toContain(restorableRef)
+    expect(text).toContain('task:11111111')
+    expect(text).toContain('Paused audit')
+    expect(text).toContain('not restorable')
+    expect(text).toContain('the return cannot be proven')
+    // A not-restorable row directs the fresh-handoff path, not a doomed cite.
+    expect(text).toContain('carry its state into a fresh handoff, then release')
+  })
+
+  it('context_interrupt renders the empty stack, a recorded pin, and a release in one line each', () => {
+    const tools = contextTools()
+    expect(renderText(tools.get('context_interrupt')!, { action: 'list' }, { kind: 'listed', items: [] }))
+      .toContain('Interrupt stack empty')
+    const recorded = renderText(tools.get('context_interrupt')!, { action: 'record', label: 'Paused migration' }, { kind: 'recorded', interruptRef: 'interrupt:aaa', recordedSequence: 7 })
+    expect(recorded).toContain('Interrupt recorded: Paused migration (ref interrupt:aaa)')
+    expect(recorded).toContain('resume this entry via context_rollover')
+    const released = renderText(tools.get('context_interrupt')!, { action: 'release' }, { kind: 'released', interruptRef: 'interrupt:bbb' })
+    expect(released).toContain('Interrupt released (interrupt:bbb)')
+  })
 })

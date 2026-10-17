@@ -154,7 +154,7 @@ describe('TeamNavigation', () => {
       // overlay can be opened from: asking for the page closes the overlay.
       navigation => { navigation.actions().selectInbox() },
       navigation => { navigation.actions().backToChannels() },
-      navigation => { navigation.actions().backToWorkspace() },
+      navigation => { navigation.actions().backFromThread() },
       navigation => { navigation.actions().enterTeam() },
       navigation => { navigation.actions().exitMemberSession() },
     ]
@@ -169,7 +169,7 @@ describe('TeamNavigation', () => {
     }
   })
 
-  it('opens the Inbox page as a durable location that Channel and Thread faces replace', () => {
+  it('opens the Inbox page as a durable location and returns a Thread entered there', () => {
     const navigation = new TeamNavigation()
     navigation.actions().selectWorkspace('workspace:one' as never)
     navigation.actions().enterTeam()
@@ -182,11 +182,19 @@ describe('TeamNavigation', () => {
     navigation.actions().selectInbox()
     expect(navigation.getSnapshot()).toEqual({ mode: 'team', workspaceId: 'workspace:one', inbox: true })
 
-    // Selecting a Thread from a row clears the Inbox face; Back then lands on
-    // that Thread's Channel — the Inbox is never pushed onto the back path.
-    navigation.actions().selectThread('thread:1' as never, 'channel:1' as never)
-    expect(navigation.getSnapshot()).toEqual({ mode: 'team', workspaceId: 'workspace:one', channelRef: 'channel:1', threadRef: 'thread:1' })
-    navigation.actions().backToWorkspace()
+    // Selecting a Thread from an Inbox row clears the Inbox face while the row's
+    // list stays the Thread's origin: Back returns to the Inbox list.
+    navigation.actions().selectThread('thread:1' as never, 'channel:1' as never, undefined, undefined, 'inbox')
+    expect(navigation.getSnapshot()).toEqual({ mode: 'team', workspaceId: 'workspace:one', channelRef: 'channel:1', threadRef: 'thread:1', threadOrigin: 'inbox' })
+    navigation.actions().backFromThread()
+    expect(navigation.getSnapshot()).toEqual({ mode: 'team', workspaceId: 'workspace:one', inbox: true })
+
+    // A Thread entered from its Channel carries no origin, so Back lands on the
+    // Channel timeline as before.
+    navigation.actions().selectChannel('channel:1' as never)
+    navigation.actions().selectThread('thread:2' as never, 'channel:1' as never)
+    expect(navigation.getSnapshot()).toEqual({ mode: 'team', workspaceId: 'workspace:one', channelRef: 'channel:1', threadRef: 'thread:2' })
+    navigation.actions().backFromThread()
     expect(navigation.getSnapshot()).toEqual({ mode: 'team', workspaceId: 'workspace:one', channelRef: 'channel:1' })
 
     // A Channel or Workspace selection leaves the Inbox face as well.
@@ -196,6 +204,27 @@ describe('TeamNavigation', () => {
     navigation.actions().selectInbox()
     navigation.actions().selectWorkspace('workspace:two' as never)
     expect(navigation.getSnapshot()).toEqual({ mode: 'team', workspaceId: 'workspace:two' })
+  })
+
+  it('restores the Thread origin across a reload and lets a Tasks origin own Back', () => {
+    const navigation = new TeamNavigation()
+    navigation.actions().selectWorkspace('workspace:one' as never)
+    navigation.actions().enterTeam()
+    navigation.actions().selectThread('thread:5' as never, 'channel:1' as never, 'task:5' as never, 5, 'tasks')
+
+    expect(navigation.getSnapshot()).toEqual({ mode: 'team', workspaceId: 'workspace:one', channelRef: 'channel:1', taskRef: 'task:5', threadRef: 'thread:5', taskNumber: 5, threadOrigin: 'tasks' })
+    // The origin is durable: a reload reopens the Thread and still knows Back
+    // belongs to the Tasks list.
+    expect(JSON.parse(localStorage.getItem(STORAGE_KEY) ?? '')).toMatchObject({ threadOrigin: 'tasks' })
+    const restored = new TeamNavigation()
+    expect(restored.getSnapshot().threadOrigin).toBe('tasks')
+    restored.actions().backFromThread()
+    expect(restored.getSnapshot()).toEqual({ mode: 'team', workspaceId: 'workspace:one', tasks: true })
+  })
+
+  it('drops a persisted origin that has no Thread to return from', () => {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify({ mode: 'team', workspaceId: 'workspace:one', channelRef: 'channel:1', threadOrigin: 'inbox' }))
+    expect(new TeamNavigation().getSnapshot()).toEqual({ mode: 'team', workspaceId: 'workspace:one', channelRef: 'channel:1' })
   })
 
 })

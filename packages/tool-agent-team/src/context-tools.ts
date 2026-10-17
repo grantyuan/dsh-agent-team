@@ -26,7 +26,7 @@ import {
   type ContinuityToolText,
   type RolloverToolRequest,
 } from '@wowyuarm/dsh-context-continuity'
-import type { AgentTeamContextCheckpointRef } from '@wowyuarm/dsh-agent-team/types'
+import type { AgentTeamContextCheckpointRef, AgentTeamInterruptRef, AgentTeamInterruptView, AgentTeamTaskRef, AgentTeamThreadRef } from '@wowyuarm/dsh-agent-team/types'
 import { MAX_TIMELINE_LIMIT } from '@wowyuarm/dsh-agent-team/host'
 import { defineTool, type ToolRunContext } from '@deepseek-ai/dsh-tools'
 import { member, service } from './host-access.ts'
@@ -213,10 +213,143 @@ const contextTimeline = defineTool({
   },
 })
 
+/**
+ * Team's own interrupt stack: pins an unfinished session onto a resolved
+ * checkpoint so the Member (or any later generation after a reset) can pick
+ * it back up, lists the stack newest-first with live restorable verdicts, and
+ * releases entries that will not be returned to. The swap itself stays
+ * exclusively `context_rollover`'s: resuming is citing a listed anchor ref
+ * there, and the Host closes the matching entry inside that transition —
+ * this tool never moves a context.
+ */
+const contextInterrupt = defineTool({
+  name: 'context_interrupt',
+  description: 'Manage your interrupted-session stack: work you stopped before completion, pinned to a restorable context checkpoint. `record` pins a checkpoint you just recorded (context_checkpoint resolves at its turn end, so record lands in the FOLLOWING turn — the engine\'s quiet continuation carries you there) with a short semantic label and a bounded incomplete-state note (what remains, where you stopped, what was verified vs merely trusted); pass notePath when the detail lives in a private note. A recorded interrupt protects the unfinished state: while an entry is pending you may take any new (temporary) task as usual; when it completes, resume the NEWEST pending entry first (LIFO), then the next — so several interruptions unwound one by one. `list` returns the stack newest-first with live verdicts: restorable entries resume by calling context_rollover citing that entry\'s anchor ref exactly — the Host closes the entry when the return commits; a not-restorable verdict states its reason (budget or lineage moved), and then you read your note, carry the unfinished state into a fresh handoff, and `release` the entry. Prefer the checkpoint return over the fresh handoff when resuming: the return keeps your raw prefix — and the provider prompt cache behind it — while a fresh handoff discards both. `release` closes one entry without returning (superseded, done by someone else, or carried into a fresh handoff); the stack is bounded, so do not sit on entries you will not return to. Never synthesize refs: checkpoint refs come only from context_checkpoint or context_timeline, interrupt refs only from record and list. Entries are private context structure — no teammate sees them; the durable shared record of the work itself stays in Threads.',
+  parameters: {
+    action: { type: 'string', required: true, description: 'record | list | release.' },
+    checkpointRef: { type: 'string', description: 'record: the checkpoint this work is pinned to, exactly as context_checkpoint returned it or context_timeline printed it.' },
+    label: { type: 'string', description: 'record: short semantic name for the interrupted work (at most 120 characters).' },
+    incompleteState: { type: 'string', description: 'record: what remains and where you stopped (at most 2000 characters); the full detail belongs in your private note.' },
+    notePath: { type: 'string', description: 'record: path of the private note that holds the detailed unfinished state.' },
+    taskRef: { type: 'string', description: 'record: the Task being interrupted, if any, as bare task:<uuid>.' },
+    threadRef: { type: 'string', description: 'record: the Thread the interrupted work belongs to, if any, as bare thread:<uuid>.' },
+    interruptRef: { type: 'string', description: 'release: the entry to close, exactly as record or list returned it.' },
+    reason: { type: 'string', description: 'release: one line on why it no longer needs returning.' },
+  },
+  output: {
+    schema: { type: 'object', additionalProperties: false, properties: {
+      kind: { type: 'string', required: true },
+      interruptRef: { type: 'string' },
+      recordedSequence: { type: 'number' },
+      items: { type: 'array', items: { type: 'object', additionalProperties: false, properties: {
+        interruptRef: { type: 'string', required: true },
+        label: { type: 'string', required: true },
+        incompleteState: { type: 'string', required: true },
+        checkpointRef: { type: 'string', required: true },
+        recordedAt: { type: 'string', required: true },
+        taskRef: { type: 'string' },
+        threadRef: { type: 'string' },
+        restorable: { type: 'boolean', required: true },
+        reason: { type: 'string' },
+      } } },
+    } },
+    render: (args, value) => {
+      if (value.kind === 'listed') {
+        if (value.items === undefined || value.items.length === 0) return [{ type: 'text', text: 'Interrupt stack empty: nothing is pinned for continuation.' }]
+        const lines = [`Interrupt stack: ${value.items.length} pending, newest first (resume in this order once current work closes):`]
+        for (const item of value.items) {
+          const work = item.taskRef === undefined ? '' : ` task ${item.taskRef}`
+          const verdict = item.restorable
+            ? `restorable — resume with context_rollover citing ${item.checkpointRef}`
+            : `not restorable — ${item.reason ?? 'no reason given'}; carry its state into a fresh handoff, then release`
+          lines.push(`- ${item.label} (ref ${item.interruptRef};${work}; pinned ${item.recordedAt}) — ${verdict}`)
+        }
+        return [{ type: 'text', text: lines.join('\n') }]
+      }
+      if (value.kind === 'recorded') {
+        const label = typeof args.label === 'string' ? args.label : 'interrupted work'
+        return [{ type: 'text', text: `Interrupt recorded: ${label} (ref ${value.interruptRef}). The unfinished session is pinned; take the temporary task now, and resume this entry via context_rollover with its anchor ref once that work closes.` }]
+      }
+      return [{ type: 'text', text: `Interrupt released (${value.interruptRef}). It no longer waits on a continuation.` }]
+    },
+  },
+  async execute(args, exec) {
+    const agent = exec.agent
+    if (agent === undefined) throw new Error('context_interrupt requires an Agent session')
+    const host = service(agent)
+    const action = typeof args.action === 'string' ? args.action : ''
+    if (action === 'list') {
+      const outcome = await host.listInterruptsForAgent(agent)
+      return { kind: 'listed', items: outcome.items.map(toInterruptViewItem) }
+    }
+    if (action === 'record') {
+      const checkpointRef = requireString(args.checkpointRef, 'checkpointRef')
+      const label = requireString(args.label, 'label')
+      const incompleteState = requireString(args.incompleteState, 'incompleteState')
+      const outcome = await host.recordInterruptForAgent(agent, {
+        callId: exec.callId,
+        checkpointRef: checkpointRef as AgentTeamContextCheckpointRef,
+        label,
+        incompleteState,
+        ...(typeof args.notePath === 'string' && args.notePath !== '' ? { notePath: args.notePath } : {}),
+        ...(typeof args.taskRef === 'string' && args.taskRef !== '' ? { taskRef: args.taskRef as AgentTeamTaskRef } : {}),
+        ...(typeof args.threadRef === 'string' && args.threadRef !== '' ? { threadRef: args.threadRef as AgentTeamThreadRef } : {}),
+      })
+      return { kind: 'recorded', interruptRef: outcome.interruptRef, recordedSequence: outcome.recordedSequence }
+    }
+    if (action === 'release') {
+      const interruptRef = requireString(args.interruptRef, 'interruptRef')
+      const outcome = await host.releaseInterruptForAgent(agent, {
+        callId: exec.callId,
+        interruptRef: interruptRef as AgentTeamInterruptRef,
+        ...(typeof args.reason === 'string' && args.reason !== '' ? { reason: args.reason } : {}),
+      })
+      return { kind: 'released', interruptRef: outcome.interruptRef }
+    }
+    throw new Error('context_interrupt action must be record, list, or release')
+  },
+})
+
+/** Non-blank string argument, or a rejection naming the field the model missed. */
+function requireString(value: unknown, name: string): string {
+  if (typeof value !== 'string' || value.trim() === '') throw new Error(`context_interrupt requires a non-empty ${name}`)
+  return value
+}
+
+/** The listed item as the tool output schema declares it (plain strings across the seam). */
+interface InterruptViewItem {
+  readonly interruptRef: string
+  readonly label: string
+  readonly incompleteState: string
+  readonly checkpointRef: string
+  readonly recordedAt: string
+  readonly restorable: boolean
+  readonly taskRef?: string
+  readonly threadRef?: string
+  readonly reason?: string
+}
+
+/** The Host result is deeply immutable; the tool output contract carries plain values. */
+function toInterruptViewItem(item: AgentTeamInterruptView): InterruptViewItem {
+  return {
+    interruptRef: item.interruptRef,
+    label: item.label,
+    incompleteState: item.incompleteState,
+    checkpointRef: item.checkpointRef,
+    recordedAt: item.recordedAt,
+    restorable: item.restorable,
+    ...(item.taskRef === undefined ? {} : { taskRef: item.taskRef }),
+    ...(item.threadRef === undefined ? {} : { threadRef: item.threadRef }),
+    ...(item.reason === undefined ? {} : { reason: item.reason }),
+  }
+}
+
 export function registerContextTools(ctx: { readonly tools: { register(tool: unknown): void } }): void {
-  // The engine's two, then the Team's own timeline: one registration each, and
-  // the roster the Host validates against stays the same three names.
+  // The engine's two, then the Team's own timeline and interrupt stack: one
+  // registration each, and the roster the Host validates against stays the
+  // same four names.
   ctx.tools.register(engineTools.rollover)
   ctx.tools.register(engineTools.checkpoint)
   ctx.tools.register(contextTimeline)
+  ctx.tools.register(contextInterrupt)
 }

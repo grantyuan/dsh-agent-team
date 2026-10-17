@@ -1585,7 +1585,7 @@ describe('Agent Team Member lifecycle', () => {
   })
 
   it('validates the final Team tool marker during unpublished setup', async () => {
-    expect(AGENT_TEAM_TOOL_NAMES).toEqual(['team_inbox', 'team_thread', 'team_message', 'team_claim', 'team_view', 'team_supervise', 'context_rollover', 'context_checkpoint', 'context_timeline'])
+    expect(AGENT_TEAM_TOOL_NAMES).toEqual(['team_inbox', 'team_thread', 'team_message', 'team_claim', 'team_view', 'team_supervise', 'context_rollover', 'context_checkpoint', 'context_timeline', 'context_interrupt'])
     const definition = markAgentTeamPreset({ name: 'team_message' })
     expect(Reflect.get(definition, Symbol.for('@wowyuarm/dsh-agent-team.preset'))).toBe(true)
   })
@@ -5146,12 +5146,67 @@ describe('Agent Team member context control (ticket 01)', () => {
     expect(oldPage.entries.some(entry => entry.text.includes('Context reset notice'))).toBe(false)
     expect(oldPage.hasEarlier).toBe(false)
     // The current generation serves the notice, never the inherited prefix.
+    // The reset notice rides the Host-injected lane (the plugin's own source
+    // attribution), so it reads as a notice, not as Human input.
     const newPage = await ctx.agentTeam.memberSessionTranscript({ memberId, sessionId: secondSession })
-    expect(newPage.entries.some(entry => entry.role === 'user' && entry.text.includes('Context reset notice'))).toBe(true)
+    expect(newPage.entries.some(entry => entry.role === 'notice' && entry.text.includes('Context reset notice'))).toBe(true)
     expect(JSON.stringify(newPage.entries)).not.toContain('Build the initial feature')
 
     // A Session outside this Member's lineage is refused outright.
     await expect(ctx.agentTeam.memberSessionTranscript({ memberId, sessionId: SessionId('agent-team-not-a-lineage') })).rejects.toThrow(/not in the lineage/)
+  })
+
+  it('keeps archived history readable when the renewed Session never materialized', async () => {
+    const adapter = new ScriptedAdapter()
+    const { ctx, workspaceId, presets } = await realHarness(adapter)
+    const channel = await ctx.agentTeam.createChannel({ requestId: requestId('lostgen-channel'), workspaceId, name: 'engineering', description: 'Engineering work' })
+    const added = await ctx.agentTeam.addMember({ requestId: requestId('lostgen-add'), workspaceId, handle: 'builder', description: 'Builds the implementation', presetId: 'team-member', channelRefs: [channel.channel.channelRef] })
+    const memberId = added.status.member.memberId
+    const firstSession = added.status.member.sessionId
+    const live = ctx.agents.get(firstSession)!
+    adapter.enqueue(textResponse('Initial work finished.'))
+    const idle = new Promise<void>(resolve => {
+      const dispose = ctx.on('agent/status', ({ agent: subject, status }) => {
+        if (subject !== live || status !== 'idle') return
+        dispose()
+        resolve()
+      })
+    })
+    const started = await ctx.agentTeam.sendMessage({ asTask: true, requestId: requestId('lostgen-task'), workspaceId, channelRef: channel.channel.channelRef, body: 'Build the initial feature', recipients: [memberId] })
+    if (started.kind !== 'committed') throw new Error(`expected committed start, received ${started.kind}`)
+    await idle
+    await live.whenIdle()
+    // Settle to available before the clear: the renewal guard refuses a
+    // Member that is still running.
+    const settleDeadline = Date.now() + 3000
+    while (Date.now() < settleDeadline
+      && ctx.agentTeam.members().find(entry => entry.member.memberId === memberId)!.presence !== 'available') {
+      await new Promise(resolve => setTimeout(resolve, 25))
+    }
+
+    // A Human reset commits the durable renewal, then the fresh Session's
+    // activation fails: the ledger binding names a Session that never lands
+    // on disk — the exact shape the session-history read used to answer with
+    // a bare "could not be read" and no ancestors at all.
+    presets.failingMount = true
+    await expect(ctx.agentTeam.clearMemberContext({ requestId: requestId('lostgen-clear'), workspaceId, memberId })).rejects.toThrow(/failed to start a new context/)
+    const bound = ctx.agentTeam.members().find(entry => entry.member.memberId === memberId)!
+    expect(bound.availability).toBe('unavailable')
+    expect(bound.member.sessionId).not.toBe(firstSession)
+
+    // History stays auditable: the unreadable current entry degrades honestly,
+    // and the walk continues at the predecessor the ledger recorded, so the
+    // archived generation's own transcript still answers.
+    const generations = await ctx.agentTeam.memberSessions({ memberId })
+    expect(generations.map(generation => generation.sessionId)).toEqual([bound.member.sessionId, firstSession])
+    expect(generations[0]!.isCurrent).toBe(true)
+    expect(generations[0]!.createdAt).toBeUndefined()
+    expect(typeof generations[1]!.createdAt).toBe('number')
+    const oldPage = await ctx.agentTeam.memberSessionTranscript({ memberId, sessionId: firstSession })
+    expect(JSON.stringify(oldPage.entries)).toContain('Build the initial feature')
+    // An unreadable current Session is still outside every transcript read:
+    // the page never fetches a log the Host could not open.
+    await expect(ctx.agentTeam.memberSessionTranscript({ memberId, sessionId: bound.member.sessionId })).rejects.toThrow(/could not be read/)
   })
 
   it('clamps the pressure budget to a Member window override without ever raising the route window', async () => {

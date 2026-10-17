@@ -5,6 +5,9 @@ import type {
   AgentTeamChannel,
   AgentTeamChannelRef,
   AgentTeamContextCheckpointRef,
+  AgentTeamInterruptRef,
+  AgentTeamInterruptResolution,
+  AgentTeamMemberInterrupt,
   AgentTeamOperationBase,
   AgentTeamClaim,
   AgentTeamClaimActivity,
@@ -442,6 +445,41 @@ export interface AgentTeamDmSentOperation extends AgentTeamOperationBase {
   }
 }
 
+/**
+ * Durable record of one interrupted Member session pinned to a restorable
+ * checkpoint. The actor is the interrupted Member itself: the Host records
+ * the entry only through its running turn. The private detail (handoff prose,
+ * notes, verified-vs-trusted split) stays in the Member's own Session log and
+ * memory; the ledger carries only the resume pointer and the bounded
+ * description that lets the Member and the Human see what is still owed.
+ */
+export interface AgentTeamMemberInterruptRecordedOperation extends AgentTeamOperationBase {
+  readonly kind: 'team/member-interrupt-recorded'
+  readonly data: {
+    readonly workspaceId: WorkspaceId
+    /** The full recorded entry, sequence- and instant-stamped by this operation. */
+    readonly interrupt: AgentTeamMemberInterrupt
+  }
+}
+
+/**
+ * Durable close of one pending interrupt: `resumed` when a checkpoint-return
+ * rollover citing its exact ref committed (the Host records this itself in
+ * the transition), `released` when the Member or the Human closed it without
+ * returning. The pending stack forgets the entry; the record stays for replay.
+ */
+export interface AgentTeamMemberInterruptResolvedOperation extends AgentTeamOperationBase {
+  readonly kind: 'team/member-interrupt-resolved'
+  readonly data: {
+    readonly workspaceId: WorkspaceId
+    readonly interruptRef: AgentTeamInterruptRef
+    readonly memberId: AgentTeamMemberId
+    readonly resolution: AgentTeamInterruptResolution
+    /** Bounded one-line reason shown with the audit trail; absent on Host-recorded resumes. */
+    readonly reason?: string
+  }
+}
+
 /** Closed union of durable Agent Team operations. */
 export type AgentTeamOperation =
   | AgentTeamInitializedOperation
@@ -472,4 +510,6 @@ export type AgentTeamOperation =
   | AgentTeamThreadReadOperation
   | AgentTeamMemberRemovedOperation
   | AgentTeamDmSentOperation
+  | AgentTeamMemberInterruptRecordedOperation
+  | AgentTeamMemberInterruptResolvedOperation
 

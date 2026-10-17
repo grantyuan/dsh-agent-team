@@ -47,6 +47,8 @@ import type {
   AgentTeamInboxDelta,
   AgentTeamInboxItem,
   AgentTeamInitializedOperation,
+  AgentTeamInterruptRef,
+  AgentTeamInterruptResolution,
   AgentTeamJoinChannelRequest,
   AgentTeamJoinChannelResult,
   AgentTeamMemberActor,
@@ -54,6 +56,9 @@ import type {
   AgentTeamMemberArchivedOperation,
   AgentTeamMemberCapabilities,
   AgentTeamMemberId,
+  AgentTeamMemberInterrupt,
+  AgentTeamMemberInterruptRecordedOperation,
+  AgentTeamMemberInterruptResolvedOperation,
   AgentTeamMemberPromptProfile,
   AgentTeamMemberRemovedOperation,
   AgentTeamMemberResumedOperation,
@@ -223,10 +228,53 @@ export interface AgentTeamAuthorizedRolloverMemberSessionRequest {
   readonly checkpointRef?: AgentTeamContextCheckpointRef
 }
 
+/**
+ * How many pending interrupts one Member may hold. The stack bounds the
+ * resume queue the Host nudges at completion; deeper nesting means the
+ * Member has been interrupted more times than it can meaningfully pick
+ * back up, so a full stack rejects until one is resolved.
+ */
+export const MAX_PENDING_INTERRUPTS = 8
+
+/** Label and incomplete-state bounds: resume pointers stay compact, notes live in the Member's own memory. */
+export const INTERRUPT_LABEL_MAX_CHARS = 120
+export const INTERRUPT_STATE_MAX_CHARS = 2000
+
+/** Member-authored intent to pin an unfinished session onto a restorable checkpoint. */
+export interface AgentTeamAuthorizedRecordInterruptRequest {
+  readonly requestId: AgentTeamRequestId
+  readonly workspaceId: WorkspaceId
+  readonly memberId: AgentTeamMemberId
+  /** The calling Member; must be the target Member itself. */
+  readonly actor: AgentTeamMemberActor
+  /** The Member's currently bound Session — the entry pins its context. */
+  readonly sessionId: SessionId
+  readonly checkpointRef: AgentTeamContextCheckpointRef
+  readonly label: string
+  readonly incompleteState: string
+  readonly taskRef?: AgentTeamTaskRef
+  readonly threadRef?: AgentTeamThreadRef
+  readonly notePath?: string
+}
+
+/**
+ * Intent to close one pending interrupt. The Member itself releases an
+ * entry, or the Host records the `resumed` close inside a checkpoint-return
+ * transition; the Human releases one through the Client surface.
+ */
+export interface AgentTeamAuthorizedResolveInterruptRequest {
+  readonly requestId: AgentTeamRequestId
+  readonly workspaceId: WorkspaceId
+  readonly memberId: AgentTeamMemberId
+  readonly actor: AgentTeamHumanActor | AgentTeamMemberActor
+  readonly interruptRef: AgentTeamInterruptRef
+  readonly resolution: AgentTeamInterruptResolution
+  readonly reason?: string
+}
+
 export interface AgentTeamAuthorizedJoinChannelRequest extends AgentTeamJoinChannelRequest {
   readonly actor: AgentTeamHumanActor
 }
-
 export interface AgentTeamAuthorizedRemoveChannelMemberRequest extends AgentTeamRemoveChannelMemberRequest {
   readonly actor: AgentTeamHumanActor
 }
@@ -303,7 +351,7 @@ export interface AgentTeamAuthorizedDmRequest extends AgentTeamDmRequest {
 export interface AgentTeamLedgerOptions {
   readonly operationId?: () => AgentTeamOperationId
   readonly occurredAt?: () => string
-  readonly ref?: (kind: 'channel' | 'message' | 'task' | 'thread' | 'claim' | 'activity') => string
+  readonly ref?: (kind: 'channel' | 'message' | 'task' | 'thread' | 'claim' | 'activity' | 'interrupt') => string
   /**
    * Single-writer fence (see ledger-fence.ts): consulted before every queued
    * ledger call. A false answer means another host claimed the ledger's write
@@ -406,6 +454,10 @@ interface Projection {
   readonly previousSessions: Map<AgentTeamMemberId, SessionId>
   /** Latest rollover seed envelope per Member, keyed to its target Session; absent on fresh rollovers and renewals. */
   readonly rolloverSeeds: Map<AgentTeamMemberId, { readonly targetSessionId: SessionId; readonly sourceSessionId: SessionId; readonly sourceThroughSeq: SessionLogOffset; readonly checkpointRef: AgentTeamContextCheckpointRef }>
+  /** Pending interrupted sessions awaiting continuation, keyed by ref; the per-Member stack order is `interruptsByMember`. */
+  readonly interrupts: Map<AgentTeamInterruptRef, AgentTeamMemberInterrupt>
+  /** One Member's pending interrupt refs, oldest recorded first; the resume order is this list reversed. */
+  readonly interruptsByMember: Map<AgentTeamMemberId, AgentTeamInterruptRef[]>
   /** Top-level anchor Message per Thread; the first topLevel Message wins, like the linear scan it replaces. */
   readonly anchorByThread: Map<AgentTeamThreadRef, AgentTeamMessage>
   /** Display ordinal per Task, in per-Channel creation order; workspace filtering happens at read time. */
@@ -436,6 +488,7 @@ function emptyProjection(): Projection {
     orderedFacts: [], factsByThread: new Map(), channelRefByThread: new Map(), mentionsByMessage: new Map(), messageCountByThread: new Map(),
     messagesByRef: new Map(),
     attentionByThread: new Map(), previousSessions: new Map(), rolloverSeeds: new Map(),
+    interrupts: new Map(), interruptsByMember: new Map(),
     anchorByThread: new Map(), taskNumberByTask: new Map(), taskCountByChannel: new Map(), attentionThreadsByMember: new Map(),
     threadsByWriter: new Map(),
     directMarkersByMember: new Map(), activityMarkersByMember: new Map(), observationsByThread: new Map() }
@@ -455,6 +508,30 @@ function assertUnhandledKind(operation: never): never {
 function boundedInboxPreview(body: string): string {
   const firstLine = body.split('\n', 1)[0]?.trim() ?? ''
   return firstLine.length > 120 ? `${firstLine.slice(0, 119)}…` : firstLine
+}
+
+/**
+ * Whether a Human-addressed Message asks the Human for a call — the phrase
+ * test behind the row's 待你决策 chip. Naming the Human alone is not a
+ * decision request: reports, notices and CC-style mentions light the unread
+ * badge, never this chip. The list is deliberately conservative — bare
+ * decision nouns (决策/批准/验收, decision/approve/your call) plus
+ * same-sentence request shapes (请…确认, 需要…决定, awaiting your review) —
+ * because this is a deterministic coarse filter over facts only; the semantic
+ * judge is the Thread digest, which reads the whole transcript when the panel
+ * opens and asks the decision there.
+ */
+const HUMAN_DECISION_ASKS: readonly RegExp[] = [
+  /决策|定夺|拍板|批准|审批|否决|验收|是否/,
+  /请[^。！？!?]{0,12}(决定|确认|选择|答复)/,
+  /需要[^。！？!?]{0,12}(决定|确认|选择|批准)/,
+  /等待?你?[^。！？!?]{0,12}(决定|决策|确认|验收|答复)/,
+  /待[^。！？!?]{0,8}(确认|验收|决定|决策)/,
+  /\b(decision|decide|approve|approval|confirm|acceptance|veto|your call)\b|sign[- ]?off|awaiting[ a-z]{0,10}(decision|confirmation|review|acceptance|call)/i,
+]
+
+function namesHumanDecisionAsk(body: string): boolean {
+  return HUMAN_DECISION_ASKS.some(pattern => pattern.test(body))
 }
 
 /**
@@ -567,7 +644,7 @@ export class AgentTeamLedger {
   private readonly confirmations = new Map<AgentTeamConfirmationToken, Confirmation>()
   private readonly createOperationId: () => AgentTeamOperationId
   private readonly createOccurredAt: () => string
-  private readonly createRef: (kind: 'channel' | 'message' | 'task' | 'thread' | 'claim' | 'activity') => string
+  private readonly createRef: (kind: 'channel' | 'message' | 'task' | 'thread' | 'claim' | 'activity' | 'interrupt') => string
   private operationTail: Promise<void> = Promise.resolve()
   /**
    * Runtime human display name. Durable identity stays `member:human`; only
@@ -882,6 +959,131 @@ export class AgentTeamLedger {
       this.apply(operation)
       return this.committed(this.memberResult(operation))
     })
+  }
+
+  /**
+   * Pin one Member's unfinished session onto a restorable checkpoint. The
+   * actor is the interrupted Member itself — the Host records this only
+   * through its running turn — and the durable data carries the resume
+   * pointer plus the bounded semantic description; the full private state
+   * stays in the Member's own Session log and memory. One pending entry per
+   * (Member, checkpoint): a repeated record of the same anchor resolves to
+   * the entry already on the stack rather than duplicating it. An exact
+   * retry by requestId resolves to the recorded outcome.
+   */
+  recordMemberInterrupt(request: AgentTeamAuthorizedRecordInterruptRequest): Promise<AgentTeamLedgerResult<{ readonly receipt: AgentTeamOperationReceipt; readonly interrupt: AgentTeamMemberInterrupt }>> {
+    return this.enqueue(async () => {
+      const existing = this.state.byRequest.get(request.requestId)
+      if (existing !== undefined) {
+        this.assertSameMemberInterruptRecorded(existing, request)
+        return this.resolved(this.interruptResult(existing))
+      }
+      if (request.actor.kind !== 'member') throw new Error('Interrupt recording requires Member authority')
+      const prior = this.requireMember(request.memberId)
+      if (request.actor.memberId !== request.memberId) throw new Error(`Agent Member '${prior.handle}' cannot record an interrupt for another Member`)
+      if (prior.state !== 'enabled') throw new Error(`Agent Member '${prior.handle}' is ${prior.state}; only enabled Members can record interrupts`)
+      if (prior.sessionId !== request.sessionId) throw new Error(`Agent Member '${prior.handle}' is no longer bound to Session '${request.sessionId}'`)
+      if (!this.participatesIn(request.memberId, request.workspaceId)) throw new Error(`Agent Member '${prior.handle}' does not participate in workspace '${request.workspaceId}'`)
+      const label = request.label.trim()
+      const incompleteState = request.incompleteState.trim()
+      if (label === '' || label.length > INTERRUPT_LABEL_MAX_CHARS) throw new Error(`interrupt label must be non-empty and at most ${INTERRUPT_LABEL_MAX_CHARS} characters`)
+      if (incompleteState === '' || incompleteState.length > INTERRUPT_STATE_MAX_CHARS) throw new Error(`interrupt incompleteState must be non-empty and at most ${INTERRUPT_STATE_MAX_CHARS} characters`)
+      if (request.taskRef !== undefined && !this.state.tasks.has(this.requireRefKey(this.state.tasks, request.taskRef, 'task', 'Task'))) throw new Error(`unknown Task '${request.taskRef}'`)
+      if (request.threadRef !== undefined && !this.state.threads.has(this.requireRefKey(this.state.threads, request.threadRef, 'thread', 'Thread'))) throw new Error(`unknown Thread '${request.threadRef}'`)
+      const resolvedTaskRef = request.taskRef === undefined ? undefined : this.requireRefKey(this.state.tasks, request.taskRef, 'task', 'Task')
+      const resolvedThreadRef = request.threadRef === undefined ? undefined : this.requireRefKey(this.state.threads, request.threadRef, 'thread', 'Thread')
+      if (resolvedTaskRef !== undefined && resolvedThreadRef !== undefined) {
+        const task = this.state.tasks.get(resolvedTaskRef)
+        if (task?.threadRef !== resolvedThreadRef) throw new Error('interrupt taskRef and threadRef name different Threads')
+      }
+      // One resume pointer per anchor: re-recording the same checkpoint is
+      // the retry of a lost response, not a second pending continuation —
+      // the original recording operation answers it.
+      const alreadyPinned = this.pendingInterruptsForMember(request.memberId).find(interrupt => interrupt.checkpointRef === request.checkpointRef)
+      if (alreadyPinned !== undefined) {
+        const recorded = this.state.ordered[alreadyPinned.recordedSequence - 1]
+        if (recorded === undefined) throw new Error(`interrupt '${alreadyPinned.interruptRef}' names a missing recording operation`)
+        return this.resolved(this.interruptResult(recorded))
+      }
+      if (this.pendingInterruptsForMember(request.memberId).length >= MAX_PENDING_INTERRUPTS) throw new Error(`Agent Member '${prior.handle}' already holds ${MAX_PENDING_INTERRUPTS} pending interrupts; release one before recording another`)
+      const base = this.operationBase(request, this.nextSequence())
+      const interrupt: AgentTeamMemberInterrupt = Object.freeze({
+        interruptRef: this.ref('interrupt'),
+        memberId: request.memberId,
+        workspaceId: request.workspaceId,
+        checkpointRef: request.checkpointRef,
+        sessionId: request.sessionId,
+        label,
+        incompleteState,
+        ...(resolvedTaskRef === undefined ? {} : { taskRef: resolvedTaskRef }),
+        ...(resolvedThreadRef === undefined ? {} : { threadRef: resolvedThreadRef }),
+        ...(request.notePath === undefined ? {} : { notePath: request.notePath }),
+        recordedSequence: base.sequence,
+        recordedAt: base.occurredAt,
+      })
+      const operation: AgentTeamMemberInterruptRecordedOperation = Object.freeze({
+        ...base, kind: 'team/member-interrupt-recorded',
+        data: Object.freeze({ workspaceId: request.workspaceId, interrupt }),
+      })
+      await this.table.put(operation.operationId, operation)
+      this.apply(operation)
+      return this.committed(this.interruptResult(operation))
+    })
+  }
+
+  /**
+   * Close one pending interrupt. `resumed` is written by the Host inside the
+   * checkpoint-return transition that consumed the entry; `released` closes
+   * it without returning — by the Member itself, or by the Human through the
+   * Client. The pending stack forgets the entry; the operation stays for
+   * replay, so the ledger keeps the whole interrupt history without a
+   * second store.
+   */
+  resolveMemberInterrupt(request: AgentTeamAuthorizedResolveInterruptRequest): Promise<AgentTeamLedgerResult<{ readonly receipt: AgentTeamOperationReceipt; readonly interruptRef: AgentTeamInterruptRef; readonly resolution: AgentTeamInterruptResolution }>> {
+    return this.enqueue(async () => {
+      const existing = this.state.byRequest.get(request.requestId)
+      if (existing !== undefined) {
+        this.assertSameMemberInterruptResolved(existing, request)
+        return this.resolved(this.interruptResolveResult(existing))
+      }
+      if (request.actor.kind === 'member') {
+        this.assertMemberActor(request.actor)
+      } else {
+        this.assertHumanActor(request.actor)
+      }
+      const interruptRefKey = this.requireRefKey(this.state.interrupts, request.interruptRef, 'interrupt', 'Interrupt')
+      const pending = this.state.interrupts.get(interruptRefKey)
+      if (pending === undefined) throw new Error(`Interrupt '${request.interruptRef}' is not pending — it was already resolved or never recorded`)
+      if (pending.memberId !== request.memberId) throw new Error(`Interrupt '${request.interruptRef}' belongs to another Member`)
+      const reason = request.reason?.trim()
+      if (reason !== undefined && (reason === '' || reason.length > INTERRUPT_LABEL_MAX_CHARS)) throw new Error(`interrupt reason must be a non-empty string of at most ${INTERRUPT_LABEL_MAX_CHARS} characters`)
+      const operation: AgentTeamMemberInterruptResolvedOperation = Object.freeze({
+        ...this.operationBase(request, this.nextSequence()), kind: 'team/member-interrupt-resolved',
+        data: Object.freeze({
+          workspaceId: pending.workspaceId,
+          interruptRef: request.interruptRef,
+          memberId: request.memberId,
+          resolution: request.resolution,
+          ...(reason === undefined || reason === '' ? {} : { reason }),
+        }),
+      })
+      await this.table.put(operation.operationId, operation)
+      this.apply(operation)
+      return this.committed(this.interruptResolveResult(operation))
+    })
+  }
+
+  /** The Member's pending interrupts, newest recorded first — the order the resume protocol walks. */
+  pendingInterruptsForMember(memberId: AgentTeamMemberId): readonly AgentTeamMemberInterrupt[] {
+    return Object.freeze((this.state.interruptsByMember.get(memberId) ?? [])
+      .map(ref => this.state.interrupts.get(ref))
+      .filter((interrupt): interrupt is AgentTeamMemberInterrupt => interrupt !== undefined)
+      .reverse())
+  }
+
+  /** The pending interrupt pinned to one checkpoint ref, if any — the join the resume transition closes through. */
+  pendingInterruptForCheckpoint(memberId: AgentTeamMemberId, checkpointRef: AgentTeamContextCheckpointRef): AgentTeamMemberInterrupt | undefined {
+    return this.pendingInterruptsForMember(memberId).find(interrupt => interrupt.checkpointRef === checkpointRef)
   }
 
   getMember(memberId: AgentTeamMemberId): AgentTeamAgentMember | undefined {
@@ -1873,6 +2075,7 @@ export class AgentTeamLedger {
         ...(task === undefined ? {} : { task }), ...(taskNumber === undefined ? {} : { taskNumber }), thread,
         unreadCount: unread.length, directCount,
         previewText: boundedInboxPreview(this.threadAnchor(thread.threadRef).body),
+        ...this.inboxThreadClock(thread.threadRef, task),
         newestSequence: newest.sequence, newestOccurredAt: newest.occurredAt,
         newestActor: this.inboxActorFor(newest), claimOwners: this.liveClaimOwners(task),
         ...(attention === undefined ? {} : { attention }) }))
@@ -1897,6 +2100,48 @@ export class AgentTeamLedger {
    */
   private inboxActorFor(fact: AgentTeamThreadFact): AgentTeamInboxActor {
     return this.memberActor(fact.kind === 'message' ? fact.message.sender : fact.activity.actor)
+  }
+
+  /**
+   * The row-drawing form of one Member for surfaces outside the ledger's own
+   * projections — the Host's Thread digest resolves author names through this
+   * same path, so a name never reads differently on two surfaces.
+   */
+  actorFor(memberId: AgentTeamMemberId): AgentTeamInboxActor {
+    return this.memberActor(memberId)
+  }
+
+  /**
+   * The clock and decision material every row shows: when the Thread opened,
+   * who last replied and when, and whether it still waits on the Human. The
+   * decision flag is a Thread fact, not a reader fact — an open Task awaiting
+   * acceptance, or the newest Message that named the Human asked for a call
+   * (see `namesHumanDecisionAsk`) and came after the Human's own last word —
+   * so an Agent reading its own Inbox never flips the same Thread on its own
+   * mentions.
+   */
+  private inboxThreadClock(threadRef: AgentTeamThreadRef, task: AgentTeamTask | undefined): {
+    readonly createdOccurredAt: string
+    readonly latestReplyOccurredAt?: string
+    readonly latestReplyActor?: AgentTeamInboxActor
+    readonly needsHumanDecision: boolean
+  } {
+    const anchor = this.threadAnchor(threadRef)
+    const humanMemberId = this.initialization().data.humanMemberId
+    let latestReply: AgentTeamMessage | undefined
+    let awaitingHuman = false
+    for (const fact of this.threadFacts(threadRef)) {
+      if (fact.kind !== 'message') continue
+      if (fact.sequence > anchor.sequence) latestReply = fact.message
+      if (fact.message.sender === humanMemberId) awaitingHuman = false
+      else if (fact.mentions.includes(humanMemberId)) awaitingHuman = namesHumanDecisionAsk(fact.message.body)
+    }
+    const awaitingReview = task !== undefined && task.resolution === 'open' && task.status === 'in_review'
+    return {
+      createdOccurredAt: anchor.occurredAt,
+      ...(latestReply === undefined ? {} : { latestReplyOccurredAt: latestReply.occurredAt, latestReplyActor: this.memberActor(latestReply.sender) }),
+      needsHumanDecision: awaitingHuman || awaitingReview,
+    }
   }
 
   /**
@@ -1968,6 +2213,7 @@ export class AgentTeamLedger {
         ...(task === undefined ? {} : { task }), ...(taskNumber === undefined ? {} : { taskNumber }), thread,
         unreadCount: 0, directCount: 0,
         previewText: boundedInboxPreview(this.threadAnchor(thread.threadRef).body),
+        ...this.inboxThreadClock(thread.threadRef, task),
         newestSequence: newest.sequence, newestOccurredAt: newest.occurredAt,
         newestActor: this.inboxActorFor(newest), claimOwners: this.liveClaimOwners(task) }))
     }
@@ -2408,6 +2654,10 @@ export class AgentTeamLedger {
       case 'team/member-updated':
       case 'team/member-removed':
         return this.memberWorkspaceScopes(operation.data.member.memberId)
+      case 'team/member-interrupt-recorded':
+        return this.memberWorkspaceScopes(operation.data.interrupt.memberId)
+      case 'team/member-interrupt-resolved':
+        return this.memberWorkspaceScopes(operation.data.memberId)
       case 'team/member-archived':
         return this.withReleasedActivityScopes(
           this.memberWorkspaceScopes(operation.data.member.memberId),
@@ -2520,6 +2770,8 @@ export class AgentTeamLedger {
       case 'team/channel-member-added':
       case 'team/thread-read':
       case 'team/dm-sent':
+      case 'team/member-interrupt-recorded':
+      case 'team/member-interrupt-resolved':
         return []
       default:
         return assertUnhandledKind(operation)
@@ -2650,6 +2902,44 @@ export class AgentTeamLedger {
       if (operation.data.sourceSessionId !== undefined && operation.data.sourceThroughSeq === undefined) throw new Error('rolled-over checkpoint seed requires a through sequence')
       if (operation.data.sourceThroughSeq !== undefined && operation.data.sourceSessionId === undefined) throw new Error('rolled-over through sequence requires a source Session')
       if ((operation.data.checkpointRef !== undefined) !== (operation.data.sourceSessionId !== undefined)) throw new Error('rolled-over checkpoint fields must appear together')
+      return
+    }
+    if (operation.kind === 'team/member-interrupt-recorded') {
+      // Self-scoped like the rollover: only the Member itself can pin its
+      // interrupted session, and only while it runs in the pinned Session.
+      const actorMember = assertMember()
+      const { workspaceId, interrupt } = operation.data
+      if (actorMember.memberId !== interrupt.memberId) throw new Error('interrupted Member must be the actor')
+      if (interrupt.recordedSequence !== operation.sequence || interrupt.recordedAt !== operation.occurredAt) throw new Error('invalid interrupt recording stamping')
+      if (!this.participatesInFrom(projection, interrupt.memberId, workspaceId) || interrupt.workspaceId !== workspaceId) throw new Error('invalid interrupt recording Workspace')
+      const prior = projection.members.get(interrupt.memberId)
+      if (prior === undefined || prior.state !== 'enabled' || prior.sessionId !== interrupt.sessionId) throw new Error('invalid interrupt recording Session binding')
+      if (interrupt.label.trim() !== interrupt.label || interrupt.label === ''
+        || interrupt.incompleteState.trim() !== interrupt.incompleteState || interrupt.incompleteState === '') throw new Error('invalid interrupt description')
+      if (interrupt.taskRef !== undefined) {
+        const task = projection.tasks.get(interrupt.taskRef)
+        if (task === undefined) throw new Error('interrupt names an unknown Task')
+        if (interrupt.threadRef !== undefined && task.threadRef !== interrupt.threadRef) throw new Error('interrupt Task and Thread disagree')
+      }
+      if (interrupt.threadRef !== undefined && !projection.threads.has(interrupt.threadRef)) throw new Error('interrupt names an unknown Thread')
+      this.addRef(refs, interrupt.interruptRef)
+      if (projection.interrupts.has(interrupt.interruptRef)) throw new Error('interrupt recording repeats a pending ref')
+      const pending = projection.interruptsByMember.get(interrupt.memberId) ?? []
+      if (pending.length >= MAX_PENDING_INTERRUPTS) throw new Error('interrupt recording exceeds the pending stack')
+      if (pending.some(ref => projection.interrupts.get(ref)?.checkpointRef === interrupt.checkpointRef)) throw new Error('interrupt recording re-pins a pending checkpoint')
+      return
+    }
+    if (operation.kind === 'team/member-interrupt-resolved') {
+      const { interruptRef, memberId, workspaceId } = operation.data
+      const pending = projection.interrupts.get(interruptRef)
+      if (pending === undefined) throw new Error('interrupt resolution names no pending entry')
+      if (pending.memberId !== memberId || pending.workspaceId !== workspaceId) throw new Error('interrupt resolution names another Member')
+      if (operation.actor.kind === 'member') {
+        const actorMember = assertMember()
+        if (actorMember.memberId !== memberId) throw new Error('interrupt resolution actor must be the owning Member')
+      } else {
+        assertHuman()
+      }
       return
     }
     if (operation.kind === 'team/channel-updated') {
@@ -3225,6 +3515,25 @@ export class AgentTeamLedger {
         target.rolloverSeeds.set(operation.data.member.memberId, { targetSessionId: operation.data.newSessionId, sourceSessionId, sourceThroughSeq, checkpointRef })
       } else {
         target.rolloverSeeds.delete(operation.data.member.memberId)
+      }
+      return
+    }
+    if (operation.kind === 'team/member-interrupt-recorded') {
+      target.interrupts.set(operation.data.interrupt.interruptRef, operation.data.interrupt)
+      const stack = target.interruptsByMember.get(operation.data.interrupt.memberId) ?? []
+      stack.push(operation.data.interrupt.interruptRef)
+      target.interruptsByMember.set(operation.data.interrupt.memberId, stack)
+      return
+    }
+    if (operation.kind === 'team/member-interrupt-resolved') {
+      // The pending stack forgets the entry; the recording operation stays in
+      // the ordered log, so the durable history is never rewritten.
+      target.interrupts.delete(operation.data.interruptRef)
+      const stack = target.interruptsByMember.get(operation.data.memberId)
+      if (stack !== undefined) {
+        const index = stack.indexOf(operation.data.interruptRef)
+        if (index >= 0) stack.splice(index, 1)
+        if (stack.length === 0) target.interruptsByMember.delete(operation.data.memberId)
       }
       return
     }
@@ -4552,6 +4861,23 @@ export class AgentTeamLedger {
       || operation.data.member.memberId !== request.memberId || operation.data.member.sessionId !== request.sessionId) this.throwRequestCollision(request.requestId)
   }
 
+  private assertSameMemberInterruptRecorded(operation: AgentTeamOperation, request: AgentTeamAuthorizedRecordInterruptRequest): asserts operation is AgentTeamMemberInterruptRecordedOperation {
+    if (operation.kind !== 'team/member-interrupt-recorded' || !this.sameActor(operation.actor, request.actor)
+      || operation.data.workspaceId !== request.workspaceId
+      || operation.data.interrupt.memberId !== request.memberId
+      || operation.data.interrupt.sessionId !== request.sessionId
+      || operation.data.interrupt.checkpointRef !== request.checkpointRef
+      || operation.data.interrupt.label !== request.label.trim()
+      || operation.data.interrupt.incompleteState !== request.incompleteState.trim()) this.throwRequestCollision(request.requestId)
+  }
+
+  private assertSameMemberInterruptResolved(operation: AgentTeamOperation, request: AgentTeamAuthorizedResolveInterruptRequest): asserts operation is AgentTeamMemberInterruptResolvedOperation {
+    if (operation.kind !== 'team/member-interrupt-resolved' || !this.sameActor(operation.actor, request.actor)
+      || operation.data.interruptRef !== request.interruptRef
+      || operation.data.memberId !== request.memberId
+      || operation.data.resolution !== request.resolution) this.throwRequestCollision(request.requestId)
+  }
+
   private assertSameMemberSessionRolledOver(operation: AgentTeamOperation, request: AgentTeamAuthorizedRolloverMemberSessionRequest): asserts operation is AgentTeamMemberSessionRolledOverOperation {
     if (operation.kind !== 'team/member-session-rolled-over' || !this.sameActor(operation.actor, request.actor)
       || operation.data.member.memberId !== request.memberId || operation.data.member.sessionId !== request.newSessionId
@@ -4792,6 +5118,21 @@ export class AgentTeamLedger {
     return Object.freeze({ receipt: this.receipt(operation), member: operation.data.member })
   }
 
+  /** The recorded value of one interrupt operation; the same shape the stack query and the replay return. */
+  private interruptValue(operation: AgentTeamOperation): AgentTeamMemberInterrupt {
+    if (operation.kind !== 'team/member-interrupt-recorded') throw new Error('interrupt result requires a recording operation')
+    return operation.data.interrupt
+  }
+
+  private interruptResult(operation: AgentTeamOperation): { readonly receipt: AgentTeamOperationReceipt; readonly interrupt: AgentTeamMemberInterrupt } {
+    return Object.freeze({ receipt: this.receipt(operation), interrupt: this.interruptValue(operation) })
+  }
+
+  private interruptResolveResult(operation: AgentTeamOperation): { readonly receipt: AgentTeamOperationReceipt; readonly interruptRef: AgentTeamInterruptRef; readonly resolution: AgentTeamInterruptResolution } {
+    if (operation.kind !== 'team/member-interrupt-resolved') throw new Error('interrupt result requires a resolving operation')
+    return Object.freeze({ receipt: this.receipt(operation), interruptRef: operation.data.interruptRef, resolution: operation.data.resolution })
+  }
+
   private joinResult(operation: AgentTeamChannelMemberAddedOperation): AgentTeamJoinChannelResult {
     return Object.freeze({ receipt: this.receipt(operation), channelRef: operation.data.channelRef, memberId: operation.data.memberId })
   }
@@ -4890,7 +5231,8 @@ export class AgentTeamLedger {
   private ref(kind: 'thread'): AgentTeamThreadRef
   private ref(kind: 'claim'): AgentTeamClaimRef
   private ref(kind: 'activity'): AgentTeamActivityRef
-  private ref(kind: 'channel' | 'message' | 'task' | 'thread' | 'claim' | 'activity') {
+  private ref(kind: 'interrupt'): AgentTeamInterruptRef
+  private ref(kind: 'channel' | 'message' | 'task' | 'thread' | 'claim' | 'activity' | 'interrupt') {
     return this.createRef(kind)
   }
 

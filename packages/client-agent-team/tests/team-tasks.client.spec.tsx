@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { cleanup, fireEvent, waitFor, within } from '@testing-library/react'
 import { usePinnedBrowserLanguages } from '@deepseek-ai/dsh-client-test-runtime'
 import { runtimeWithTeam } from './harness.tsx'
+import { STORAGE_KEY } from '../src/client/navigation.ts'
 
 usePinnedBrowserLanguages('zh-CN')
 afterEach(cleanup)
@@ -79,6 +80,26 @@ describe('Team Tasks surfaces', () => {
     // retry the same selection without rebuilding it.
     expect(await within(bar).findByText('transport down')).toBeTruthy()
     expect(b.view.getByRole('checkbox', { name: '选择任务 1' })).toBeTruthy()
+    await b.runtime.dispose()
+  })
+
+  it('opens a Task row and lands Back on the Tasks list it was entered from', async () => {
+    const b = await runtimeWithTeam({ mode: 'team', workspaceId: 'w1', seededMessages: [{ body: 'Thread opener', occurredAt: '2026-09-13T04:00:00.000Z' }], seedTaskRef: 'task:1', seedThreadRef: 'thread:1' })
+    b.seedTasks([taskRow('w1', 'task:1')])
+    fireEvent.click(await b.view.findByRole('button', { name: '任务' }))
+    const row = await b.view.findByRole('button', { name: /Ship the rollout/ })
+    fireEvent.click(row)
+    // The row's Workspace is selected, then the Thread carries the Tasks origin:
+    // the persisted location names the Thread and remembers the list behind it.
+    await waitFor(() => expect(b.readThread).toHaveBeenCalled())
+    expect(JSON.parse(localStorage.getItem(STORAGE_KEY) ?? '')).toMatchObject({ mode: 'team', workspaceId: 'w1', channelRef: 'channel:engineering', threadRef: 'thread:1', threadOrigin: 'tasks' })
+    // Back goes to the Tasks list this Thread was entered from.
+    fireEvent.click(await b.view.findByRole('button', { name: '返回任务列表' }))
+    await waitFor(() => expect(JSON.parse(localStorage.getItem(STORAGE_KEY) ?? '')).toMatchObject({ mode: 'team', workspaceId: 'w1', tasks: true }))
+    expect(JSON.parse(localStorage.getItem(STORAGE_KEY) ?? '')).not.toHaveProperty('threadRef')
+    expect(JSON.parse(localStorage.getItem(STORAGE_KEY) ?? '')).not.toHaveProperty('threadOrigin')
+    await b.view.findByRole('button', { name: /Ship the rollout/ })
+    expect(b.view.container.querySelector('[data-team-tasks]')).toBeTruthy()
     await b.runtime.dispose()
   })
 })

@@ -20,11 +20,11 @@ Auto-prune 就骑在这份投影上。画像的 `autoPrune` 开关（默认关�
 
 `autoExecutePrune` 升级让 sweep 以 Human actor、同样的 echo 齐全形状自行提交移除，在边界落定后 live 生效，并且仍然发通知——每次自动移除都留在台账里且被广播。纯散文与受保护 section 永远不会成为候选。
 
-九个 model-facing tools 定义在 `packages/tool-agent-team/src/`：六个 Team 工具在 `index.ts`，三个 context 工具在 `context-tools.ts`；实现的 collaboration contract 记录在 [`tools.zh.md`](../team-collaboration/tools.zh.md)。它们挂载在隔离开的 `team-member` preset 下（`cordis.patch.yml` 里的一条 declarative row）。不要为了让测试可用就把 tool package 作为 global row 添加；普通 Sessions 必须保持 Team-free。
+十个 model-facing tools 定义在 `packages/tool-agent-team/src/`：六个 Team 工具在 `index.ts`，四个 context 工具在 `context-tools.ts`；实现的 collaboration contract 记录在 [`tools.zh.md`](../team-collaboration/tools.zh.md)。它们挂载在隔离开的 `team-member` preset 下（`cordis.patch.yml` 里的一条 declarative row）。不要为了让测试可用就把 tool package 作为 global row 添加；普通 Sessions 必须保持 Team-free。
 
 Member 上下文自主管理在这些 preset 之上由 Host 编排。`context_rollover` 与 `context_checkpoint` 工具只做校验并结束/锚定 turn：在 tool 时，引擎的门先拒绝 Member 自己的 timeline 未列为 restorable 的 `checkpointRef`，通过这道门的 ref 仍由 Host 的 seed resolver（与换窗同一套）预校验，因此当下不可能成功的 ref 以 model-visible 的 error result 拒绝，而不是返回假 `scheduled`；可变 guard 集（jobs、route limits）在 commit seam 复查。
 
-三个 context 工具里有两个用的是引擎自己的定义：`context-tools.ts` 通过引擎的 `createContinuityTools` 构造 `context_rollover` 与 `context_checkpoint`，只提供 Team 词汇与 host adapter，不再自带文案与校验。`context_timeline` 仍是 Team 自己的实现——它的渲染对不可返回的行绝不打印可引用的 ref。
+四个 context 工具里有两个用的是引擎自己的定义：`context-tools.ts` 通过引擎的 `createContinuityTools` 构造 `context_rollover` 与 `context_checkpoint`，只提供 Team 词汇与 host adapter，不再自带文案与校验。`context_timeline` 与 `context_interrupt` 仍是 Team 自己的实现——前者的渲染对不可返回的行绝不打印可引用的 ref，后者经 Host-authority 方法驱动 ledger 的 pending 打断栈，而不依赖引擎状态。
 
 单一 context-continuity coordinator（`ContextContinuityCoordinator`，来自 `@wowyuarm/dsh-context-continuity`）由 `context-continuity-host.ts` 绑定到 Member lifecycle，后者还用 Team 的 plugin id 与冻结的 handoff 文案构造引擎的 message codec。它监听各 Member Session 的事件，从 durable 的 `tool/call`+`tool/result` 对折出 rollover 与 checkpoint 意图，再经串行 lifecycle queue 执行换窗。
 

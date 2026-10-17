@@ -106,7 +106,7 @@ An in-process availability projection, not a ledger fact: available (live idle),
 
 The structured reason behind a non-normal presence or availability row, never persisted: `session-refused` (a deterministic format refusal of a Session the activation needed; may carry the refused artifact's location and whether a repair attempt proved anything remediable), `session-unreadable` (missing, corrupt, io, or unknown Session read failure), `preset-composition` (preset mount/validation failure, typically an install/runtime split), `rollover` (the transient commit window), `runtime` (live loop or compaction failure), or `activation` (unclassified activation failure).
 
-The `class` routes which recovery action actually helps: a non-remediable refusal or a rollover window offers no restart, while everything else may recover through restart.
+The `class` describes the shape of the failure; every unavailable row offers restart, and the Host's `recoverMember` picks the repair from the live state — completing a context transition whose durable binding moved ahead of the live handle, re-running a failed activation, rebuilding an orphaned composition, or steering a continuation into the running Session.
 
 ## Context Generation
 

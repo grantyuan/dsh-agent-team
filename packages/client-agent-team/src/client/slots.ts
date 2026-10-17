@@ -29,6 +29,8 @@ import type {
   AgentTeamGetAttachmentResult,
   AgentTeamPutAttachmentRequest,
   AgentTeamPutAttachmentResult,
+  AgentTeamMemberInterrupts,
+  AgentTeamMemberInterruptsRequest,
   AgentTeamMemberResult,
   AgentTeamMemberPromptView,
   AgentTeamMemberPromptViewRequest,
@@ -42,6 +44,8 @@ import type {
   AgentTeamMembersRequest,
   AgentTeamRemoveChannelMemberRequest,
   AgentTeamRemoveChannelMemberResult,
+  AgentTeamResolveMemberInterruptRequest,
+  AgentTeamResolveMemberInterruptResult,
   AgentTeamReplyRequest,
   AgentTeamResolveTaskRefsRequest,
   AgentTeamResolveTaskRefsResult,
@@ -49,6 +53,8 @@ import type {
   AgentTeamResolveThreadRefsResult,
   AgentTeamReplyResult,
   AgentTeamConfirmationRequired,
+  AgentTeamSummarizeThreadRequest,
+  AgentTeamSummarizeThreadResult,
   AgentTeamThreadHistory,
   AgentTeamThreadHistoryRequest,
   AgentTeamThreadObservations,
@@ -153,19 +159,13 @@ export type TeamSidebarProps = PropsRuntime<'sidebar.workspaces'>
      * activity and never blocks later conversation.
      */
     compactMemberContext: (request: AgentTeamCompactMemberContextRequest) => Promise<RemoteResult<AgentTeamCompactMemberContextResult>>
-  /**
-   * Host read behind the session-history dialog: every Session generation the
-   * Member has run, newest first, folded from the stored `parentSession`
-   * lineage. An unreadable ancestor rides as a metadata-less entry and ends
-   * the walk.
-   */
-  loadMemberSessions: (request: AgentTeamMemberSessionsRequest) => Promise<RemoteResult<readonly AgentTeamMemberSessionSummary[]>>
-  /**
-   * One bounded transcript page of one lineage generation: the generation's
-   * own events, newest tail first, older pages reached through the returned
-   * cursor. Reads are Team-owned and never activate or write the Session.
-   */
-  loadMemberSessionTranscript: (request: AgentTeamMemberSessionTranscriptRequest) => Promise<RemoteResult<AgentTeamMemberSessionTranscript>>
+    /**
+     * One Member's pending interrupt stack, newest first, each entry carrying
+     * the live lineage verdict the Host walks for it.
+     */
+    loadMemberInterrupts: (request: AgentTeamMemberInterruptsRequest) => Promise<RemoteResult<AgentTeamMemberInterrupts>>
+    /** Human release of one pending interrupt; `resumed` stays the Host's own close. */
+    releaseMemberInterrupt: (request: AgentTeamResolveMemberInterruptRequest) => Promise<RemoteResult<AgentTeamResolveMemberInterruptResult>>
     /**
      * One bounded propose-only LLM curation pass behind the Prompt dialog: the
      * Host assembles the Member's live section input and runs a single
@@ -214,8 +214,23 @@ export type TeamConversationProps = PropsRuntime<'main'> & PropsLocale<'team'> &
   loadTasks: (request: AgentTeamTasksRequest) => Promise<RemoteResult<AgentTeamTasks>>
   /** Human-only Thread Attention observations; the Thread composer ranks the returned followers first. */
   threadObservations: (request: AgentTeamThreadObservationsRequest) => Promise<RemoteResult<AgentTeamThreadObservations>>
+  /** Human one-shot plain-language Thread digest: propose-only, commits nothing. */
+  summarizeThread: (request: AgentTeamSummarizeThreadRequest, signal?: AbortSignal) => Promise<RemoteResult<AgentTeamSummarizeThreadResult>>
   /** Agent-card session jump, shared by every slot; message member chips reuse it. */
   openMemberSession: (sessionId: AgentTeamClientMemberStatus['member']['sessionId']) => void
+  /**
+   * Host read behind the session-history page: every Session generation the
+   * Member has run, newest first, folded from the stored `parentSession`
+   * lineage. An unreadable ancestor rides as a metadata-less entry and ends
+   * the walk.
+   */
+  loadMemberSessions: (request: AgentTeamMemberSessionsRequest) => Promise<RemoteResult<readonly AgentTeamMemberSessionSummary[]>>
+  /**
+   * One bounded transcript page of one lineage generation: the generation's
+   * own events, newest tail first, older pages reached through the returned
+   * cursor. Reads are Team-owned and never activate or write the Session.
+   */
+  loadMemberSessionTranscript: (request: AgentTeamMemberSessionTranscriptRequest) => Promise<RemoteResult<AgentTeamMemberSessionTranscript>>
 }
 
 export type TeamSettingsProps = PropsRuntime<'sidebar.settings'> & PropsLocale<'team'> & {

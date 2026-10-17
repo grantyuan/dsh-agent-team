@@ -161,7 +161,7 @@ export function TeamTasksPage({ useWorkspaces, loadTasks, subscribeChanges, chan
 
   const open = (row: TeamTaskRow): void => {
     selectWorkspace(row.workspaceId)
-    selectThread(row.task.threadRef, row.task.channelRef, row.task.taskRef, row.task.taskNumber)
+    selectThread(row.task.threadRef, row.task.channelRef, row.task.taskRef, row.task.taskNumber, 'tasks')
   }
 
   const all = rows ?? []

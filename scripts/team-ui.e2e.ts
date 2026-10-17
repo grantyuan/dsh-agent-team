@@ -2266,17 +2266,16 @@ it('drives the complete opt-in Agent Team journey in real Web', async () => {
   await page.screenshot({ path: join(UI07_SHOTS, 'inbox-row-focus.png'), fullPage: true })
 
   // Opening the row's Thread acknowledges the mention durably: the badge and the
-  // row drop through the existing auto-ack read, and Back lands on the row's
-  // Channel — the Inbox is never on the back path. The row that merely moved is
-  // still waiting, so the badge lands on its count rather than zero — and the
-  // row just read is not gone from the page either: it comes back under
-  // 「最近活跃」 without a count, while the queue keeps the one still waiting.
+  // row drop through the existing auto-ack read, and Back remembers the Inbox it
+  // was entered from — it reads 「返回收件箱列表」 and lands back on this list. The
+  // row that merely moved is still waiting, so the badge lands on its count rather
+  // than zero — and the row just read is not gone from the page either: it comes
+  // back under 「最近活跃」 without a count, while the queue keeps the one still
+  // waiting.
   await inboxRow.click()
   await page.locator('[data-team-thread]').waitFor()
   await expectSidebarUnread(baseUnread === 0 ? '1' : String(baseUnread + 1))
-  await page.getByRole('button', { name: '返回频道' }).click()
-  await page.getByRole('heading', { name: '# delivery' }).waitFor()
-  await page.locator('button[class*="inboxCard"]').click()
+  await page.getByRole('button', { name: '返回收件箱列表' }).click()
   await page.locator('[data-team-inbox]').waitFor()
   // Wait on the section rather than on a row count: a row count of zero is also
   // what the entry frame shows, so only the section proves the fetch settled.
@@ -2303,9 +2302,7 @@ it('drives the complete opt-in Agent Team journey in real Web', async () => {
   await plainRow.click()
   await page.locator('[data-team-thread]').waitFor()
   await expectSidebarUnread(baseUnread === 0 ? null : String(baseUnread))
-  await page.getByRole('button', { name: '返回频道' }).click()
-  await page.getByRole('heading', { name: '# delivery' }).waitFor()
-  await page.locator('button[class*="inboxCard"]').click()
+  await page.getByRole('button', { name: '返回收件箱列表' }).click()
   await page.locator('[data-team-inbox]').waitFor()
   await page.locator('[data-team-inbox]').getByRole('heading', { name: '最近活跃' }).waitFor({ timeout: 30_000 })
   await expect.poll(async () => await page.locator('[data-team-inbox]').getByRole('heading', { name: '需要我' }).count()).toBe(0)
@@ -2429,11 +2426,13 @@ it('drives the complete opt-in Agent Team journey in real Web', async () => {
   expect(await page.locator('[data-team-tasks] button').filter({ hasText: '已关闭' }).count()).toBeGreaterThanOrEqual(1)
   await settleLayout(page)
   await page.screenshot({ path: join(UI10_SHOTS, 'tasks-page-desktop.png'), fullPage: true })
-  // Opening a row navigates to the Task's Thread; viewing acknowledges nothing.
+  // Opening a row navigates to the Task's Thread; viewing acknowledges nothing,
+  // and Back remembers the Tasks list it was entered from — it reads
+  // 「返回任务列表」 and lands back on this page.
   await tasksParentRow.click()
   await page.locator('[data-team-thread]').waitFor()
-  await page.getByRole('button', { name: '返回频道' }).click()
-  await page.getByRole('heading', { name: '# delivery' }).waitFor()
+  await page.getByRole('button', { name: '返回任务列表' }).click()
+  await page.locator('[data-team-tasks]').waitFor()
   // Batch acceptance: the multi-select bar resolves several open Tasks through
   // one Host call. Ticking a row is the intent — no Thread reads demanded — and
   // the committed rows move to the done section while the note names the count.
@@ -2629,6 +2628,41 @@ it('drives the complete opt-in Agent Team journey in real Web', async () => {
   await expect.poll(async () => await page.locator('[aria-current="page"]').count()).toBe(1)
   await expect.poll(async () => await inboxEntry.getAttribute('aria-current')).toBe('page')
   await expect.poll(async () => await page.locator('[data-composer-input]').count()).toBe(0)
+
+  // The session-history audit page assembles in the real Web bundle: the Agent
+  // row menu hands the conversation seat to the page (slot takeover), the
+  // header names the Member from the roster Remote, and the generation list is
+  // populated by a live round-trip through `memberSessions` (the lineage walk
+  // over the real ledger + stored-session reader). The transcript pane renders
+  // the selected generation's own bounded page through `memberSessionTranscript`
+  // — this synthetic reviewer's tail carries only Inbox lifecycle events, so
+  // its model-visible transcript is legitimately empty here; the per-lane
+  // Markdown rendering is proven deterministically in the Client and Host
+  // specs. What this journey checks is that the whole Remote+slot+UI assembly
+  // stands up and the Back control releases the seat. builder was archived
+  // mid-journey, so the audit row is the surviving reviewer.
+  const agentsSection = page.getByRole('button', { name: 'Agents', exact: true })
+  if (await agentsSection.getAttribute('aria-expanded') !== 'true') await agentsSection.click()
+  const historyAgentRow = page.locator('[class*="agentRow"]').filter({ hasText: 'reviewer' }).first()
+  await historyAgentRow.hover()
+  await historyAgentRow.getByRole('button', { name: 'reviewer 的操作' }).click()
+  await page.getByRole('menuitem', { name: '历史会话' }).click()
+  const historyPage = page.locator('[data-team-session-history]')
+  await historyPage.waitFor()
+  await expect.poll(() => historyPage.getByText('历史会话：reviewer').count(), { timeout: 20_000 }).toBe(1)
+  // The generation list is filled from the real `memberSessions` Remote: the
+  // current generation renders a selectable, enabled row (readable lineage).
+  const currentGeneration = historyPage.getByRole('button', { name: /当前会话/ })
+  await expect.poll(async () => await currentGeneration.count(), { timeout: 20_000 }).toBe(1)
+  await expect.poll(async () => await currentGeneration.isDisabled()).toBe(false)
+  await settleLayout(page)
+  await page.screenshot({ path: join(UI07_SHOTS, 'session-history-page.png'), fullPage: true })
+  await page.setViewportSize({ width: 390, height: 844 })
+  await settleLayout(page)
+  await page.screenshot({ path: join(UI07_SHOTS, 'session-history-page-narrow.png'), fullPage: true })
+  await page.setViewportSize({ width: 1440, height: 960 })
+  await historyPage.getByRole('button', { name: '返回' }).click()
+  await historyPage.waitFor({ state: 'detached' })
 
   const channelKeyboard = page.getByRole('button', { name: '# delivery' })
   await channelKeyboard.focus()

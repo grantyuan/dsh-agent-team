@@ -275,41 +275,6 @@
   overflow-y: auto;
 }
 
-/* The session-history dialog reads a transcript, not a form: it takes a wide
-   card capped against the Modal frame's padding box (the `.root` contract in
-   Modal.module.css — consumers cap with 100%, never a viewport calc), and the
-   browser's native corner handle drags it between its bounds and the frame's
-   edges. The footer toggle replaces the drag with the whole frame at once. */
-.historyModal {
-  height: min(680px, 100%);
-  max-height: 100%;
-  min-height: 320px;
-  min-width: 320px;
-  resize: both;
-  width: min(960px, 100%);
-}
-
-.historyModalMaximized {
-  height: 100%;
-  resize: none;
-  width: 100%;
-}
-
-/* Unlike the form dialogs that scroll the whole content column, this one
-   hands scrolling to the transcript pane, so the column takes the card's
-   remaining height instead of a fixed cap... */
-.historyContent {
-  flex: 1 1 auto;
-  min-height: 0;
-}
-
-/* ...and the Modal body wrapper — the content column's last child — fills
-   that height so the transcript stretches with the card. */
-.historyContent > :last-child {
-  flex: 1 1 auto;
-  min-height: 0;
-}
-
 @media (max-width: 600px) {
   .dialogContent {
     max-height: calc(100vh - 180px);

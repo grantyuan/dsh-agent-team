@@ -20,6 +20,21 @@ At the hard limit the Host forces an in-place compaction before the next model r
 
 A provider context-overflow failure gets one bounded compact-and-retry sequence before surfacing. A route whose window cannot be measured is an explicit rejection, never a silent over-limit submission. Accepted-Task auto compaction is retired: pressure policy is the only compaction trigger besides the Member's own explicit choice.
 
+## Interrupt stack and continuation
+The pending-interrupt stack is the durable memory of interrupted work: one Host operation pair (`team/member-interrupt-recorded`, `team/member-interrupt-resolved`) on the same append-only ledger, projected into a per-Member LIFO stack of at most eight pending entries, one per checkpoint anchor. An entry pins a resolved checkpoint ref plus a bounded label and `incompleteState`; the full working state never enters the ledger — it stays in the Member's Session log and private memory, and the entry is only the resume pointer.
+
+Replay rebuilds the stack from the operations; there is no second store.
+
+A `context_rollover` seeded from a pinned checkpoint closes that entry as `resumed` inside the same serialized transition — the ledger writes the resolve itself, keyed to the new Session id, so a retried or crash-recovered transition replays to the same single close. `released` entries close without a return: by the Member through `context_interrupt`, or by the Human through the Client row menu.
+
+Pre-completion analysis rides the completion liaison: while a Member's stack is non-empty, a finished episode earns one private resume-check notice (steer context, never a ledger Message), and the persona contract has the Member report the completion first, then walk the stack newest-first — return to each restorable anchor, and for an anchor the timeline no longer proves, take a fresh handoff and release the entry.
+
+A candidate new task is checked against other Members' active Claims first; strongly related work continues directly, otherwise it is written into private memory before the Member resets its own context.
+
+Prompt-cache discipline is the same machinery seen from the cost side: a checkpoint-return seed is the source log's exact prefix — node-zero system prompt, injected instructions, and tool history included — so Harness reassembly commits no new prompt text when nothing changed. The transition also carries the retiring generation's model selection, keeping route variables stable across the handoff.
+
+A `fresh` rollover likewise keeps injected surfaces deduplicated; a Member rewrites its memory index or restates carried content only when the fact actually changed.
+
 ## Agent notification boundary
 Host derives bounded coalesced notifications from durable unread state. Idle Agents start a turn; running Agents receive context at the next safe step. Direct mentions include Message body, sender, Channel, optional Task overlay, Thread, and Message ref. Task/Claim Activities include actor, transition, and affected Task/Thread/Claim refs. Ordinary unread exposes only a body-free Thread-first route with its unread count; taskful summaries may name the Task. No notice renders a revision or write token. Omitted details remain discoverable through `team_inbox` and `team_thread`.
 
@@ -29,9 +44,15 @@ Hints are at-least-once notification intent, coalesced per Member and rediscover
 
 Automatic recovery acts only on two conservatively matched error families — transient network failures and rate limiting — and counts consecutive `agent/error` occurrences per Member rather than wakeups or error text: each of the first two occurrences schedules its own delayed wakeup, the third stands down and leaves the error with the operator, and a non-recoverable error cancels tracking outright. Only a clean turn end clears the count.
 
-The Agent row menu carries two context actions over a live Member plus 历史会话 (session history) over every row. 重置 (reset) renews the Member Session through `clearMemberContext` via the durable rollover machinery — a new Session id with fork lineage back to the archived previous log, private memory untouched. 压缩 (compact) schedules one manual compaction through `compactMemberContext`: the Remote validates guards (enabled Member, no rollover in transition, an active handle, none already pending) and returns the unchanged status at once.
+The Agent row menu carries two context actions over a live Member plus 历史会话 (session history) and 已暂停任务 (the pending-interrupt stack dialog) over every row.
 
-历史会话 reads through the `memberSessions` and `memberSessionTranscript` Remotes: every Session generation from the stored `parentSession` lineage — live one first, an unreadable ancestor flagged where the walk stops — and the selected generation's own events as a bounded, cursor-paged transcript. It never activates, resumes, or writes a Session, so archived generations stay browsable even where Harness refuses to open them as live conversations.
+重置 (reset) renews the Member Session through `clearMemberContext` via the durable rollover machinery — a new Session id with fork lineage back to the archived previous log, private memory untouched. 压缩 (compact) schedules one manual compaction through `compactMemberContext`: the Remote validates guards (enabled Member, no rollover in transition, an active handle, none already pending) and returns the unchanged status at once.
+
+历史会话 takes the conversation seat as one audit page per Member: the stored `parentSession` lineage as every generation, newest first. The live generation reads through the live handle — even after a context transition has moved the durable binding ahead of it — and an unreadable current binding degrades to a flagged entry whose walk continues at the ledger-recorded predecessor, so archived history survives the newest generation's failure to materialize. The page opens the newest readable generation and states honestly when none exists.
+
+The selected generation's own events page through `memberSessions` and `memberSessionTranscript`; an entry keeps its full stored text — transport is bounded by paging, never by cutting content — and renders as authored Markdown: system instructions, Team relays, and Host notices each keep their own lane, and Inbox splice batches expand onto those lanes so thread-driven wake input stays readable.
+
+The read never activates, resumes, or writes a Session, so archived generations stay browsable even where Harness refuses to open them as live conversations.
 
 After a successful reset the Host privately notices only the reset Member: the notice names who triggered it, states the Session restarted empty while handle, settings, and private memory are unchanged, and directs the Member to re-orient from its injected memory and the durable Team history (`team_view`, `team_inbox`, `team_thread`) before continuing, asking the relevant teammates in a Thread reply or direct message instead of guessing. Nothing is broadcast; the notice is runtime intent, not a ledger Message, and a failed delivery only logs.
 

@@ -1,4 +1,4 @@
-# 九工具协议
+# 十工具协议
 
 [English](tools.md) | 中文
 
@@ -26,7 +26,9 @@ cursor 只延续 Thread 行；continuation 页只渲染 Threads，翻页可达�
 
 五个 action 不共享一个最大化渲染：`status`、`follow`、`unfollow` 只回答 Attention 问题——一行结果携带 Thread ref、可选 Task standing 与 following 状态，没有 timeline。read 先渲染结果（确认与剩余的 unread 计数），再 Thread 身份与 following 状态，再导向（返回 facts 携带 Host 提供的 background 时给 full anchor，否则给 bounded anchor subject，anchor 本身是返回 fact 时绝不重复渲染），再只渲染 active Claims——当前 collision surface，每 Claim 一行（claim ref、owner、direction）——然后是带行内 unread/direct 标记的按时间排列的 facts，页脚给出 read-through sequence 与剩余 unread 计数——若这次 read 身后仍留有 Thread facts，再补一句那些 facts 的数量，让重返的读者看到它没有在看的跨度有多大，而不是把本次 batch 当成整个 Thread。
 
-history 页渲染历史结果与 Thread 身份，首页给 full anchor、continuation 页给 bounded subject，选中 facts 与 cursor/hasMore 页脚——绝无当前 Claims 或 advice。每条 activity fact 都是结构化的——actor、Task ref，以及该 activity claim、完成、接受或 release 的 Claim refs——绝不是裸 kind。当一次 `read` 确认的是一个仍处于 done 状态 Task 的未读验收时，结果附带一段 `contextAdvice`：读取 Member 的实测用量、当前路由的预算、任务边界阈值 `min(128_000, effective handoffAt)`，以及唯一动作——保留当前上下文、验收收尾后 fresh rollover、或已达 handoff 预算时立即换窗。建议只是推荐：Host 绝不在验收时自动 checkpoint、rollover 或 compact，测量失败降级为显式 `unavailable` 文案而不会反转已提交的 read。history 与重复 read 不带建议。
+history 页渲染历史结果与 Thread 身份，首页给 full anchor、continuation 页给 bounded subject，选中 facts 与 cursor/hasMore 页脚——绝无当前 Claims 或 advice。每条 activity fact 都是结构化的——actor、Task ref，以及该 activity claim、完成、接受或 release 的 Claim refs——绝不是裸 kind。当一次 `read` 确认的是一个仍处于 done 状态 Task 的未读验收时，结果附带一段 `contextAdvice`：读取 Member 的实测用量、当前路由的预算、任务边界阈值 `min(128_000, effective handoffAt)`、打断栈非空时 pinned pending 打断的计数，以及唯一动作——保留当前上下文、验收收尾后 fresh rollover、或已达 handoff 预算时立即换窗。
+
+建议只是推荐：Host 绝不在验收时自动 checkpoint、rollover 或 compact，测量失败降级为显式 `unavailable` 文案而不会反转已提交的 read。history 与重复 read 不带建议。
 
 `fresh` Member 把任务边界档读作 keep：它的下一次分配本来就会换新上下文，此刻 rollover 只会把完成总结从 live 日志中抹掉。
 
@@ -81,3 +83,15 @@ Team 边界在「经该锚点保留的前缀仍停留在单一 Thread 内」（�
 渲染出的列表为每一行附一个短的稳定 `anchor` id（该行自身 ref 的摘要）：名称与价格相同的行仍可区分，而该 id 刻意不是 ref——只有 restorable 行上打印的 `checkpointRef` 才能交给 `context_rollover`。带 `checkpointRef` 的 `context_rollover` 调用会把 Member 回返到该 checkpoint 的精确 completed-turn 前缀：seed 是截至 checkpoint 的 `turn/end` 的 durable 前缀，构造上即平衡；子 Session 在 seed 来源处 parent，继承的 checkpoints 保持为惰性历史（子代不会触发继承的 intent）。回返在 `context_rollover` 工具 prevalidation 的相同条件下被拒绝——未 resolve、无法实质缩减工作集、超预算、或多个 active Claim（无法证明回退停留在单一 Thread 内）；每种拒绝情形下 fresh handoff 都是文档化的替代路径。上下文回返只是重读历史；它绝不声称回滚外部影响。
 
 seed 成本按来源 Session 自身重放的测量定价——无法测量成本的来源不可选择（预算无法证明）；祖先锚点的 discarded 数值近似为当前代的全部 usage。当某一级祖先无法读取时，遍历在该处停止，结果携带 `incompleteFrom`（该祖先的 id 与失败原因）：历史完整到最后一个列出的来源，且可证明在此之外不存在——这是关于历史的事实，绝不是关于 Member 可用性的事实。
+
+## `context_interrupt`
+
+`context_interrupt` 管理 Member 的 durable 待续打断栈——保护未完成工作跨被打断时刻的语义索引。`action: 'record'` 把一个已 resolve 的 checkpoint 锚点连同简短 label 与有界 `incompleteState` 描述钉入栈中；完整工作状态留在 Member 自己的 Session 日志与私有记忆里，栈中条目只是回到它的续作指针。
+
+记录沿用 `context_rollover` 引用锚点相同的 gate：锚点必须是当前 lineage timeline 列为已 resolve 的 checkpoint。同一 turn 内刚记录的 checkpoint 在 turn 结束时尚未 resolve——工具会拒绝该记录，并指示 Member 在下一个 turn 再登记打断。
+
+栈为 LIFO，每个 Member 最多 8 个 pending 条目，一个锚点至多钉入一个条目：重复记录同一 checkpoint 会并入既有条目而非叠加，调用工具的 call id 即本次记录的幂等键。
+
+`action: 'list'` 按新→旧返回栈，每条携带 Host 的实时判定：此刻引用其锚点执行 `context_rollover` 能否回返，不可回返时附上 timeline 给出的原因。`action: 'release'` 在不回返的情况下关闭一个条目。
+
+Host 在消费锚点的 checkpoint-return 转换内部亲自把条目关闭为 `resumed`；Member 完成被打断工作的方式是回到它，绝不是编辑栈。当 Member 的栈非空时，completion liaison 会在收尾的 episode 之后推送一条私有的 resume-check 通知——该通知是 steer 级上下文，绝不是 ledger Message——使 pending 打断在每个完成边界浮现，供完成前分析使用。

@@ -1,4 +1,4 @@
-# Nine-tool protocol
+# Ten-tool protocol
 
 English | [中文](tools.zh.md)
 
@@ -34,7 +34,9 @@ When the read left Thread facts behind it, a further line states how many those 
 
 A history page renders a historical outcome with Thread identity, the full anchor on a first page and the bounded subject on continuation pages, the selected facts, and the cursor/hasMore footer — never current Claims or advice. Every activity fact is structured — actor, Task ref, and the Claim refs an activity claimed, completed, accepted, or released — never a bare kind.
 
-When one `read` acknowledges an unread acceptance of a still-done Task, the result carries one `contextAdvice` section: the reading Member's measured usage, the route's budgets, the Task-boundary threshold `min(128_000, effective handoffAt)`, and one action — keep the current context, roll over fresh after the closeout, or hand off now at the handoff budget. Advice is a recommendation only: the Host never checkpoints, rolls over, or compacts on an acceptance, and a measurement failure degrades to an explicit `unavailable` line instead of reversing the committed read.
+When one `read` acknowledges an unread acceptance of a still-done Task, the result carries one `contextAdvice` section: the reading Member's measured usage, the route's budgets, the Task-boundary threshold `min(128_000, effective handoffAt)`, the count of pinned pending interrupts whenever that stack is non-empty, and one action — keep the current context, roll over fresh after the closeout, or hand off now at the handoff budget.
+
+Advice is a recommendation only: the Host never checkpoints, rolls over, or compacts on an acceptance, and a measurement failure degrades to an explicit `unavailable` line instead of reversing the committed read.
 
 A `fresh` Member reads the task-boundary tier as keep: its next assignment renews the context anyway, so rolling over now would only erase the completion summary from the live log.
 
@@ -119,3 +121,15 @@ A `context_rollover` call with a `checkpointRef` rolls the Member back to that c
 Return is rejected under the same conditions the `context_rollover` tool prevalidates — unresolved, nonshrinking, over-budget, or multiple active Claims (a rewind cannot be proven to stay inside one Thread); in every rejection case a fresh handoff is the documented alternative. A context return re-reads history; it never claims to revert external effects.
 
 Seed costs are priced from the source Session's own replayed measurement — a source whose cost cannot be measured is not selectable (the budget cannot be proven); the discarded figure for an ancestor anchor approximates the current generation's whole usage. When an ancestor cannot be read, the walk stops there and the result carries `incompleteFrom` (the ancestor's id and the failure reason): history is complete through the last listed source and provably absent beyond it, which is a fact about history, never about Member availability.
+
+## `context_interrupt`
+
+`context_interrupt` manages the Member's durable pending-interrupt stack — the semantic index that protects unfinished work across an interruption. `action: 'record'` pins one resolved checkpoint anchor with a short label and a bounded `incompleteState` description onto the stack; the full working state stays in the Member's own Session log and private memory, and the entry is the resume pointer back to it.
+
+Recording is gated like a `context_rollover` citation: the anchor must be a checkpoint the current lineage timeline lists as resolved. A checkpoint recorded in the same turn is not yet resolved at turn end — the tool rejects it and directs the Member to record the interrupt on the next turn.
+
+The stack is LIFO, capped at eight pending entries per Member, and one anchor pins at most one entry: re-recording a cited checkpoint joins the existing entry rather than duplicating it, and the calling tool call id is the record's idempotency key.
+
+`action: 'list'` returns the stack newest-first, each entry annotated with the Host's live verdict on whether citing its anchor to `context_rollover` would return today, plus the timeline's reason when it would not. `action: 'release'` closes one entry without returning to it.
+
+The Host closes an entry as `resumed` itself, inside the checkpoint-return transition that consumes the anchor; a Member completes the interrupted work by returning to it, never by editing the stack. While a Member's stack is non-empty, the completion liaison pushes one private resume-check notice behind a finished episode — the notice is steer-level context, never a ledger Message — so pending interruptions surface at every completion boundary for the pre-completion analysis.

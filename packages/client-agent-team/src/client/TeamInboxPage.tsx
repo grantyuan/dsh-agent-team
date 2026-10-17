@@ -1,7 +1,8 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { AgentTeamInboxItem, AgentTeamMemberId } from '@wowyuarm/dsh-agent-team/types'
 import type { WorkspaceId } from '@deepseek-ai/dsh-api-workspace-controller/client'
 import { Button } from '@deepseek-ai/dsh-client-ui-primitives'
+import type { TeamKey } from './locales.ts'
 import type { TeamConversationProps } from './slots.ts'
 import { claimersLabel, formatAbsoluteTime, formatInboxTime } from './team-formatters.ts'
 import { namedAvatarOwners, TeamAvatarStack, type TeamAvatarHuman } from './TeamAvatarStack.tsx'
@@ -52,6 +53,53 @@ function compareInboxRows(left: TeamInboxRow, right: TeamInboxRow): number {
     || left.item.thread.threadRef.localeCompare(right.item.thread.threadRef)
 }
 
+/** The reader's own ordering of the queue — a per-browser taste, never a Team fact. */
+type InboxSortKey = 'latestReply' | 'created' | 'unread' | 'mentions'
+
+const INBOX_SORT_KEYS: readonly InboxSortKey[] = ['latestReply', 'created', 'unread', 'mentions']
+const INBOX_SORT_STORAGE_KEY = 'dsh.agent-team.inbox-sort'
+const INBOX_SORT_LABEL_KEYS = {
+  latestReply: 'inboxSortLatestReply',
+  created: 'inboxSortCreated',
+  unread: 'inboxSortUnread',
+  mentions: 'inboxSortMentions',
+} as const satisfies Record<InboxSortKey, TeamKey>
+
+/** Corrupted, foreign, or absent storage all degrade to the page's default order. */
+function loadInboxSortKey(): InboxSortKey {
+  try {
+    const raw = typeof localStorage === 'undefined' ? null : localStorage.getItem(INBOX_SORT_STORAGE_KEY)
+    return INBOX_SORT_KEYS.find(key => key === raw) ?? 'latestReply'
+  } catch {
+    return 'latestReply'
+  }
+}
+
+function saveInboxSortKey(key: InboxSortKey): void {
+  try {
+    if (typeof localStorage !== 'undefined') localStorage.setItem(INBOX_SORT_STORAGE_KEY, key)
+  } catch {
+    // Private mode and quota failures cost the taste, not the page.
+  }
+}
+
+/** One comparable instant or count for the chosen key; unread slices keep
+ * their own newest fact when a Thread has no reply yet. */
+function inboxSortValue(row: TeamInboxRow, key: InboxSortKey): number {
+  if (key === 'unread') return row.item.unreadCount
+  if (key === 'mentions') return row.item.directCount
+  const occurredAt = key === 'created' ? row.item.createdOccurredAt : row.item.latestReplyOccurredAt ?? row.item.createdOccurredAt
+  const at = Date.parse(occurredAt)
+  return Number.isNaN(at) ? 0 : at
+}
+
+/** Newest/heaviest first under the reader's key, the Host's own order as the
+ * stable tiebreaker, so a sort change re-lays the rows without inventing a
+ * different list. */
+function sortInboxRows(rows: readonly TeamInboxRow[], key: InboxSortKey): readonly TeamInboxRow[] {
+  return [...rows].sort((left, right) => inboxSortValue(right, key) - inboxSortValue(left, key) || compareInboxRows(left, right))
+}
+
 /**
  * The Human Inbox: one Inbox call per visible Workspace, rendering the Host's
  * two slices — the unread queue (「需要我」, mentions counted inside it rather
@@ -74,6 +122,9 @@ export function TeamInboxPage({ useWorkspaces, loadInbox, subscribeChanges, sele
   const [humanMemberId, setHumanMemberId] = useState<AgentTeamMemberId>()
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string>()
+  // The reader's own ordering, persisted per browser: the page defaults to
+  // newest-reply first and keeps whatever taste the reader picked.
+  const [sortKey, setSortKey] = useState<InboxSortKey>(() => loadInboxSortKey())
   // Only the first refresh owns the loading surface; later wakes refresh the
   // rendered rows in place instead of flashing them back to skeleton.
   const loadedRef = useRef(false)
@@ -118,7 +169,7 @@ export function TeamInboxPage({ useWorkspaces, loadInbox, subscribeChanges, sele
 
   const open = (row: TeamInboxRow): void => {
     selectWorkspace(row.workspaceId)
-    selectThread(row.item.thread.threadRef, row.item.channelRef, row.item.task?.taskRef, row.item.taskNumber)
+    selectThread(row.item.thread.threadRef, row.item.channelRef, row.item.task?.taskRef, row.item.taskNumber, 'inbox')
   }
 
   // The page rides the shared conversation seat: the same header band, 880px
@@ -137,6 +188,11 @@ export function TeamInboxPage({ useWorkspaces, loadInbox, subscribeChanges, sele
   for (const row of rows ?? []) shownWorkspaces.add(row.workspaceTitle)
   for (const row of recentRows) shownWorkspaces.add(row.workspaceTitle)
   const showWorkspace = shownWorkspaces.size > 1
+  // The reader's sort re-lays both slices; the 「最近活跃」 five-row cap was
+  // already cut in the Host's own order during refresh, so sorting here never
+  // changes which rows exist, only which row leads.
+  const queueRows = useMemo(() => sortInboxRows(rows ?? [], sortKey), [rows, sortKey])
+  const tailRows = useMemo(() => sortInboxRows(recentRows, sortKey), [recentRows, sortKey])
   // One identity for every row on the page: the Host tells the rows which
   // actor is the reader, the Client's identity projection says what that actor
   // looks like. Either half missing leaves the stack on its initials fallback.
@@ -156,6 +212,25 @@ export function TeamInboxPage({ useWorkspaces, loadInbox, subscribeChanges, sele
             {totalMentions > 0 && <span>{t('inboxHeaderMentions', { count: totalMentions })}</span>}
           </p>}
         </div>
+        {/* The queue's axis belongs to the reader, not the Host: newest reply
+            leads by default, and whatever other order they pick rides this
+            browser's storage. It is kept even on an empty queue — the taste is
+            the page's control, not a filter over rows. */}
+        <div className={inboxCss.sortControl}>
+          <label className={inboxCss.sortLabel} htmlFor="team-inbox-sort">{t('inboxSortLabel')}</label>
+          <select
+            id="team-inbox-sort"
+            className={inboxCss.sortSelect}
+            value={sortKey}
+            onChange={event => {
+              const next = INBOX_SORT_KEYS.find(key => key === event.target.value) ?? 'latestReply'
+              setSortKey(next)
+              saveInboxSortKey(next)
+            }}
+          >
+            {INBOX_SORT_KEYS.map(key => <option key={key} value={key}>{t(INBOX_SORT_LABEL_KEYS[key])}</option>)}
+          </select>
+        </div>
       </header>
     </div>
     <div className={css.timeline}>
@@ -173,13 +248,13 @@ export function TeamInboxPage({ useWorkspaces, loadInbox, subscribeChanges, sele
               {rows.length > 0 && <section className={inboxCss.section}>
                 <h2 className={inboxCss.sectionTitle}>{t('inboxSectionNeedsMe')}<span className={inboxCss.sectionCount}>{rows.length}</span></h2>
                 <div className={inboxCss.list}>
-                  {rows.map(row => <InboxQueueRow key={`${row.workspaceId} ${row.item.thread.threadRef}`} row={row} t={t} showWorkspace={showWorkspace} human={human} onOpen={() => { open(row) }} />)}
+                  {queueRows.map(row => <InboxQueueRow key={`${row.workspaceId} ${row.item.thread.threadRef}`} row={row} t={t} showWorkspace={showWorkspace} human={human} onOpen={() => { open(row) }} />)}
                 </div>
               </section>}
               {recentRows.length > 0 && <section className={inboxCss.section}>
                 <h2 className={inboxCss.sectionTitle}>{t('inboxSectionRecent')}<span className={inboxCss.sectionCount}>{recentRows.length}</span></h2>
                 <div className={inboxCss.list}>
-                  {recentRows.map(row => <InboxQueueRow key={`${row.workspaceId} ${row.item.thread.threadRef}`} row={row} t={t} showWorkspace={showWorkspace} human={human} onOpen={() => { open(row) }} />)}
+                  {tailRows.map(row => <InboxQueueRow key={`${row.workspaceId} ${row.item.thread.threadRef}`} row={row} t={t} showWorkspace={showWorkspace} human={human} onOpen={() => { open(row) }} />)}
                 </div>
               </section>}
             </>)}
@@ -229,6 +304,11 @@ function InboxQueueRow({ row, t, showWorkspace, human, onOpen }: {
   const countLabel = named
     ? t('inboxRowUnreadMentions', { count: item.unreadCount, mentions: item.directCount })
     : t('inboxRowUnread', { count: item.unreadCount })
+  // The reply the reader is being pointed at, drawn with the one Human identity
+  // every seat uses when the replier happens to be the reader themselves.
+  const replyActor = item.latestReplyActor === undefined
+    ? undefined
+    : namedAvatarOwners([item.latestReplyActor], human)[0]!
   return <button type="button" className={inboxCss.row} data-named={named || undefined} onClick={onOpen}>
     {/* Who is on this Thread leads every row, in the slot the count used to
         reserve: the cluster is there whatever the row holds, so a row never
@@ -259,9 +339,24 @@ function InboxQueueRow({ row, t, showWorkspace, human, onOpen }: {
           shares its subject with. A 「最近活跃」 row holds no unread, so it
           renders no capsule at all — zero is the absence of a badge, not a badge
           reading zero — and the row keeps its shape without it. */}
+      {item.needsHumanDecision && <span className={inboxCss.rowDecision}>{t('inboxRowDecision')}</span>}
       <TeamCountBadge count={item.unreadCount} tone={named ? 'solid' : 'hairline'} label={countLabel} />
       <time className={inboxCss.rowTime} dateTime={item.newestOccurredAt} title={formatAbsoluteTime(item.newestOccurredAt)}>{formatInboxTime(item.newestOccurredAt, t)}</time>
     </span>
-    <span className={inboxCss.rowPreview}>{item.previewText}</span>
+    {/* The gist stays the second line's subject, and the row's clocks trail it
+        in quiet tabular ink — creation, and the newest reply with its author.
+        A seat too narrow for both yields the clocks entirely rather than fold
+        the row: the same give the instant already makes one line above. */}
+    <span className={inboxCss.rowSecond}>
+      <span className={inboxCss.rowPreview}>{item.previewText}</span>
+      <span className={inboxCss.rowMeta}>
+        <span className={inboxCss.rowMetaItem} title={formatAbsoluteTime(item.createdOccurredAt)}>
+          {t('inboxRowCreated', { time: formatInboxTime(item.createdOccurredAt, t) })}
+        </span>
+        {item.latestReplyOccurredAt !== undefined && replyActor !== undefined && <span className={inboxCss.rowMetaItem} title={formatAbsoluteTime(item.latestReplyOccurredAt)}>
+          {t('inboxRowReplyBy', { name: `@${replyActor.name}`, time: formatInboxTime(item.latestReplyOccurredAt, t) })}
+        </span>}
+      </span>
+    </span>
   </button>
 }

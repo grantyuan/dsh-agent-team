@@ -43,6 +43,7 @@ import { LedgerFence, ledgerFenceFor } from './ledger-fence.ts'
 import { AGENT_TEAM_TOOL_NAMES, BUNDLED_SKILLS_DIRECTORY, deepCopyCapabilities, deepCopyPrompt, isProtectedPromptSection, memberMemoryDirectoryName, memberMemoryDirectoryPath, MemberRuntime, promptSectionByteLength, sectionToolMapping } from './member-runtime.ts'
 import { PRUNE_WINDOW_DAYS, PRUNE_WINDOW_TURNS, foldLineageUsage, type UsageFold } from './member-section-usage.ts'
 import { CURATE_MAX_TOKENS, CURATE_TIMEOUT_MS, buildCurateMessages, parseCurateProposal, type CuratePromptInput } from './member-prompt-curation.ts'
+import { DIGEST_MAX_TOKENS, DIGEST_MESSAGE_LIMIT, DIGEST_TIMEOUT_MS, buildDigestMessages, parseThreadDigest, type ThreadDigestMessage } from './thread-digest.ts'
 import { listPrivateSkillNames } from './member-skills.ts'
 import { BlockAssembler, LlmError } from '@deepseek-ai/dsh-llm'
 import type { MemberSkillSelectionRef } from './member-skills.ts'
@@ -51,10 +52,10 @@ import { assistantPlainText, classifyAssistantResponse, classifyStoppedTurnTail,
 import { buildRelevanceJudge, CONTEXT_RELEVANCE_THRESHOLD, DISPATCH_HISTORY_MESSAGE_LIMIT, parseRelevanceScore, RELEVANCE_JUDGE_MAX_TOKENS, RELEVANCE_JUDGE_TIMEOUT_MS } from './context-relevance.ts'
 import { MemberSupervisor, nextReplacementHandle, supervisionHandoffText, SUPERVISION_FAILURE_WINDOW_MS, SUPERVISION_HUNG_MS, SUPERVISION_MAX_CONSECUTIVE_FAILURES, SUPERVISION_MAX_RESTART_ATTEMPTS, SUPERVISION_WINDOW_FAILURES, type MemberSupervisionState, type SupervisionTrigger } from './supervisor.ts'
 import { CONTINUATION_NUDGE_MARKER, TaskContinuationWatcher, continuationNudgeText, type ContinuationLeader, type ContinuationTask } from './continuation-watcher.ts'
-import { CompletionLiaison, liaisonFeedbackText, liaisonReportCheckText, liaisonTaskPushText, type LiaisonLeader } from './completion-liaison.ts'
+import { CompletionLiaison, INTERRUPT_PUSH_SUMMARY, liaisonFeedbackText, liaisonReportCheckText, liaisonResumePushText, liaisonTaskPushText, type LiaisonInterrupt, type LiaisonLeader } from './completion-liaison.ts'
 import { TruncationEscalator, truncationEscalationText, type TruncationLeader } from './truncation-escalation.ts'
 import { StoredSessionReadError, StoredSessionReader, sessionFailureOf } from './stored-session-reader.ts'
-import { doctorAnalysisPrompt, renderFailureTranscript, transcriptEntryOf, type TranscriptEvent } from './failure-transcript.ts'
+import { doctorAnalysisPrompt, humanTranscriptEntriesOf, renderFailureTranscript, type TranscriptEvent } from './failure-transcript.ts'
 import { agentTeamDomainSpec } from './spec.ts'
 import { formatTeamTimestamp } from './time-format.ts'
 import type {
@@ -107,9 +108,20 @@ import type {
   AgentTeamLeaveWorkspaceResult,
   AgentTeamHumanActor,
   AgentTeamDirectMarker,
+  AgentTeamInterruptView,
   AgentTeamMemberActor,
+  AgentTeamMemberInterrupt,
   AgentTeamMessageAttachment,
   AgentTeamMemberId,
+  AgentTeamMemberInterrupts,
+  AgentTeamMemberInterruptsRequest,
+  AgentTeamResolveMemberInterruptRequest,
+  AgentTeamResolveMemberInterruptResult,
+  AgentTeamRecordInterruptToolRequest,
+  AgentTeamRecordInterruptToolOutcome,
+  AgentTeamListInterruptsToolOutcome,
+  AgentTeamReleaseInterruptToolRequest,
+  AgentTeamReleaseInterruptToolOutcome,
   AgentTeamMemberPromptSectionEntry,
   AgentTeamMemberPromptView,
   AgentTeamMemberPromptViewRequest,
@@ -117,6 +129,7 @@ import type {
   AgentTeamMemberSessionSummary,
   AgentTeamMemberSessionTranscriptRequest,
   AgentTeamMemberSessionTranscript,
+  AgentTeamMemberSessionTranscriptEntry,
   AgentTeamCurateMemberPromptRequest,
   AgentTeamCurateMemberPromptResult,
   AgentTeamCurateMemberPromptProposal,
@@ -163,10 +176,13 @@ import type {
   AgentTeamTasksBatchRequest,
   AgentTeamTasksBatchResult,
   AgentTeamTasksRequest,
+  AgentTeamSummarizeThreadRequest,
+  AgentTeamSummarizeThreadResult,
   AgentTeamThreadAttentionRequest,
   AgentTeamThreadAttentionResult,
   AgentTeamThreadAttentionStatus,
   AgentTeamThreadFact,
+  AgentTeamThreadDigest,
   AgentTeamThreadHistory,
   AgentTeamThreadHistoryRequest,
   AgentTeamThreadReadFact,
@@ -711,7 +727,13 @@ export default class AgentTeam extends TypertRemoteService {
     },
     reportedToLeaderSince: (memberId, leaderId, sinceSequence) => this.ledger?.memberReportedToSince(memberId, leaderId, sinceSequence) ?? true,
     openTasksIn: workspaceId => (this.ledger?.incompleteTasksForWatch() ?? []).filter(task => task.workspaceId === workspaceId),
+    interruptsOf: memberId => (this.ledger?.pendingInterruptsForMember(memberId) ?? []).map(interrupt => ({
+      interruptRef: interrupt.interruptRef,
+      checkpointRef: interrupt.checkpointRef,
+      label: interrupt.label,
+    })),
     handleOf: memberId => this.ledger?.getMember(memberId)?.handle,
+    pushInterrupts: async input => { await this.pushLiaisonInterrupts(input) },
     notifyLeader: async input => { await this.notifyLiaisonLeader(input) },
     pushTasks: async input => { await this.pushLiaisonTasks(input) },
     notifyHumanFeedback: async input => { await this.notifyLiaisonFeedback(input) },
@@ -1290,11 +1312,19 @@ export default class AgentTeam extends TypertRemoteService {
   /**
    * Human read behind the session-history dialog: every Session generation
    * this Member has run, newest first. The walk follows the stored
-   * `parentSession` fork lineage from the ledger-bound Session — the live
-   * generation reads through its handle, archived ancestors through the
-   * stored-session reader — capped at the same depth as the timeline and the
-   * usage fold. An unreadable ancestor degrades to a metadata-less entry and
-   * ends the walk; the list never claims depth it could not verify.
+   * `parentSession` fork lineage from the live handle's Session — or, when no
+   * generation is live, from the ledger-bound Session — the live generation
+   * reads through its handle, archived ancestors through the stored-session
+   * reader — capped at the same depth as the timeline and the usage fold. An
+   * unreadable ancestor degrades to a metadata-less entry and ends the walk;
+   * the list never claims depth it could not verify. A current binding that
+   * cannot be read (a transition committed while its Session never landed)
+   * degrades the same way but continues at the predecessor the ledger
+   * recorded, so archived history survives the newest generation's crash. A
+   * durable binding that has already moved past the live handle (a context
+   * transition in progress) never enters the list: the bound Session may not
+   * exist on disk yet, while the handle's generation still carries the newest
+   * readable events.
    */
   @Remote('memberSessions')
   async memberSessions(request: AgentTeamMemberSessionsRequest): Promise<readonly AgentTeamMemberSessionSummary[]> {
@@ -1325,12 +1355,16 @@ export default class AgentTeam extends TypertRemoteService {
     const generation = lineage.find(entry => entry.sessionId === sessionId)
     if (generation === undefined) throw new Error(`Session '${sessionId}' is not in the lineage of Agent Member '${member.handle}'`)
     if (generation.events === undefined) throw new Error(`Session '${sessionId}' could not be read: ${generation.unreadableDetail ?? 'unreadable'}`)
-    const rendered: Array<{ seq: number; time: number; role: 'user' | 'assistant' | 'tool-call' | 'tool-result'; text: string }> = []
+    const rendered: Array<{ seq: number; time: number; role: AgentTeamMemberSessionTranscriptEntry['role']; text: string }> = []
     for (const event of generation.events) {
       if (request.beforeSeq !== undefined && event.seq >= request.beforeSeq) continue
-      const entry = transcriptEntryOf(event)
-      if (entry === undefined) continue
-      rendered.push({ seq: event.seq, time: event.time, role: entry.role, text: entry.text })
+      // The Human review surface reads the same fold as the doctor in multiline
+      // mode — line breaks survive so the page can render Markdown — and
+      // additionally expands `agent/inbox/spliced` batches, which is how a
+      // Member's wake input (Team relays, Host notices) reached the surface.
+      for (const entry of humanTranscriptEntriesOf(event)) {
+        rendered.push({ seq: event.seq, time: event.time, role: entry.role, text: entry.text })
+      }
     }
     let start = rendered.length
     let chars = 0
@@ -1368,7 +1402,12 @@ export default class AgentTeam extends TypertRemoteService {
         readonly unreadableDetail?: string
       }> = []
       const handle = this.handles.get(member.memberId)
-      let sessionId: SessionId | undefined = member.sessionId
+      // The live handle, when there is one, IS the current readable generation
+      // even after the durable binding has moved onto its next Session: during
+      // a context transition the bound Session may not exist on disk yet, and
+      // a stored read of it would fail with "not found" while the handle's
+      // generation still carries the Member's newest events.
+      let sessionId: SessionId | undefined = handle?.agent.session.id ?? member.sessionId
       let guard = 0
       while (sessionId !== undefined && guard++ <= MAX_TIMELINE_ANCESTORS) {
         const isCurrent = generations.length === 0
@@ -1387,7 +1426,20 @@ export default class AgentTeam extends TypertRemoteService {
         const read = await this.sessionReader.read(sessionId)
         if (!read.ok) {
           generations.push({ sessionId, isCurrent, unreadableDetail: read.failure.detail })
-          break
+          // A durable binding can name a Session that never materialized (a
+          // renewal or rollover committed while its activation failed or is
+          // still running). The ledger recorded which Session that transition
+          // retired: when the unreadable entry IS the current binding, resume
+          // the walk at the recorded predecessor instead of ending — archived
+          // history stays auditable through exactly the crash the newest
+          // generation cannot describe. Mid-walk ancestor failures keep their
+          // old contract: the entry states the stop and nothing follows it.
+          const predecessor = isCurrent && sessionId === member.sessionId
+            ? this.requireLedger().previousSessionForMember(member.memberId)
+            : undefined
+          if (predecessor === undefined || predecessor === sessionId) break
+          sessionId = predecessor
+          continue
         }
         const inspection = read.inspection
         generations.push({
@@ -1727,11 +1779,12 @@ export default class AgentTeam extends TypertRemoteService {
   }
 
   /**
-   * Operator nudge for a Member that stopped making progress: steer a
-   * continuation prompt into its live session, rebuild it after an orphaned
-   * preset composition, or re-run activation when no live session exists.
-   * Runtime-only — no ledger operation, no suspend. Taking over manually also
-   * cancels any pending automatic recovery episode.
+   * Operator nudge for a Member that stopped making progress: complete an
+   * interrupted context transition, steer a continuation prompt into its live
+   * session, rebuild it after an orphaned preset composition, or re-run
+   * activation when no live session exists. Runtime-only — no ledger
+   * operation, no suspend. Taking over manually also cancels any pending
+   * automatic recovery episode.
    */
   @Remote('recoverMember')
   async recoverMember(request: AgentTeamRecoverMemberRequest): Promise<AgentTeamRecoverMemberResult> {
@@ -1739,9 +1792,31 @@ export default class AgentTeam extends TypertRemoteService {
     const member = this.requireLedger().getMember(request.memberId)
     if (member === undefined || !this.requireLedger().participatesIn(request.memberId, request.workspaceId)) throw new Error(`unknown Member '${request.memberId}' in workspace '${request.workspaceId}'`)
     this.recovery.stopTracking(request.memberId)
+    const handle = this.handles.get(request.memberId)
+    // A live handle running a different Session than the durable binding is an
+    // interrupted context transition (the same shape `memberStatus` labels
+    // 'rollover'): the binding moved onto the next Session while the previous
+    // generation never retired. Completing the swap is the only honest repair
+    // — steering the stale generation would keep answering from a Session the
+    // ledger no longer binds, and a plain re-activation would try to resume a
+    // Session that may not exist on disk yet. Lifecycle serialization means a
+    // transition still in flight settles before this body runs, and there the
+    // re-read below degrades to a no-op.
+    if (handle !== undefined && member.state === 'enabled' && handle.agent.id !== member.sessionId) {
+      this.ctx.logger.info(`agent-team: completing the interrupted context transition for member '${member.handle}'`)
+      await this.enqueueLifecycle(async () => {
+        const stored = this.requireLedger().getMember(request.memberId)
+        const active = this.handles.get(request.memberId)
+        if (stored === undefined || stored.state !== 'enabled') return
+        if (active === undefined || active.agent.id === stored.sessionId) return
+        const retiredSessionId = active.agent.session.id
+        await this.retireMemberGeneration(request.memberId, active, retiredSessionId)
+        await this.activateMember(stored, undefined, undefined, retiredSessionId)
+      })
+      return Object.freeze({ status: this.memberStatus(this.requireLedger().getMember(request.memberId) ?? member) })
+    }
     // An orphaned composition cannot be steered: its tools are gone, so a
     // continuation prompt reaches an inert Member. Rebuild the Agent in place.
-    const handle = this.handles.get(request.memberId)
     if (handle !== undefined && this.ctx.agentPresets.composedPreset(handle.agent.ctx) === undefined) {
       this.ctx.logger.info(`agent-team: rebuilding member '${member.handle}' after its preset composition was orphaned by a reload`)
       await this.reactivateMember(request.memberId)
@@ -2647,12 +2722,39 @@ export default class AgentTeam extends TypertRemoteService {
         trigger: plan.trigger,
         ...(seed === undefined ? {} : { checkpointRef: seed.checkpointRef, sourceSessionId: seed.sourceSessionId, sourceThroughSeq: seed.sourceThroughSeq }),
       })
+      // Interrupt closing: a checkpoint return citing a pinned interrupt's
+      // anchor consumed that interruption — close the entry inside the same
+      // serialized step so the stack never holds an already-resumed session.
+      // The requestId binds to the transition target, so a retried transition
+      // replays to the same close and a crash between the two commits is
+      // finished by the next attempt.
+      if (seed !== undefined) {
+        const pinned = this.requireLedger().pendingInterruptForCheckpoint(memberId, seed.checkpointRef)
+        if (pinned !== undefined) {
+          const closed = await this.requireLedger().resolveMemberInterrupt({
+            requestId: `interrupt-resumed:${plan.newSessionId}` as AgentTeamRequestId,
+            workspaceId: pinned.workspaceId,
+            memberId,
+            actor: this.memberActor(active.agent),
+            interruptRef: pinned.interruptRef,
+            resolution: 'resumed',
+          })
+          if (closed.committed) this.emitCommitted(closed.value.receipt)
+        }
+      }
       // The durable old-log projection is the carried-input truth: after the
       // old Agent retires, fold its final state and take every post-intent
       // non-Team candidate the old generation never answered. The process
       // capture only accelerates; it is unioned by message id, never allowed
       // to override the fold.
       const preRetireCapture = this.contextManagement.drainCapturedInput(memberId)
+      // The retiring generation's live route is this transition's carried
+      // selection: the next generation keeps the provider/model the prompt
+      // was assembled against, so an operator default-model flip between
+      // generations cannot re-interpolate the system prompt and void the
+      // provider prefix cache mid-handoff. Only an explicit Member model
+      // (or the renewal paths, which reload by contract) overrides it.
+      const carriedSelection = this.modelSelections.get(memberId)?.current
       await this.retireMemberGeneration(memberId, active, plan.previousSessionId)
       const finalEvents = active.agent.session.ownEvents()
       const finalState = foldTeamContextProjection(
@@ -2674,6 +2776,7 @@ export default class AgentTeam extends TypertRemoteService {
       const seedEvents = seed === undefined ? undefined : seed.prefix
       await this.activateMember(rolled.member, undefined, undefined, seed === undefined ? plan.previousSessionId : seed.sourceSessionId, {
         deferNotify: true,
+        ...(carriedSelection === undefined ? {} : { carriedSelection }),
         // The prefix is contiguous from seq 0, so its length is exactly the
         // inherited cut the child folds past.
         ...(seedEvents === undefined ? {} : { seed: seedEvents, inheritedEventCount: SessionLogOffset(seedEvents.length) }),
@@ -3003,6 +3106,28 @@ export default class AgentTeam extends TypertRemoteService {
       recipients: [input.memberId],
       asTask: false,
     })
+  }
+
+  /**
+   * Interrupt-resume delivery: a runtime notice steered into the finished
+   * Member's own Session (the context-reset notice shape — never a ledger
+   * Message, since a resume is the Member's private context bookkeeping, not
+   * a Team fact). It names the pending stack and the resume action so the
+   * Member runs its pre-completion analysis against the durable interrupt
+   * projection. A Member with no live handle throws: the lane stays retryable
+   * for the next episode, exactly like the task push.
+   */
+  private async pushLiaisonInterrupts(input: { readonly memberId: AgentTeamMemberId, readonly memberHandle: string, readonly interrupts: readonly LiaisonInterrupt[] }): Promise<void> {
+    const handle = this.handles.get(input.memberId)
+    if (handle === undefined) throw new Error(`member '${input.memberHandle}' has no active session for interrupt resume`)
+    const hint = createUserMessage({
+      content: [{ type: 'text', text: liaisonResumePushText({ interrupts: input.interrupts }) }],
+      source: { kind: AGENT_TEAM_PLUGIN_ID, form: 'notice', summary: INTERRUPT_PUSH_SUMMARY },
+    })
+    // Same sequencing as the reset notice: ordinary next-turn input already
+    // queued claims the turn first, and this resume reminder rides behind it.
+    if (handle.agent.inbox.nextTurn.some(message => message.source.kind === 'user')) handle.agent.followup(hint)
+    else handle.agent.steer(hint)
   }
 
   /**
@@ -3610,6 +3735,96 @@ export default class AgentTeam extends TypertRemoteService {
     return this.requireLedger().threadHistory(agentTeamHumanActor(), request)
   }
 
+  /**
+   * Human one-shot plain-language Thread digest: propose-only, commits
+   * nothing, the same ephemeral shape as Prompt curation. The call rides the
+   * Host's public `llm.stream()` seam on the Team's own configured route
+   * (`digestModelSelection`) with the
+   * bounded Thread transcript, names resolved through the ledger's single
+   * actor resolver so a name never reads differently on two surfaces. The
+   * request is assembly-free: it carries only the digest instruction and the
+   * transcript — no tools, skills, MCP, memory or Member identity — exactly
+   * the one-shot shape Prompt curation uses. The
+   * model's decision flag is merged with the ledger's own awaiting-acceptance
+   * fact: a Task open at `in_review` is waiting on the Human even if the
+   * digest call glossed over it.
+   */
+  @Remote('summarizeThread')
+  async summarizeThread(request: AgentTeamSummarizeThreadRequest, signal?: AbortSignal): Promise<AgentTeamSummarizeThreadResult> {
+    this.requireWorkspace(request.workspaceId)
+    const ledger = this.requireLedger()
+    const history = ledger.threadHistory(agentTeamHumanActor(), { workspaceId: request.workspaceId, threadRef: request.threadRef, limit: DIGEST_MESSAGE_LIMIT })
+    const nameOf = (memberId: AgentTeamMemberId): string => ledger.actorFor(memberId).name
+    const replyFacts = history.facts.filter((fact): fact is Extract<AgentTeamThreadFact, { kind: 'message' }> =>
+      fact.kind === 'message' && fact.message.messageRef !== history.anchor.messageRef)
+    const transcript: readonly ThreadDigestMessage[] = [
+      { author: nameOf(history.anchor.sender), text: history.anchor.body, mentions: history.anchorMentions.map(nameOf) },
+      ...replyFacts.map(fact => ({ author: nameOf(fact.message.sender), text: fact.message.body, mentions: fact.mentions.map(nameOf) })),
+    ]
+    const awaitingReview = history.task !== undefined && history.task.resolution === 'open' && history.task.status === 'in_review'
+    const llm = this.ctx.get('llm')
+    if (llm === undefined) throw new Error('no LLM service is available for the Thread digest')
+    const timeout = AbortSignal.timeout(DIGEST_TIMEOUT_MS)
+    const linked = signal === undefined ? timeout : AbortSignal.any([signal, timeout])
+    const { system, messages } = buildDigestMessages({
+      ...(history.task === undefined ? {} : { taskStatus: awaitingReview ? `${history.task.status} (awaiting Human acceptance)` : history.task.status }),
+      messages: transcript,
+    })
+    const selection = this.digestModelSelection(request.workspaceId)
+    const assembler = new BlockAssembler()
+    try {
+      for await (const chunk of llm.stream({
+        provider: selection.provider,
+        model: selection.model,
+        messages: [...messages],
+        system,
+        maxTokens: DIGEST_MAX_TOKENS,
+        signal: linked,
+      })) assembler.push(chunk)
+    } catch (error) {
+      if (linked.aborted) throw new Error('digest call was cancelled or timed out')
+      throw error
+    }
+    // A cancelled call never produces a digest, even when a mock or lenient
+    // adapter ignored the signal and streamed to completion.
+    if (linked.aborted) throw new Error('digest call was cancelled or timed out')
+    const finish = assembler.finish
+    if (finish.kind === 'error' || finish.kind === 'aborted') throw new LlmError(finish.failure.message, finish.failure.code, finish.failure)
+    if (finish.kind === 'max-tokens') throw new Error('digest reply was truncated at the token cap')
+    const text = assembler.blocks().filter(block => block.type === 'text').map(block => block.text).join('')
+    const parsed = parseThreadDigest(text)
+    const digest: AgentTeamThreadDigest = Object.freeze({
+      summary: parsed.summary,
+      keyPoints: parsed.keyPoints,
+      needsHumanDecision: parsed.needsHumanDecision || awaitingReview,
+      ...(parsed.decisionQuestion === undefined ? {} : { decisionQuestion: parsed.decisionQuestion }),
+      ...(parsed.options === undefined ? {} : { options: parsed.options }),
+      ...(parsed.optionSelection === undefined ? {} : { optionSelection: parsed.optionSelection }),
+    })
+    return Object.freeze({ digest, modelUsed: selection, revision: history.thread.revision })
+  }
+
+  /**
+   * Model route for Team semantic processing (the Thread digest today): the
+   * Workspace's enabled designated leader speaks for the Team, so its pinned
+   * model runs the call — a leader without a pinned model effectively holds
+   * the Host default, so the Host default is used. With no designated leader,
+   * the first enabled Workspace Member that pinned a model interprets through
+   * that Team-configured LLM; only when nobody pinned one does the call fall
+   * back to the Host default route. Pure read-side routing: it never writes
+   * Member facts and never wakes anyone.
+   */
+  private digestModelSelection(workspaceId: WorkspaceId): AgentTeamModelSelection {
+    const ledger = this.requireLedger()
+    const members = ledger.listMembers().filter(member =>
+      member.state === 'enabled' && ledger.workspacesOf(member.memberId).includes(workspaceId))
+    const hostDefault = () => this.ctx.agentDefaultModel.currentSelection()
+    const leader = members.find(member => member.leader === true)
+    if (leader !== undefined) return leader.model ?? hostDefault()
+    const pinned = members.find(member => member.model !== undefined)
+    return pinned?.model ?? hostDefault()
+  }
+
   /** Return the existing bounded public Workspace discovery projection. */
   @Remote('view')
   view(request: AgentTeamViewRequest): AgentTeamView {
@@ -3695,7 +3910,19 @@ export default class AgentTeam extends TypertRemoteService {
     const acknowledgedAccept = read.facts.some(entry => entry.unread && entry.fact.kind === 'activity'
       && entry.fact.activity.kind === 'accept')
     if (!acknowledgedAccept) return undefined
-    return this.contextAdviceFor(agent)
+    const advice = await this.contextAdviceFor(agent)
+    if (advice.action === 'unavailable') return advice
+    // A closing Task is the natural moment for the pre-completion analysis:
+    // the private advice carries the pending-interrupt count so the Member
+    // sees what it owes itself, beside the context verdict it already reads.
+    const memberId = this.memberForAgent(agent)?.memberId
+    const pendingInterrupts = memberId === undefined ? 0 : this.requireLedger().pendingInterruptsForMember(memberId).length
+    if (pendingInterrupts === 0) return advice
+    return Object.freeze({
+      ...advice,
+      pendingInterrupts,
+      guidance: `${advice.guidance} You have ${pendingInterrupts} pending interrupted session(s): before closing, run the pre-completion analysis — post this work's completion report first, then context_interrupt list and resume the newest restorable entry with a context_rollover citing its exact anchor ref, or release it if it no longer needs returning.`,
+    })
   }
 
   /** Price the reading Member's context against its current route's budgets. */
@@ -4036,7 +4263,11 @@ export default class AgentTeam extends TypertRemoteService {
         }
         // Single-Thread coverage guard: with more than one active Claim the
         // Host cannot prove a rewind stays inside one Thread's context.
-        if (this.requireLedger().activeClaimCountForMember(memberId) > 1) {
+        // The exception is an interrupt-pinned anchor: the pinned entry IS
+        // the Member's declared return to exactly this context, so the
+        // stack — not the heuristic — vouches for the rewind's scope.
+        const interruptPinned = this.requireLedger().pendingInterruptForCheckpoint(memberId, checkpointRef) !== undefined
+        if (!interruptPinned && this.requireLedger().activeClaimCountForMember(memberId) > 1) {
           throw new Error('multiple active Claims: write a fresh handoff covering all of them instead of returning to a checkpoint')
         }
         return { checkpointRef, sourceSessionId: sessionId, sourceThroughSeq: SessionLogOffset(throughSeq), prefix }
@@ -4489,6 +4720,143 @@ export default class AgentTeam extends TypertRemoteService {
     return result.value
   }
 
+  /**
+   * Agent-only interrupt recording: pin the Member's unfinished session onto
+   * a checkpoint it actually recorded. The cited ref must appear in the
+   * Member's own lineage timeline — the same engine anti-forgery surface
+   * `context_rollover` gate-checks against — and an unresolved checkpoint is
+   * not yet an anchor, so the record belongs to the turn after the one that
+   * recorded it (the engine's quiet continuation lands it there). Recording
+   * performs no lifecycle effect: the swap stays exclusively the rollover
+   * tool's; the entry is durable bookkeeping the resume protocol walks.
+   */
+  async recordInterruptForAgent(agent: Agent, request: AgentTeamRecordInterruptToolRequest): Promise<AgentTeamRecordInterruptToolOutcome> {
+    const member = this.memberForAgent(agent)
+    if (member === undefined || member.state !== 'enabled') throw new Error('context_interrupt requires an active Team Member')
+    if (this.runningAgents.has(agent.id) !== true) throw new Error('context_interrupt must run inside this Member\'s own running turn')
+    if (!/^(context-checkpoint-[0-9a-f]{64}|team-boundary-[0-9a-f]{64})$/.test(request.checkpointRef)) throw new Error('checkpointRef must be an opaque ref exactly as returned by context_checkpoint or context_timeline')
+    if (!(await this.lineageKnowsAnchor(agent, member.memberId, request.checkpointRef))) {
+      throw new Error('the checkpoint is not a resolved anchor of this Member\'s lineage yet: record it with context_checkpoint, and pin the interrupt in the turn that follows')
+    }
+    // The tool-call id keys the commit: a retried provider call with the same
+    // id resolves to the entry already on the stack, never a duplicate.
+    const result = await this.requireLedger().recordMemberInterrupt({
+      requestId: `interrupt-record:${agent.session.id}:${request.callId}` as AgentTeamRequestId,
+      workspaceId: member.workspaceId,
+      memberId: member.memberId,
+      actor: this.memberActor(agent),
+      sessionId: agent.session.id,
+      checkpointRef: request.checkpointRef as AgentTeamContextCheckpointRef,
+      label: request.label,
+      incompleteState: request.incompleteState,
+      ...(request.taskRef === undefined ? {} : { taskRef: request.taskRef }),
+      ...(request.threadRef === undefined ? {} : { threadRef: request.threadRef }),
+      ...(request.notePath === undefined ? {} : { notePath: request.notePath }),
+    })
+    if (result.committed) this.emitCommitted(result.value.receipt)
+    return { interruptRef: result.value.interrupt.interruptRef, recordedSequence: result.value.interrupt.recordedSequence }
+  }
+
+  /** Agent-only pending-stack read: every interrupt this Member pinned and has not resumed or released, newest first. */
+  async listInterruptsForAgent(agent: Agent): Promise<AgentTeamListInterruptsToolOutcome> {
+    const member = this.memberForAgent(agent)
+    if (member === undefined || member.state !== 'enabled') throw new Error('context_interrupt requires an active Team Member')
+    const pending = this.requireLedger().pendingInterruptsForMember(member.memberId)
+    return Object.freeze({ items: await this.interruptViews(member.memberId, agent, pending) })
+  }
+
+  /** Agent-only release: close one pending interrupt without returning to it. */
+  async releaseInterruptForAgent(agent: Agent, request: AgentTeamReleaseInterruptToolRequest): Promise<AgentTeamReleaseInterruptToolOutcome> {
+    const member = this.memberForAgent(agent)
+    if (member === undefined || member.state !== 'enabled') throw new Error('context_interrupt requires an active Team Member')
+    const result = await this.requireLedger().resolveMemberInterrupt({
+      requestId: `interrupt-released:${agent.session.id}:${request.callId}` as AgentTeamRequestId,
+      workspaceId: member.workspaceId,
+      memberId: member.memberId,
+      actor: this.memberActor(agent),
+      interruptRef: request.interruptRef,
+      resolution: 'released',
+      ...(request.reason === undefined ? {} : { reason: request.reason }),
+    })
+    if (result.committed) this.emitCommitted(result.value.receipt)
+    // The agent surface only ever releases; the idempotency assertion above
+    // guarantees a retried call resolves to this call's own `released` record.
+    return { interruptRef: result.value.interruptRef, resolution: 'released' }
+  }
+
+  /** Whether one opaque ref is a resolved anchor of this Member's current lineage window. */
+  private async lineageKnowsAnchor(agent: Agent, memberId: AgentTeamMemberId, checkpointRef: string): Promise<boolean> {
+    const timeline = await this.contextTimelineForAgent(agent, { memberId, limit: MAX_TIMELINE_LIMIT })
+    return timeline.items.some(item => item.checkpointRef === checkpointRef)
+  }
+
+  /**
+   * Annotate pending entries with the live lineage verdict: citing the anchor
+   * today returns or not, and the reason the timeline states. Without a live
+   * Agent the walk cannot run at all — an unproven anchor never reads as
+   * returnable, so the Human surface degrades to an explicit unverified false
+   * instead of an optimistic yes.
+   */
+  private async interruptViews(memberId: AgentTeamMemberId, agent: Agent | undefined, pending: readonly AgentTeamMemberInterrupt[]): Promise<readonly AgentTeamInterruptView[]> {
+    const verdicts = new Map<string, { restorable: boolean; reason?: string }>()
+    let walked = false
+    if (agent !== undefined && pending.length > 0) {
+      try {
+        const timeline = await this.contextTimelineForAgent(agent, { memberId, limit: MAX_TIMELINE_LIMIT })
+        for (const item of timeline.items) verdicts.set(item.checkpointRef, { restorable: item.restorable, ...(item.reason === undefined ? {} : { reason: item.reason }) })
+        walked = true
+      } catch {
+        walked = false
+      }
+    }
+    return Object.freeze(pending.map(interrupt => {
+      const verdict = walked ? verdicts.get(interrupt.checkpointRef) : undefined
+      const restorable = verdict?.restorable === true
+      return Object.freeze({
+        interruptRef: interrupt.interruptRef,
+        label: interrupt.label,
+        incompleteState: interrupt.incompleteState,
+        checkpointRef: interrupt.checkpointRef,
+        recordedAt: interrupt.recordedAt,
+        ...(interrupt.taskRef === undefined ? {} : { taskRef: interrupt.taskRef }),
+        ...(interrupt.threadRef === undefined ? {} : { threadRef: interrupt.threadRef }),
+        restorable,
+        ...(restorable ? {} : { reason: verdict?.reason ?? 'the anchor is not listed in this Member\'s current lineage window, so the return cannot be proven' }),
+      })
+    }))
+  }
+
+  /** Human read: one Member's pending interrupts, newest first, annotated when the Member is live. */
+  @Remote('memberInterrupts')
+  async memberInterrupts(request: AgentTeamMemberInterruptsRequest): Promise<AgentTeamMemberInterrupts> {
+    this.requireAccepting()
+    this.requireWorkspace(request.workspaceId)
+    const member = this.requireLedger().getMember(request.memberId)
+    if (member === undefined) throw new Error(`unknown Agent Member '${request.memberId}'`)
+    const pending = this.requireLedger().pendingInterruptsForMember(member.memberId).filter(interrupt => interrupt.workspaceId === request.workspaceId)
+    return Object.freeze({
+      memberId: member.memberId,
+      items: await this.interruptViews(member.memberId, this.handles.get(member.memberId)?.agent, pending),
+    })
+  }
+
+  /** Human release of one Member's pending interrupt; `resumed` stays exclusively the Host's own close. */
+  @Remote('resolveMemberInterrupt')
+  async resolveMemberInterrupt(request: AgentTeamResolveMemberInterruptRequest): Promise<AgentTeamResolveMemberInterruptResult> {
+    this.requireAccepting()
+    const result = await this.requireLedger().resolveMemberInterrupt({
+      requestId: request.requestId,
+      workspaceId: request.workspaceId,
+      memberId: request.memberId,
+      actor: this.humanCall(request.workspaceId),
+      interruptRef: request.interruptRef,
+      resolution: 'released',
+      ...(request.reason === undefined ? {} : { reason: request.reason }),
+    })
+    if (result.committed) this.emitCommitted(result.value.receipt)
+    return result.value
+  }
+
   private emitCommittedOutcome<T extends { readonly kind: string; readonly receipt?: AgentTeamOperationReceipt }>(
     result: { readonly committed: boolean; readonly value: T },
   ): void {
@@ -4627,7 +4995,7 @@ export default class AgentTeam extends TypertRemoteService {
     }
   }
 
-  private async activateMember(member: AgentTeamAgentMember, knownWorkspacePath?: string, knownSessions?: ReadonlySet<SessionId>, forkedFrom?: SessionId, options?: { readonly deferNotify?: boolean; readonly seed?: readonly SessionEvent[]; readonly inheritedEventCount?: SessionLogOffset }): Promise<void> {
+  private async activateMember(member: AgentTeamAgentMember, knownWorkspacePath?: string, knownSessions?: ReadonlySet<SessionId>, forkedFrom?: SessionId, options?: { readonly deferNotify?: boolean; readonly seed?: readonly SessionEvent[]; readonly inheritedEventCount?: SessionLogOffset; readonly carriedSelection?: AgentTeamModelSelection }): Promise<void> {
     if (this.handles.has(member.memberId)) return
     let created: AgentHandle | undefined
     try {
@@ -4641,8 +5009,11 @@ export default class AgentTeam extends TypertRemoteService {
         : await this.sessionPersisted(member.sessionId)
       // AgentOptions declares only provider/model. Install the full selection
       // through the public Agent model-selection seam so reasoning effort is
-      // applied to the next request and not lost during activation.
-      const selection = member.model ?? this.ctx.agentDefaultModel.currentSelection()
+      // applied to the next request and not lost during activation. A context
+      // rollover carries the retiring generation's live route: the fresh
+      // generation must re-render the same prompt assembly, not reload the
+      // operator default under it (see the transition's carriedSelection).
+      const selection = member.model ?? options?.carriedSelection ?? this.ctx.agentDefaultModel.currentSelection()
       const agentOptions = { provider: selection.provider, model: selection.model }
       const selected: ModelSelectionRef = { current: selection, assembled: undefined }
       // Absent skills.allow loads every discovered private skill; a present

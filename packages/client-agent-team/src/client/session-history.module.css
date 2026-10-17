@@ -1,27 +1,40 @@
-/* Session-history dialog: the Member's Session generations on the left
+/* Session-history page: the Member's Session generations on the left
    (newest first), the selected generation's bounded read-only transcript on
-   the right. The dialog reuses the shipped row tiers: 12px rows like the
-   roster, 11/12px labels like every other list surface. Both panes stretch
-   to the card's height — the card itself is resizable/maximizable — and each
-   scrolls its own overflow. */
+   the right. The page rides the shared conversation surface, so it keeps the
+   same responsive gutters as Channel and Thread; the generation pane is a
+   narrow rail and the transcript takes the reading column. Both panes fill
+   the seat's height and each scrolls its own overflow. */
 
 .shell {
   display: grid;
-  flex: 1 1 auto;
+  grid-template-columns: 240px minmax(0, 1fr);
+  height: 100%;
   min-height: 0;
-  gap: 12px;
-  grid-template-columns: 220px minmax(0, 1fr);
+  min-width: 0;
+  overflow: hidden;
+  padding: 12px clamp(18px, 3vw, 36px) 16px;
+  scrollbar-gutter: stable;
 }
 
-@media (max-width: 640px) {
+@media (max-width: 720px) {
   .shell {
     grid-template-columns: minmax(0, 1fr);
     grid-template-rows: auto minmax(0, 1fr);
+    padding: 12px 12px 16px;
   }
 
-  .generationList {
+  .pane {
     max-height: 160px;
+    overflow-y: auto;
   }
+}
+
+.pane {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-height: 0;
+  min-width: 0;
 }
 
 .generationList {
@@ -80,19 +93,32 @@
 .transcript {
   display: grid;
   align-content: start;
-  gap: 10px;
+  gap: 14px;
   min-height: 0;
   overflow-y: auto;
   padding-right: 4px;
+  scrollbar-gutter: stable;
 }
 
 .loadEarlier {
-  justify-self: start;
+  justify-self: center;
 }
 
 .entry {
+  border: 1px solid var(--dsw-alias-border-l1, transparent);
+  border-radius: var(--dsw-radius-md, 12px);
   display: grid;
-  gap: 2px;
+  gap: 6px;
+  padding: 10px 14px;
+}
+
+.entry[data-role="system"],
+.entry[data-role="notice"] {
+  background: var(--dsw-alias-interactive-bg-hover, var(--dsw-alias-bg-l1));
+}
+
+.entry[data-role="team"] {
+  background: var(--dsw-alias-bg-l1);
 }
 
 .entryMeta {
@@ -105,13 +131,39 @@
 
 .entryRole {
   color: var(--dsw-alias-label-secondary);
-  font-weight: 500;
+  font-weight: 600;
 }
 
-.entryText {
+/* Long entries fold to a bounded height until the row's expand control
+   lifts the fold; the wrapper class flips, the body never remounts. */
+.entryClamp {
+  max-height: 120px;
+  overflow: hidden;
+  position: relative;
+}
+
+.entryMarkdown {
   color: var(--dsw-alias-label-primary);
+  font-size: 13px;
+  line-height: 20px;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.entryMarkdown > :first-child {
+  margin-top: 0;
+}
+
+.entryMarkdown > :last-child {
+  margin-bottom: 0;
+}
+
+.entryPre {
+  color: var(--dsw-alias-label-primary);
+  font-family: var(--dsw-font-code, ui-monospace, SFMono-Regular, Menlo, monospace);
   font-size: 12px;
   line-height: 18px;
+  margin: 0;
   overflow-wrap: anywhere;
   white-space: pre-wrap;
 }

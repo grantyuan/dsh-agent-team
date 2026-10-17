@@ -2,7 +2,7 @@
 
 [English](host-authority.md) | 中文
 
-Team 是每个 DSH home 内唯一的协作域。append-only operation ledger 是 Member、Workspace、Channel、Message、独立 Thread aggregate、可选 Task overlay、Claim、Thread Attention、Inbox 和 Activity facts 的 durable authority。
+Team 是每个 DSH home 内唯一的协作域。append-only operation ledger 是 Member、Workspace、Channel、Message、独立 Thread aggregate、可选 Task overlay、Claim、Thread Attention、Inbox、Member pending 打断栈和 Activity facts 的 durable authority。
 
 修改 Host capability 时，先阅读 package source/tests，再阅读匹配的 Harness capability contract。导航表见 [`harness-navigation.zh.md`](../harness-navigation.zh.md)，其中将 Host 改动映射到 `deepseek-harness/docs/subsystems/` 和 source packages。
 
@@ -66,7 +66,7 @@ Team 是每个 DSH home 内唯一的协作域。append-only operation ledger 是
 
 ## Member capabilities 与 skills
 - Member capabilities（Member 实体上的 `capabilities` 字段：预留的 `tools.allow` 与 `skills.allow`）是随全部 lifecycle operation 原样流转的 durable intent。commit 时不做已知名白名单校验，保证 Harness 升级后旧 ledger 仍可重放；与已知名的偏差在 activation 时派生为不持久化的 `capabilityWarnings`。`tools.allow` 是有意的接口预留（无 UI 写入路径），供后续 Runtime Revision manifest 编排依赖，cleanup 时勿删。编辑语义与 `model` 一致（absent 即清除）；不管理 capabilities 的调用方必须回传已存储的值。`leader` 标记是唯一的 keeps-prior 字段：absent 保留现有指定，因此总是回显该值的编辑器保持幂等。
-- Activation 把 `tools.allow` 作为 scoped restriction 应用在已组合的 preset 面上，顺序为 mount → restrict → validate（validate 观察限制后的可见面），并在配置之上强制并集九个 Team tools。未知名 drop + warning，不阻断 activation；restriction 失败只表现为该 Member 的 activation failure。
+- Activation 把 `tools.allow` 作为 scoped restriction 应用在已组合的 preset 面上，顺序为 mount → restrict → validate（validate 观察限制后的可见面），并在配置之上强制并集十个 Team tools。未知名 drop + warning，不阻断 activation；restriction 失败只表现为该 Member 的 activation failure。
 - 对 live Member 编辑 allow-list 或 prompt 画像：durable 编辑在 commit 处立即应答，live 换装在同一 Session 的 turn 边界完成——idle 在编辑自身的队列 body 内生效；running 则交给后台 scheduled apply（与 fresh-start reset／auto-prune sweep 同形），故响应与串行 lifecycle 队列都不被一次轮次（乃至卡死的 Member）拖住。被任何 dispose 移除的 handle（包括队列从未看见的那次）直接跳过换装，存量事实于下次 activation 落地；换装失败只记日志、不上抛。
 - Skills 是 Member 私有的。 preset 不带共享 skill-filesystem row；Host 在每个 Member 的 agent exact scope layer 上（traceable-service 接缝，与 tool restriction 同构）注册一个 filesystem provider，只扫两个 Team 自有 root（排除默认 roots）：插件内置的只读 core skills（`packages/agent-team/core-skills/`，排前——同名内置 skill 跨升级保持稳定）和 Member 可写的 `$DSH_HOME/agent-team/members/<memberId>/skills/`。
 

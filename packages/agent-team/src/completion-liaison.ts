@@ -36,7 +36,7 @@
  * @module @wowyuarm/dsh-agent-team/completion-liaison
  */
 
-import type { AgentTeamMemberId } from './types.ts'
+import type { AgentTeamContextCheckpointRef, AgentTeamInterruptRef, AgentTeamMemberId } from './types.ts'
 import type { WorkspaceId } from '@deepseek-ai/dsh-workspace'
 import type { ContinuationTask } from './continuation-watcher.ts'
 import { COMPLETION_MARKER } from './response-guard.ts'
@@ -75,6 +75,23 @@ export const LIAISON_FEEDBACK_MAX_CHARS = 400
 export const LIAISON_REPORT_CHECK_MARKER = 'Team report check:'
 export const LIAISON_TASK_PUSH_MARKER = 'Task push (no Team leader designated):'
 export const LIAISON_DECLINED_PUSH_MARKER = 'Task push declined:'
+export const LIAISON_INTERRUPT_PUSH_MARKER = 'Interrupt resume check:'
+
+/**
+ * Stable summary of the private resume notice steered into the finished
+ * Member's own Session. The context projection reads it as a pure reminder —
+ * it never anchors a timeline boundary — and the text restates the full
+ * current stack on every delivery, so an older unread instance carries the
+ * same information as the newest.
+ */
+export const INTERRUPT_PUSH_SUMMARY = 'Interrupt resume check: pending interrupted sessions await continuation'
+
+/** One pending interrupt as the resume lane presents it to the Member. */
+export interface LiaisonInterrupt {
+  readonly interruptRef: AgentTeamInterruptRef
+  readonly checkpointRef: AgentTeamContextCheckpointRef
+  readonly label: string
+}
 
 /** The enabled designated leader one notice addresses. */
 export interface LiaisonLeader {
@@ -93,8 +110,20 @@ export interface CompletionLiaisonOptions {
   readonly reportedToLeaderSince: (memberId: AgentTeamMemberId, leaderId: AgentTeamMemberId, sinceSequence: number) => boolean
   /** The Workspace's open Tasks at pass time; an empty list never pushes. */
   readonly openTasksIn: (workspaceId: WorkspaceId) => readonly ContinuationTask[]
+  /**
+   * The Member's pending interrupt stack, newest first — read from the
+   * durable ledger projection, so the resume drive survives resets and
+   * restarts. An empty list means the lane is silent for this Member.
+   */
+  readonly interruptsOf: (memberId: AgentTeamMemberId) => readonly LiaisonInterrupt[]
   /** The Member's handle for message bodies; undefined once the Member left the roster. */
   readonly handleOf: (memberId: AgentTeamMemberId) => string | undefined
+  /**
+   * Steer the private resume notice into the finished Member's own Session
+   * (a runtime delivery like the context-reset notice, never a ledger
+   * Message). A throw is logged and the lane stays retryable.
+   */
+  readonly pushInterrupts: (input: { readonly memberId: AgentTeamMemberId, readonly memberHandle: string, readonly interrupts: readonly LiaisonInterrupt[] }) => Promise<void>
   /** Post the report-check notice for the leader. A throw is logged; the cooldown still latches. */
   readonly notifyLeader: (input: { readonly memberId: AgentTeamMemberId, readonly memberHandle: string, readonly workspaceId: WorkspaceId, readonly leader: LiaisonLeader }) => Promise<void>
   /** Post the open-Task push addressed to the Member itself — only ever a Member that is not the Workspace's designated Leader. */
@@ -238,6 +267,15 @@ export class CompletionLiaison {
   private async evaluateNow(memberId: AgentTeamMemberId, episode: LiaisonEpisode, now: number): Promise<void> {
     const memberHandle = this.options.handleOf(memberId)
     if (memberHandle === undefined) return
+    // The resume lane is per Member, not per Workspace: whatever just
+    // finished, the Member's own pinned stack is what it owes next. It runs
+    // before (and independently of) the leader branches, because resuming
+    // interrupted work is never the leader's report to chase.
+    const interrupts = this.options.interruptsOf(memberId)
+    if (interrupts.length > 0 && !this.latchedFor(memberId, '', 'resume', now)) {
+      this.latch(memberId, '', 'resume', now)
+      await this.fire('interrupt resume push', () => this.options.pushInterrupts({ memberId, memberHandle, interrupts }))
+    }
     for (const workspaceId of this.options.workspacesOf(memberId)) {
       const leader = this.options.leaderOf(workspaceId)
       // The designated Leader's own completion earns no forced wake: their
@@ -269,12 +307,12 @@ export class CompletionLiaison {
     }
   }
 
-  private latchedFor(memberId: AgentTeamMemberId, workspaceId: WorkspaceId, kind: string, now: number): boolean {
+  private latchedFor(memberId: AgentTeamMemberId, workspaceId: WorkspaceId | '', kind: string, now: number): boolean {
     const at = this.latched.get(`${memberId}\u0000${workspaceId}\u0000${kind}`)
     return at !== undefined && now - at < this.cooldownMs
   }
 
-  private latch(memberId: AgentTeamMemberId, workspaceId: WorkspaceId, kind: string, now: number): void {
+  private latch(memberId: AgentTeamMemberId, workspaceId: WorkspaceId | '', kind: string, now: number): void {
     this.latched.set(`${memberId}\u0000${workspaceId}\u0000${kind}`, now)
   }
 
@@ -303,6 +341,22 @@ function sanitizeQuotedText(value: string): string {
 /** The report-check notice: the leader is told a teammate finished, idled, and owes a report. */
 export function liaisonReportCheckText(input: { readonly leaderHandle: string, readonly memberHandle: string }): string {
   return `@${input.leaderHandle} ${LIAISON_REPORT_CHECK_MARKER} ${input.memberHandle} finished its latest work and has gone idle without reporting to you as the designated Team leader. Review its recent Tasks and ask it for a status report, or reassign what still needs moving — keep each Task's status current so the Human can follow progress.`
+}
+
+/**
+ * The private resume notice: the Member that just closed a task is told its
+ * own interrupted stack, newest first — the LIFO order the persona's
+ * interruption protocol resumes in. The refs are printed bare (never in the
+ * `Thread: <ref>` shape a boundary fold would anchor on), and every delivery
+ * restates the full current stack.
+ */
+export function liaisonResumePushText(input: { readonly interrupts: readonly LiaisonInterrupt[] }): string {
+  const lines = [
+    `${LIAISON_INTERRUPT_PUSH_MARKER} you closed your current work while ${input.interrupts.length} interrupted session(s) remain pinned, newest first:`,
+    ...input.interrupts.map(interrupt => `- ${sanitizeQuotedText(interrupt.label)} (ref ${interrupt.interruptRef}; anchor ${interrupt.checkpointRef})`),
+    `Pre-completion analysis now: if you have not yet posted the completion report for the work you just finished, post it first. Then resume the newest entry — collect or stop your jobs and call context_rollover citing that entry's anchor ref exactly: the Host closes the entry when the return commits. If an anchor no longer returns (budget or lineage moved), read your memory note for that work, write a fresh handoff carrying its unfinished state, then release the entry with context_interrupt. Do not start unrelated follow-up work before the stack is empty; release anything you will not return to.`,
+  ]
+  return lines.join('\n')
 }
 
 /** The Task push: the Member owns the decision to continue. */

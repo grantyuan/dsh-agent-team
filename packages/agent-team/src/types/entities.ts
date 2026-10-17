@@ -40,6 +40,44 @@ export type AgentTeamActivityRef = Branded<'AgentTeamActivityRef'>
  */
 export type AgentTeamContextCheckpointRef = Branded<'AgentTeamContextCheckpointRef'>
 
+/** Stable identifier of one recorded interrupted session awaiting continuation. */
+export type AgentTeamInterruptRef = Branded<'AgentTeamInterruptRef'>
+
+/** How one interrupt left the pending stack. */
+export type AgentTeamInterruptResolution = 'resumed' | 'released'
+
+/**
+ * One Member session that was stopped before its work completed and pinned
+ * to a restorable context checkpoint: the durable pointer that lets the
+ * Member (or its next generation after a context reset) pick the interrupted
+ * work back up once whatever interrupted it is finished. The entry is
+ * Member-scoped coordination bookkeeping — the semantic label and bounded
+ * incomplete-state note describe what remains; the full private handoff
+ * stays in the Member's own checkpoint lineage and memory, never here.
+ */
+export interface AgentTeamMemberInterrupt {
+  readonly interruptRef: AgentTeamInterruptRef
+  readonly memberId: AgentTeamMemberId
+  readonly workspaceId: WorkspaceId
+  /** The restorable checkpoint this work was pinned to; the resume cite. */
+  readonly checkpointRef: AgentTeamContextCheckpointRef
+  /** The checkpoint's owning Session at record time — lineage context, not a selection key. */
+  readonly sessionId: SessionId
+  /** Short semantic label naming the interrupted work. */
+  readonly label: string
+  /** Bounded summary of the incomplete state: where it stopped and what remains. */
+  readonly incompleteState: string
+  /** The Task the interrupted work served, when it served one. */
+  readonly taskRef?: AgentTeamTaskRef
+  /** The Thread the interrupted work belonged to, when it belonged to one. */
+  readonly threadRef?: AgentTeamThreadRef
+  /** Optional pointer into the Member's own private notes for the detailed state. */
+  readonly notePath?: string
+  /** Ledger sequence of the recording operation — the stack's durable order. */
+  readonly recordedSequence: number
+  readonly recordedAt: string
+}
+
 /** Process-local one-use authorization for one Human invitation. */
 export type AgentTeamConfirmationToken = Branded<'AgentTeamConfirmationToken'>
 

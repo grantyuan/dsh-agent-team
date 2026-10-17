@@ -96,6 +96,15 @@ The rail speaks the same two shapes at rail scale. A Panel's own failure line is
 
 A Panel's line carries no retry control; the rail heals from the change stream, which reports an outage once and wakes every listener when the transport answers again (see [`host-authority.md`](../architecture/host-authority.md)).
 
+## Thread digest panel
+The recap opens the timeline's scroll column — the first bordered block inside the 880px reading column, above the conversation it explains, so it reads top-down with the Thread and its async growth stays inside the scroller that keeps a bottom-pinned reader pinned. A caption, the summary paragraph, and the turns that matter as a quiet list. It never gates the timeline: while the call runs the panel shows only the shared loading mark, and a failed call shows its error line beside 重试, leaving the Thread fully readable underneath.
+
+The decision band opens only when the recap says the Thread waits on the Human. It leads with the question in the business hue, lays the Thread's own options as pickable rows that keep their geometry on pick — border hue plus inset ring, never a re-layout — and keeps one textarea whose written opinion outranks any picked option the moment the reader types it.
+
+The band's pick mode follows the semantics of the ask, which the digest model reads from the Thread: mutually exclusive options render as radios, combinable ones as checkboxes, and ticked options then go out joined in the digest's own order inside one 我的决定 message.
+
+Sending answers through the ordinary reply path, so a decision lands as one Message: the panel reports 你的决定已发送 as its only feedback and releases the selection. The durable accept and close of an `in_review` Task stay where they were — the header's own actions.
+
 ## Thread header band and the Claim panel
 The Thread's header band carries the back row, the Task identity, the runtime-risk section, and the Claims section, and it closes with the one rule `.surfaceHeader` draws. The two sections inside it therefore separate by **space alone** — a section-level `border-top` would draw a second line around nothing, since the band's own rule already ends the group above.
 
@@ -109,7 +118,7 @@ The narrow breakpoint does not re-template the row: one `14px minmax(0, 1fr) aut
 
 A `done` Claim carries `claimRowDone`, stepping its direction down to secondary so finished work stops competing with live work, without hiding the Claim.
 
-The runtime-risk row is one line per erroring Member, and its leading token is the **localized name of the diagnostic's structured class** — `session-refused`, `session-unreadable`, `preset-composition`, `rollover`, `runtime`, `activation`, the policy axis `AgentTeamMemberDiagnostic.class` already carries and `restartOffered` already branches on.
+The runtime-risk row is one line per erroring Member, and its leading token is the **localized name of the diagnostic's structured class** — `session-refused`, `session-unreadable`, `preset-composition`, `rollover`, `runtime`, `activation`, the policy axis `AgentTeamMemberDiagnostic.class` already carries on the status projection.
 
 That class answers the localizable question "what kind of problem is this", while the Host's `detail` is English by construction; the row therefore clamps the detail to its first sentence and keeps the full text on the row's `title`.
 

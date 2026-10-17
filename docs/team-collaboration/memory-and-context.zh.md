@@ -16,6 +16,21 @@ Host 端到端拥有 Member 的上下文压力管理。两个预算阈值从该 
 
 Memory 不是 authority：它可能过时，不能覆盖 Workspace instructions、direct Human input 或 durable Team facts。Member 只能记录已验证且持久的知识，不得记录 credentials、sensitive data、guesses、chat logs、其他 Members' memory，或 ledger 已拥有的 facts。
 
+## 打断栈与续作
+pending-interrupt 栈是被打断工作的 durable 记忆：同一 append-only ledger 上的一对 Host operation（`team/member-interrupt-recorded`、`team/member-interrupt-resolved`），投影为每个 Member 至多 8 条 pending、按锚点去重的 LIFO 栈。条目钉住一个已 resolve 的 checkpoint ref，加上有界的 label 与 `incompleteState`；完整工作状态绝不进 ledger——它留在 Member 的 Session 日志与私有记忆里，条目只是回到它的续作指针。
+
+回放从 operations 重建栈；不存在第二份存储。
+
+由被钉住的 checkpoint 种下的 `context_rollover` 会在同一个序列化转换内把该条目关闭为 `resumed`——resolve 由 ledger 亲自写入，以新 Session id 为键，重试或崩溃恢复的转换回放到同一次关闭。`released` 条目在不回返的情况下关闭：由 Member 经 `context_interrupt`，或由 Human 经 Client 行菜单。
+
+完成前分析搭载在 completion liaison 上：只要 Member 的栈非空，收尾的 episode 会获得一条私有 resume-check 通知（steer 上下文，绝不是 ledger Message）；persona 契约要求 Member 先发布完成汇报，再按新→旧逐个走栈——回到每个可回返的锚点，对 timeline 已无法证明的锚点改走 fresh handoff 并释放条目。
+
+候选新任务须先对照其他 Members 的 active Claims；强关联的工作直接继续，否则先写入私有记忆，再由 Member 重置自己的上下文。
+
+提示词缓存纪律是同一机制的成本侧面：checkpoint-return 的 seed 就是源日志的精确前缀——含 node-zero 系统提示词、已注入 instructions 与工具历史——因此内容未变时 Harness 的重装配不提交任何新提示词文本。转换还会携带退役代的 model selection，使 route 变量跨 handoff 保持稳定。
+
+`fresh` rollover 同样保持注入面去重；Member 只在事实确实变化时重写 memory 索引或复述前缀已携带的内容。
+
 ## Agent notification boundary
 Host 从 durable unread state 派生 Agent notifications，并通过 Agent public safe-boundary API 注入一条有界、合并后的 context message。Idle Agent 会开始一个 turn；running request 或 tool 会在下一个 step boundary 收到 context，且不会被中断。无论何时，durable Inbox 都是 authority：
 
@@ -31,11 +46,17 @@ Pending hints 按 Member 合并。Consumed 或 ignored hint 不会再触发 turn
 
 对于可恢复的临时 service errors，Host 按 Member 连续 `agent/error` occurrences 计数，而不是按 recovery wakeups 或 error text 计数：前两次 errors 各自在延迟后 wake 一次，第 3 次立即停止自动 recovery，并保留 error 交给 operator。不同 recoverable kinds 不会中断连续 error。只有 clean turn end 会清零，non-recoverable error 会取消 tracking。Recovery notice 自身会合并 continuation 与当前 durable Inbox facts，因此 ordinary Inbox notification 不会覆盖它或追加第二条提示。
 
-Web Client 的 Agent-row menu 提供两个 runtime recovery entrances（都不写 ledger）：有 live session 的 error Member 显示「恢复」，由 Host 向 session 注入 continuation prompt（孤儿 composition 则原地重建）；activation failed 的 Member 显示「重启」，由 Host 重新执行该 Member activation，再次失败时仍以 diagnostic 显示在 sidebar。
+Web Client 的 Agent-row menu 提供两个 runtime recovery entrances（都不写 ledger）：有 live session 的 error Member 显示「恢复」，由 Host 向 session 注入 continuation prompt；所有 unavailable 行显示「重启」，由 Host 的 `recoverMember` 依据实时状态选择修复——完成一次 durable 绑定已前移而 handle 尚未跟上的上下文转换、重跑失败的激活，孤儿 composition 则原地重建；再次失败时仍以 diagnostic 显示在 sidebar。
 
-Agent 行菜单对 live Member 持有两个上下文动作，并对每一行提供第三个动作「历史会话」。「重置」经 `clearMemberContext` 走持久的 rollover 机制换新 Member Session——新 Session id 带 fork lineage 指回被归档的上一份日志，私有记忆不受影响。「压缩」经 `compactMemberContext` 调度一次手动压缩：Remote 校验守卫（Member enabled、无进行中的 rollover、存在活跃 handle、没有已 pending 的压缩）并立即原样返回状态。
+Agent 行菜单对 live Member 持有两个上下文动作，并对每一行提供「历史会话」与「已暂停任务」（pending 打断栈对话框）两个动作。
 
-「历史会话」经 `memberSessions` 与 `memberSessionTranscript` 两个 Remote 读取：沿存储的 `parentSession` 谱系列出该 Member 的全部 Session 世代——当前世代居首，不可读的祖先在游走止步处标记——并把所选世代自身的事件渲染为有界、游标分页的转录。它从不激活、恢复或写入任何 Session，因此即便 Harness 拒绝把归档会话作为 live 对话打开，归档世代仍可浏览。
+「重置」经 `clearMemberContext` 走持久的 rollover 机制换新 Member Session——新 Session id 带 fork lineage 指回被归档的上一份日志，私有记忆不受影响。「压缩」经 `compactMemberContext` 调度一次手动压缩：Remote 校验守卫（Member enabled、无进行中的 rollover、存在活跃 handle、没有已 pending 的压缩）并立即原样返回状态。
+
+「历史会话」以独立审计页面占据对话席位：沿存储的 `parentSession` 谱系列出该 Member 的全部 Session 世代，由新到旧。当前世代经 live handle 读取——即使上下文转换已把 durable 绑定前移到它之前；不可读的当前绑定降级为带标记的条目，游走继续接上 ledger 记录的前驱世代，最新代际未能落盘的崩溃因此不吞掉归档历史。页面默认打开最新可读世代，全部不可读时如实说明。
+
+所选世代自身的事件经 `memberSessions` 与 `memberSessionTranscript` 分页呈现；每条条目保留完整存储文本——传输由分页限界，绝不靠裁剪内容——并按原始 Markdown 展示：系统指令、Team relay 与 Host notice 各占一个 lane，Inbox splice 批次按 lane 展开，thread 驱动的唤醒输入因此可读。
+
+它从不激活、恢复或写入任何 Session，因此即便 Harness 拒绝把归档会话作为 live 对话打开，归档世代仍可浏览。
 
 重置成功后，Host 只私下提示被重置的 Member 本人：提示点明是谁触发了重置，说明 Session 已清空重来而 handle、设置与私有记忆不变、durable Team facts 不受影响，并要求它在继续工作前先凭注入的记忆与 durable Team history（`team_view`、`team_inbox`、`team_thread`）重新定位当前任务，读完仍不清楚的应在相关 Thread 回复或发私信询问队友而不是猜测；不再向任何 Channel 广播，该提示是运行时 notification intent 而非 ledger Message，投递失败只记日志。
 

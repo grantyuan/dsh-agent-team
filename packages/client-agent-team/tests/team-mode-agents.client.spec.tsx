@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { cleanup, fireEvent, waitFor, within } from '@testing-library/react'
 import { usePinnedBrowserLanguages } from '@deepseek-ai/dsh-client-test-runtime'
 import { runtimeWithTeam } from './harness.tsx'
+import { STORAGE_KEY } from '../src/client/navigation.ts'
 
 /** 0.1.7 selection read: the conversation follows the session holding the workspace service's `mainView` reference. */
 function mainViewSessionId(b: Awaited<ReturnType<typeof runtimeWithTeam>>): string | undefined {
@@ -328,6 +329,26 @@ describe('Team agent surfaces', () => {
     fireEvent.click(b.view.getByRole('button', { name: 'offline 的操作' }))
     fireEvent.click(await within(document.body).findByRole('menuitem', { name: '重启' }))
     await waitFor(() => { expect(b.view.getByRole('alert').textContent).toContain('重启执行失败：connection lost') })
+    await b.runtime.dispose()
+  })
+
+  it('offers 重启 to a Member mid-transition so the Host can complete an interrupted swap', async () => {
+    const b = await runtimeWithTeam({ initialChannels: true })
+    fireEvent.click(b.view.getByRole('button', { name: '团队' }))
+    await b.view.findByText('builder')
+    // A transition whose durable binding moved ahead of the live handle:
+    // the row is unavailable with the transient 'rollover' diagnostic. The
+    // restart action is offered — the Host's recovery read completes the
+    // swap when it was interrupted and no-ops when it already settled.
+    b.members.mockImplementation(async () => ({ ok: true, value: [
+      b.status('member:builder', 'w1', 'builder', 'unavailable', { class: 'rollover', detail: 'context rollover in progress' }),
+    ] }))
+    b.publishChannelUpdate()
+    fireEvent.click(await b.view.findByRole('button', { name: 'builder 的操作' }))
+    fireEvent.click(await within(document.body).findByRole('menuitem', { name: '重启' }))
+    await waitFor(() => {
+      expect(b.recoverMember).toHaveBeenCalledWith(expect.objectContaining({ workspaceId: 'w1', memberId: 'member:builder' }))
+    })
     await b.runtime.dispose()
   })
 
@@ -664,45 +685,108 @@ describe('Team archival surfaces', () => {
     await b.runtime.dispose()
   })
 
-  it('browses the Member session lineage read-only from the row menu', async () => {
+  it('browses the Member session lineage read-only on the session-history page', async () => {
     const b = await runtimeWithTeam({ initialChannels: true })
     fireEvent.click(b.view.getByRole('button', { name: '团队' }))
     await b.view.findByText('builder')
 
-    // 历史会话 opens the stored-lineage dialog: the live generation leads and
-    // its tail loads without ever activating or writing a Session.
+    // 历史会话 takes the conversation seat with the stored-lineage page: the
+    // live generation leads and its tail loads without ever activating or
+    // writing a Session.
     fireEvent.click(b.view.getByRole('button', { name: 'builder 的操作' }))
     fireEvent.click(await within(document.body).findByRole('menuitem', { name: '历史会话' }))
-    const dialog = await b.view.findByRole('dialog', { name: '历史会话：builder' })
+    await b.view.findByText('历史会话：builder')
+    const page = b.view.container.querySelector('[data-team-session-history]') as HTMLElement
+    expect(page).toBeTruthy()
     await waitFor(() => expect(b.memberSessions).toHaveBeenCalledWith({ memberId: 'member:builder' }))
-    expect(within(dialog).getByRole('button', { name: /当前会话/ }).textContent).toContain('30 条事件')
-    await within(dialog).findByText('transcript tail of session-current')
-    expect(within(dialog).getByRole('button', { name: /会话 #2/ }).textContent).toContain('120 条事件')
+    expect(within(page).getByRole('button', { name: /当前会话/ }).textContent).toContain('30 条事件')
+    await within(page).findByText('transcript tail of session-current')
+    expect(within(page).getByRole('button', { name: /会话 #2/ }).textContent).toContain('120 条事件')
+
+    // The lanes render as authored Markdown, not folded lines: the system
+    // instruction and Team relay rows carry their labels, and the relay's
+    // emphasis renders as markup instead of staying literal `**`.
+    expect(within(page).getByText('系统指令')).toBeTruthy()
+    expect(within(page).getByText('团队消息')).toBeTruthy()
+    expect(within(page).getByText('quick check').closest('strong')).toBeTruthy()
 
     // The bounded tail offers one page of earlier history; loading it
     // prepends the older page and retires the control once none remains.
-    fireEvent.click(within(dialog).getByRole('button', { name: '加载更早内容' }))
-    await waitFor(() => expect(b.memberSessionTranscript).toHaveBeenCalledWith({ memberId: 'member:builder', sessionId: 'session-current', beforeSeq: 100 }))
-    await within(dialog).findByText('the earliest page')
-    await waitFor(() => expect(within(dialog).queryByRole('button', { name: '加载更早内容' })).toBeNull())
+    fireEvent.click(within(page).getByRole('button', { name: '加载更早内容' }))
+    await waitFor(() => expect(b.memberSessionTranscript).toHaveBeenCalledWith({ memberId: 'member:builder', sessionId: 'session-current', beforeSeq: 98 }))
+    await within(page).findByText('the earliest page')
+    await waitFor(() => expect(within(page).queryByRole('button', { name: '加载更早内容' })).toBeNull())
 
     // Selecting the archived generation re-reads that generation's own tail.
-    fireEvent.click(within(dialog).getByRole('button', { name: /会话 #2/ }))
-    await within(dialog).findByText('transcript tail of session-archived')
+    fireEvent.click(within(page).getByRole('button', { name: /会话 #2/ }))
+    await within(page).findByText('transcript tail of session-archived')
     await waitFor(() => expect(b.memberSessionTranscript).toHaveBeenCalledWith({ memberId: 'member:builder', sessionId: 'session-archived' }))
 
-    // The transcript card is resizable through the browser corner handle and
-    // maximizable through the footer toggle: pressing it swaps the label and
-    // state without disturbing the loaded generation.
-    fireEvent.click(within(dialog).getByRole('button', { name: '最大化' }))
-    await waitFor(() => expect(within(dialog).getByRole('button', { name: '还原' }).getAttribute('aria-pressed')).toBe('true'))
-    expect(dialog.textContent).toContain('transcript tail of session-archived')
-    fireEvent.click(within(dialog).getByRole('button', { name: '还原' }))
-    await waitFor(() => expect(within(dialog).getByRole('button', { name: '最大化' }).getAttribute('aria-pressed')).toBe('false'))
+    // 返回 clears the face; the page's durable navigation survives a reload,
+    // so re-entering Team mode without touching the sidebar reopens it.
+    fireEvent.click(within(page).getByRole('button', { name: '返回' }))
+    await waitFor(() => expect(b.view.container.querySelector('[data-team-session-history]')).toBeNull())
+    await b.runtime.dispose()
+  })
 
-    const closeButtons = within(dialog).getAllByRole('button', { name: '关闭' })
-    fireEvent.click(closeButtons[closeButtons.length - 1]!)
-    await waitFor(() => expect(b.view.queryByRole('dialog', { name: '历史会话：builder' })).toBeNull())
+  it('lands the session-history page on the newest readable generation, never fetching an unreadable binding', async () => {
+    const b = await runtimeWithTeam({ initialChannels: true })
+    // A context transition in flight: the Host reports the newest binding as
+    // an unreadable entry (no metadata) with readable archived ancestors
+    // behind it. The page must not auto-select what it cannot read.
+    b.memberSessions.mockImplementation(async () => ({
+      ok: true as const,
+      value: [
+        { sessionId: 'session-pending', isCurrent: true },
+        { sessionId: 'session-archived', isCurrent: false, createdAt: 1_729_000_000_000, eventCount: 120 },
+      ],
+    }))
+    fireEvent.click(b.view.getByRole('button', { name: '团队' }))
+    await b.view.findByText('builder')
+    fireEvent.click(b.view.getByRole('button', { name: 'builder 的操作' }))
+    fireEvent.click(await within(document.body).findByRole('menuitem', { name: '历史会话' }))
+    await b.view.findByText('历史会话：builder')
+    const page = b.view.container.querySelector('[data-team-session-history]') as HTMLElement
+    // The archived readable generation serves the transcript instead.
+    await within(page).findByText('transcript tail of session-archived')
+    expect(b.memberSessionTranscript.mock.calls.every(([request]) => request.sessionId !== 'session-pending')).toBe(true)
+    // Its rail row stays selectable-shaped but disabled, labeled unreadable.
+    const currentRow = within(page).getByRole('button', { name: /当前会话/ }) as HTMLButtonElement
+    expect(currentRow.disabled).toBe(true)
+    expect(currentRow.textContent).toContain('归档日志不可读')
+    fireEvent.click(within(page).getByRole('button', { name: '返回' }))
+    await b.runtime.dispose()
+  })
+
+  it('states honestly when no session generation is readable yet', async () => {
+    const b = await runtimeWithTeam({ initialChannels: true })
+    b.memberSessions.mockImplementation(async () => ({
+      ok: true as const,
+      value: [{ sessionId: 'session-pending', isCurrent: true }],
+    }))
+    fireEvent.click(b.view.getByRole('button', { name: '团队' }))
+    await b.view.findByText('builder')
+    fireEvent.click(b.view.getByRole('button', { name: 'builder 的操作' }))
+    fireEvent.click(await within(document.body).findByRole('menuitem', { name: '历史会话' }))
+    const page = b.view.container.querySelector('[data-team-session-history]') as HTMLElement
+    await within(page).findByText(/暂无可读的会话世代/)
+    expect(b.memberSessionTranscript).not.toHaveBeenCalled()
+    await b.runtime.dispose()
+  })
+
+  it('persists the session-history face and retires it on Back', async () => {
+    const b = await runtimeWithTeam({ initialChannels: true })
+    fireEvent.click(b.view.getByRole('button', { name: '团队' }))
+    await b.view.findByText('builder')
+    fireEvent.click(b.view.getByRole('button', { name: 'builder 的操作' }))
+    fireEvent.click(await within(document.body).findByRole('menuitem', { name: '历史会话' }))
+    await b.view.findByText('历史会话：builder')
+    // The audit target is a durable navigation fact: the branded Member id
+    // rides the same snapshot the other faces write, so a reload reopens it.
+    expect(JSON.parse(localStorage.getItem(STORAGE_KEY) ?? '')).toMatchObject({ mode: 'team', sessionHistory: 'member:builder' })
+    const page = b.view.container.querySelector('[data-team-session-history]') as HTMLElement
+    fireEvent.click(within(page).getByRole('button', { name: '返回' }))
+    await waitFor(() => expect(JSON.parse(localStorage.getItem(STORAGE_KEY) ?? '')).not.toHaveProperty('sessionHistory'))
     await b.runtime.dispose()
   })
 

@@ -11,6 +11,10 @@ The first read returns the anchor, optional Task/Claim snapshot, limited recent 
 
 Human navigation is Workspace → Channel → Thread; a Task is an overlay, not a navigation level. The Inbox is a global Team page: it opens from the sidebar card/narrow-rail icon and merges every visible Workspace's Inbox calls — the reader's whole unread slice, mentions counted inside it rather than alone; opening it performs no Thread read, and only opening a Thread advances the watermark and clears the mention marker.
 
+Inbox rows resolve their own clocks: each row carries the Thread's `createdOccurredAt`, the newest `latestReplyOccurredAt` after the anchor with its `latestReplyActor`, and `needsHumanDecision` — a Thread fact, not a read state — standing while an open Task awaits acceptance or the newest Message naming the Human asks them for a decision and is the last word addressed to them. The Host recomputes these from ledger facts per projection; the row never carries Message bodies beyond its preview and needs no Thread read of its own.
+
+The decision ask is a conservative phrase filter over the Message body — decision nouns and same-sentence request shapes — because naming the Human is not itself a decision: reports and CC-style mentions light the unread badge, never the chip. The semantic judge stays the Thread digest, which reads the whole transcript when the panel opens.
+
 Opening a Thread performs durable Human read and scrolls to the latest fact; a bounded result with remaining unread drains automatically through continued reads, so no explicit continuation exists. History does not acknowledge new work. Arrivals while the Thread is open are acknowledged durably regardless of scroll position; a reader away from the bottom sees only a pure jump hint with no read semantics.
 
 ## Mentions

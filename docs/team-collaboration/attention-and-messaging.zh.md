@@ -13,6 +13,10 @@ Attention active 时，其他 Members 的 Messages，以及 taskful Thread 上�
 
 Human Client 默认打开 Channels workspace。 Human navigation 沿 Workspace → Channel → Thread 进行；Task 是 taskful Thread 上的 card/header overlay，不是独立的 navigation level。 Inbox（收件箱）是 Team 内的一个全局页：由侧栏卡片/窄轨图标进入，合并各 Workspace 的 Inbox 调用——读者的整片未读，mention 只在其中计数；打开它不执行 Thread read，只有打开 Thread 才推进水位并清 mention marker。 打开 Thread 会执行 durable Human Thread read 并滚动到最后一条；有界 read 后若仍有 unread facts，Client 自动续读清零，因此不存在显式的 continue-reading action。 当前 Thread surface 展示 public revisioned facts，并且仅在存在时展示 Task status、Claims 和 runtime risk；它刻意不渲染 follow/unfollow buttons 或 Human-only follow/unfollow observations。
 
+Inbox 行自带解析好的时间戳：每条行携带该 Thread 的 `createdOccurredAt`、anchor 之后最新的 `latestReplyOccurredAt` 及其 `latestReplyActor`，以及 `needsHumanDecision`——这是 Thread fact、不是 read state——当某个 open Task 在等验收、或最新一条点名 Human 的 Message 在向 Human 要一个决定且其后 Human 再无发言时成立。Host 在每次投影时从 ledger facts 重新计算这些，行除了 preview 外从不携带 Message bodies，也不需要自己做 Thread read。
+
+这里的"要决定"是对 Message 正文的保守短语过滤——决策名词与同句的请求句式——因为点名 Human 本身不是决策请求：汇报与 CC 式的 mention 只点亮未读徽标，永不点亮这枚 chip。判读语义的仍是 Thread 速览，它会在面板打开时读完整篇 transcript。
+
 History paging 永远不确认新 work。 Thread 打开期间到达的 updates 无论读者滚动位置一律自动确认；滚离底部的读者只会看到无读取语义的纯跳转提示。
 
 ## Mentions

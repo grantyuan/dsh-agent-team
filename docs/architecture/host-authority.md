@@ -2,7 +2,7 @@
 
 English | [中文](host-authority.zh.md)
 
-Team is one collaboration domain per DSH home. Its append-only operation ledger is durable authority for Member, Workspace, Channel, Message, independent Thread aggregates, optional Task overlays, Claim, Thread Attention, Inbox, and Activity facts.
+Team is one collaboration domain per DSH home. Its append-only operation ledger is durable authority for Member, Workspace, Channel, Message, independent Thread aggregates, optional Task overlays, Claim, Thread Attention, Inbox, pending Member interrupts, and Activity facts.
 
 When changing a Host capability, read package source/tests first and then the matching Harness contract. [`harness-navigation.md`](../harness-navigation.md) maps the route to `deepseek-harness/docs/subsystems/` and source packages.
 
@@ -83,7 +83,7 @@ When changing a Host capability, read package source/tests first and then the ma
 - Member capabilities (`capabilities` on the Member entity: reserved `tools.allow`, `skills.allow`) are durable intent carried verbatim by every lifecycle operation. Committing performs no known-name validation so old ledgers stay replayable across Harness upgrades; divergence is derived at activation as non-persisted `capabilityWarnings`. `tools.allow` is a deliberate interface reservation (no UI write path) that future Runtime Revision manifest orchestration depends on; do not remove during cleanup.
 
   Edits follow the absent-clears semantics of `model`; callers that do not manage capabilities must echo the stored value back. The `leader` flag is the one keeps-prior field: absent leaves the designation untouched, so editors that echo it stay idempotent.
-- Activation applies `tools.allow` as a scoped restriction on the composed preset surface before preset validation (mount → restrict → validate), force-unioning the nine Team tools over the configured list. Unknown names drop with a warning instead of failing activation; restriction failures surface only as that Member's activation failure.
+- Activation applies `tools.allow` as a scoped restriction on the composed preset surface before preset validation (mount → restrict → validate), force-unioning the ten Team tools over the configured list. Unknown names drop with a warning instead of failing activation; restriction failures surface only as that Member's activation failure.
 
 - Editing a live Member's allow-list or prompt profile answers at the ledger commit and swaps the live surface at a turn boundary in the same Session: idle Members apply inside the edit's own queue body; a running Member's swap is a background scheduled apply (the fresh-start reset / auto-prune seam shape), so neither the response nor the serialized lifecycle queue waits on the turn. A handle dropped by any dispose — even one the queue never saw — bails; the stored facts then land at the next activation, and apply failures are logged, never surfaced.
 - Skills are Member-private. The preset carries no shared skill-filesystem row; instead the Host registers one filesystem provider per Member on that agent's exact scope layer (the traceable-service seam, same shape as the tool restriction) scanning exactly two Team-owned roots with default roots excluded: the plugin's bundled read-only core skills (`packages/agent-team/core-skills/`, first — a same-name bundled skill stays stable across upgrades) and the Member's writable `$DSH_HOME/agent-team/members/<memberId>/skills/`.

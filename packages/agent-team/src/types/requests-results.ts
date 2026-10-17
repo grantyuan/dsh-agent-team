@@ -14,6 +14,8 @@ import type {
   AgentTeamConfirmationToken,
   AgentTeamContextCheckpointRef,
   AgentTeamDirectMarker,
+  AgentTeamInterruptRef,
+  AgentTeamInterruptResolution,
   AgentTeamMemberCapabilities,
   AgentTeamMemberId,
   AgentTeamMemberPromptProfile,
@@ -248,8 +250,14 @@ export interface AgentTeamMemberSessionTranscriptEntry {
   readonly seq: number
   /** Wall-clock instant of the event (Unix ms). */
   readonly time: number
-  readonly role: 'user' | 'assistant' | 'tool-call' | 'tool-result'
-  /** Bounded single-run text; per-line clamped like the doctor transcript. */
+  /**
+   * `system` is the rendered system prompt, `team` a Member-to-Member relay,
+   * and `notice` a Host-injected Team notice or context envelope; the rest
+   * are the ordinary conversation lanes. The Human review surface renders
+   * every role, and Markdown-bearing roles keep their line breaks.
+   */
+  readonly role: 'system' | 'notice' | 'team' | 'user' | 'assistant' | 'tool-call' | 'tool-result'
+  /** Bounded text with the stored line breaks kept; per-entry clamped. */
   readonly text: string
 }
 
@@ -986,6 +994,23 @@ export interface AgentTeamInboxItem {
    * never reaches model-visible notification text.
    */
   readonly previewText?: string
+  /** Instant of the Thread's anchor Message — the row's creation time. */
+  readonly createdOccurredAt: string
+  /**
+   * Instant of the newest reply — the last Message after the anchor, whoever
+   * wrote it. Absent while the Thread has no reply yet, and the row falls back
+   * to {@link createdOccurredAt} for its visible instant.
+   */
+  readonly latestReplyOccurredAt?: string
+  /** The Member who authored that newest reply, absent together with its instant. */
+  readonly latestReplyActor?: AgentTeamInboxActor
+  /**
+   * Whether the Thread holds something waiting on a Human decision: an open
+   * Task awaiting acceptance, or a Message that named the Human with no Human
+   * Message after it. Counted against the Human Member specifically, so an
+   * Agent reader's rows do not flip on their own mentions.
+   */
+  readonly needsHumanDecision: boolean
   readonly newestSequence: number
   /** Instant of the newest unread fact — on the 「最近活跃」 slice, of the newest fact. */
   readonly newestOccurredAt: string
@@ -1090,6 +1115,13 @@ export interface AgentTeamContextAdvice {
   /** keep | rollover | handoff-now | unavailable. */
   readonly action: 'keep' | 'rollover' | 'handoff-now' | 'unavailable'
   readonly guidance: string
+  /**
+   * How many interrupted sessions the reading Member has pinned and not yet
+   * resumed or released; absent when zero or unmeasurable. A closing Task is
+   * the natural moment to run the pre-completion analysis, so the count rides
+   * the same private advice instead of a second nudge.
+   */
+  readonly pendingInterrupts?: number | undefined
 }
 
 export interface AgentTeamThreadReadResult {
@@ -1144,6 +1176,38 @@ export interface AgentTeamThreadHistory {
   readonly facts: readonly AgentTeamThreadFact[]
   readonly cursor: number
   readonly hasMore: boolean
+}
+
+/** Human request for the plain-language digest of one Thread. Ephemeral: it
+ * commits nothing, the same propose-only shape as prompt curation. */
+export interface AgentTeamSummarizeThreadRequest {
+  readonly workspaceId: WorkspaceId
+  readonly threadRef: AgentTeamThreadRef
+}
+
+/**
+ * Plain-language recap of a whole Thread: what was asked, what has happened,
+ * and what (if anything) is waiting on the Human. `options` only accompanies a
+ * `decisionQuestion` the Thread's own Messages actually put alternatives to.
+ */
+export interface AgentTeamThreadDigest {
+  /** One short plain-language paragraph a reader can act on without opening the timeline. */
+  readonly summary: string
+  /** The turns that matter, oldest first, each one line. */
+  readonly keyPoints: readonly string[]
+  readonly needsHumanDecision: boolean
+  readonly decisionQuestion?: string
+  readonly options?: readonly string[]
+  /** Whether the options are mutually exclusive or combinable; absent reads as `single`. */
+  readonly optionSelection?: 'single' | 'multiple'
+}
+
+export interface AgentTeamSummarizeThreadResult {
+  readonly digest: AgentTeamThreadDigest
+  /** The Team's configured route the one-shot call used (see the digest routing in the Host). */
+  readonly modelUsed: AgentTeamModelSelection
+  /** Thread revision the digest was read at, so the Client can cache per revision. */
+  readonly revision: number
 }
 
 /** Human-only observation of a durable personal Attention change. */
@@ -1295,4 +1359,97 @@ export interface AgentTeamStatus {
   readonly channelCount: number
   readonly agentMemberCount: number
   readonly humanMemberId: AgentTeamMemberId
+}
+
+/* ------------------------------------------------------------------ *
+ * Interrupted-session stack (one Member's pending continuations)
+ * ------------------------------------------------------------------ */
+
+/**
+ * A Member records an interrupt through its own running turn (the model-facing
+ * `context_interrupt` tool); the Human never records one directly, so this
+ * request carries no actor and no Workspace — the Host derives the calling
+ * Member, its actor, and its default Workspace. The tool-call id makes the
+ * commit idempotent: a retried provider call with the same id resolves to
+ * the entry already on the stack. Label and state are size-bounded at the
+ * ledger commit.
+ */
+export interface AgentTeamRecordInterruptToolRequest {
+  /** The calling tool invocation's id; the stable idempotency key of this record. */
+  readonly callId: string
+  /** The restorable checkpoint this work is pinned to, exactly as context_timeline printed it. */
+  readonly checkpointRef: AgentTeamContextCheckpointRef
+  readonly label: string
+  readonly incompleteState: string
+  readonly taskRef?: AgentTeamTaskRef
+  readonly threadRef?: AgentTeamThreadRef
+  /** Optional path into the Member's own private notes; never read or validated by the Host. */
+  readonly notePath?: string
+}
+
+export interface AgentTeamRecordInterruptToolOutcome {
+  readonly interruptRef: AgentTeamInterruptRef
+  readonly recordedSequence: number
+}
+
+/** One pending interrupt as the stack read renders it, newest first. */
+export interface AgentTeamInterruptView {
+  readonly interruptRef: AgentTeamInterruptRef
+  readonly label: string
+  readonly incompleteState: string
+  readonly checkpointRef: AgentTeamContextCheckpointRef
+  readonly recordedAt: string
+  readonly taskRef?: AgentTeamTaskRef
+  readonly threadRef?: AgentTeamThreadRef
+  /**
+   * Whether citing this entry's checkpointRef in a context_rollover would
+   * currently resolve — read live from the Member's lineage, so a stale pin
+   * states false and the Member carries its state into a fresh handoff instead.
+   */
+  readonly restorable: boolean
+  /** Why not restorable; absent when it is. */
+  readonly reason?: string
+}
+
+export interface AgentTeamListInterruptsToolOutcome {
+  readonly items: readonly AgentTeamInterruptView[]
+}
+
+/** Release one pending interrupt without returning to it. */
+export interface AgentTeamReleaseInterruptToolRequest {
+  /** The calling tool invocation's id; the stable idempotency key of this release. */
+  readonly callId: string
+  readonly interruptRef: AgentTeamInterruptRef
+  readonly reason?: string
+}
+
+export interface AgentTeamReleaseInterruptToolOutcome {
+  readonly interruptRef: AgentTeamInterruptRef
+  readonly resolution: 'released'
+}
+
+/** Human read of one Member's pending interrupts, newest first. */
+export interface AgentTeamMemberInterruptsRequest {
+  readonly workspaceId: WorkspaceId
+  readonly memberId: AgentTeamMemberId
+}
+
+export interface AgentTeamMemberInterrupts {
+  readonly memberId: AgentTeamMemberId
+  readonly items: readonly AgentTeamInterruptView[]
+}
+
+/** Human release of one Member's pending interrupt. */
+export interface AgentTeamResolveMemberInterruptRequest {
+  readonly requestId: AgentTeamRequestId
+  readonly workspaceId: WorkspaceId
+  readonly memberId: AgentTeamMemberId
+  readonly interruptRef: AgentTeamInterruptRef
+  readonly reason?: string
+}
+
+export interface AgentTeamResolveMemberInterruptResult {
+  readonly receipt: AgentTeamOperationReceipt
+  readonly interruptRef: AgentTeamInterruptRef
+  readonly resolution: AgentTeamInterruptResolution
 }

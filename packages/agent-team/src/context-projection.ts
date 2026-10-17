@@ -47,6 +47,7 @@ import {
 } from '@wowyuarm/dsh-context-continuity'
 import { handoffOf, isAgentTeamContextSource, isAgentTeamSource } from './context-source.ts'
 import { TEAM_CONTEXT_CODEC } from './context-continuity-host.ts'
+import { INTERRUPT_PUSH_SUMMARY } from './completion-liaison.ts'
 import { RESPONSE_GUARD_NOTICE_SUMMARY } from './response-guard.ts'
 import type { AgentTeamContextCheckpointRef, AgentTeamTaskRef, AgentTeamThreadRef } from './types/entities.ts'
 
@@ -90,9 +91,10 @@ type TeamBoundaryContribution = DomainBoundaryContribution & { readonly kind: Te
  * reminder` is a historical decoder — the progress-nudge system was removed,
  * but session logs recorded before its removal still carry those notices, and
  * the fold keeps recognizing them (same pattern as the legacy `new_context`
- * tool name below).
+ * tool name below). The interrupt-resume push restates the full current stack
+ * on every delivery, so an older instance carries no new fact to anchor.
  */
-const REMINDER_NOTICE_SUMMARIES = new Set(['Progress visibility reminder', 'Recovery: continue your interrupted work.', RESPONSE_GUARD_NOTICE_SUMMARY])
+const REMINDER_NOTICE_SUMMARIES = new Set(['Progress visibility reminder', 'Recovery: continue your interrupted work.', RESPONSE_GUARD_NOTICE_SUMMARY, INTERRUPT_PUSH_SUMMARY])
 
 /** Whether one notice summary is a pure reminder (never a semantic Team fact). */
 export function isReminderNoticeSummary(summary: string): boolean {

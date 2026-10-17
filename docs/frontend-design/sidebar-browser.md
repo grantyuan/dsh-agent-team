@@ -26,7 +26,9 @@ When a Member rolls over to a fresh context through `context_rollover`, the Agen
 
 Live Members (active availability) also get two context actions in the row menu: 重置 (reset) renews the Member Session through `clearMemberContext` behind a destructive confirm and rebinds an embedded seat to the renewed Session, and 压缩 (compact) schedules one context compaction through `compactMemberContext`, optionally pinning the summarization LLM in the same model picker the editors use — the dialog acknowledges at schedule time, because the Host runs the reduction behind the Member's current activity.
 
-Every row additionally carries 历史会话: a read-only dialog that lists the Member's Session generations newest-first (the live one marked) and pages a bounded transcript of the selected generation through `memberSessions` and `memberSessionTranscript`; it never activates or writes a Session, so archived logs stay browsable.
+Every row additionally carries 历史会话: it takes over the conversation seat with the Member's read-only session-history audit page — Session generations listed newest-first (the live one marked) and a bounded cursor-paged transcript of the selected generation through `memberSessions` and `memberSessionTranscript`, rendered as authored Markdown per lane. It never activates or writes a Session, so archived logs stay browsable.
+
+Every row also carries 已暂停任务: a dialog over the Member's durable pending-interrupt stack through `memberInterrupts` — newest-first entries with the Host's restorable verdict (an anchor the lineage walk cannot prove today reads as unverified, never as optimistically returnable) and a 释放 control per entry through `resolveMemberInterrupt`. The stack reads for every lifecycle state because it is a ledger read; `resumed` closes stay the Host's own and are never offered here.
 
 The narrow rail's four icon buttons read top-down Inbox (`IconQueueOutline14` at 16px) → Tasks (`IconChecklistOutlineRegular`) → Channels (`IconListPenOutline16`) → Agents (`IconAgentPresetOutline16`); none reuse the checklist (Task) or member icons.
 
@@ -61,7 +63,7 @@ The number lives in the control's accessible name on both rails (`收件箱，6 
 
 While the Inbox page stands, the card/icon carries `aria-current="page"` — and the rail icon wears the card's own current-page fill, because the icon-only rail has no label and the fill is the only thing that can say where the reader is.
 
-`TeamConversation` renders a fifth face: Thread | Channel | Inbox | Tasks | welcome. Selecting Inbox or Tasks clears the Channel/Thread faces and each other; selecting a Workspace, Channel, or Thread clears both. From an Inbox row, Back lands on that row's Channel — the Inbox is never pushed onto the back path; re-enter it through the card or the rail icon.
+`TeamConversation` renders a fifth face: Thread | Channel | Inbox | Tasks | welcome. Selecting Inbox or Tasks clears the Channel/Thread faces and each other; selecting a Workspace, Channel, or Thread clears both. A Thread opened from an Inbox or Tasks row remembers that list as its origin: Back reads 返回收件箱列表 or 返回任务列表 and returns there, while a Thread entered from its Channel keeps Back on the Channel timeline. The origin is durable, so a reload keeps the right Back target.
 
 The Tasks page keeps the same global-position discipline as the Inbox: a durable navigation face, merged across Workspaces, with a scope-less subscription; a row click lands on that Task's Thread through the same select-Thread path the Inbox row uses.
 
@@ -70,6 +72,10 @@ The Tasks page keeps the same global-position discipline as the Inbox: a durable
 The page rides the shared conversation seat — the same header band, 880px centered reading column, `clamp(18px, 3vw, 36px)` gutters, and stable scrollbar gutter Channel and Thread use. Its header carries the page h1 plus one count line built as segments rather than a sentence: the Thread count, the whole-unread total the page is about in primary 600 ink while its neighbours stay secondary, and the mention total only while the queue actually holds one.
 
 Spacing alone separates the segments, so a squeezed seat can wrap this line without dragging punctuation to the front of a line — and each segment names its own unit.
+
+The band's right edge carries one 排序 control: a labelled native select offering 最新回复 (the default), 创建时间, 未读数量, and 提及数量. Both slices re-lay under the chosen key with the Host's own order as the tiebreaker, and the choice rides `localStorage` (`dsh.agent-team.inbox-sort`) as a per-browser taste, never a Team fact.
+
+The 「最近活跃」 five-row cap is cut in the Host's order before the reader's key re-lays the rows, so changing the sort re-orders the same five ways back into work instead of swapping which Threads are on screen.
 
 ### The two slices and the merge order
 
@@ -112,6 +118,12 @@ The count reads `99+` past ninety-nine, and the mention split inside it reaches 
 (4) The newest instant closing the identity line behind the count — the Inbox row time of the Typography table — with the precise local `YYYY-MM-DD HH:mm` on the element's `title`.
 
 That line is its own size container: the count capsule's 18px floor, its 8px gap, and this instant's 28px together need 62px — 70px once the count reaches two digits — and below that width the instant is not drawn at all, because a queue row that cannot hold both keeps the count and its own edge instead of hanging the instant past it; the row keeps its two-line shape, and the Thread states the exact instant.
+
+(5) The row keeps its two lines and the new marks live inside them. The decision chip — `待你决策` in `--dsw-alias-state-business-primary` inside the same hairline shape the Task marker uses — sits on the identity line beside the count only while `needsHumanDecision` stands: an open Task awaiting acceptance, or the newest Message naming the Human actually asking them for a decision — naming alone never lights it.
+
+The clocks trail the gist on its own line in quiet 11px tabular ink: `创建于 …` from the Host's `createdOccurredAt`, then `@name 回复于 …` from `latestReplyActor` and `latestReplyOccurredAt`, each segment carrying its exact instant in its `title`, the reply actor drawn from the Client's Human identity where the reader was the one who replied.
+
+Absence and yielding draw the zero the way the row already does: a Thread nobody has answered shows no reply segment, a Thread that waits on nobody shows no chip, and the second line is a size container too — a seat under 340px yields the clocks entirely rather than fold the row, exactly as the identity line yields the instant when it cannot hold it.
 
 ### Section counts and row activation
 

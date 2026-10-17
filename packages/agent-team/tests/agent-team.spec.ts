@@ -17,10 +17,10 @@ import { WorkspaceId } from '@deepseek-ai/dsh-workspace'
 import { MemoryMediaPool, MemoryStorageBackend } from './helpers/memory-backend.ts'
 import { snapshotReadData, receiptReadData } from './helpers/legacy-thread-read.ts'
 import AgentTeam, { AGENT_TEAM_HUMAN_HANDLE, AGENT_TEAM_HUMAN_MEMBER_ID, AGENT_TEAM_INITIALIZE_REQUEST_ID } from '../src/index.ts'
-import { AgentTeamLedger, agentTeamHumanActor, isThreadReadSnapshot } from '../src/ledger.ts'
+import { AgentTeamLedger, agentTeamHumanActor, isThreadReadSnapshot, MAX_PENDING_INTERRUPTS } from '../src/ledger.ts'
 import { agentTeamDomainSpec } from '../src/spec.ts'
 import * as agentTeamInvariant from '../src/invariant.ts'
-import type { AgentTeamAgentMember, AgentTeamChannelRef, AgentTeamMemberActor, AgentTeamOperation, AgentTeamOperationId, AgentTeamRequestId, AgentTeamTask, AgentTeamTaskRef, AgentTeamThreadReadData, AgentTeamThreadReadOperation, AgentTeamThreadReadReceipt, AgentTeamThreadReadResult, AgentTeamThreadRef } from '../src/types.ts'
+import type { AgentTeamAgentMember, AgentTeamChannelRef, AgentTeamContextCheckpointRef, AgentTeamMemberActor, AgentTeamOperation, AgentTeamOperationId, AgentTeamRequestId, AgentTeamTask, AgentTeamTaskRef, AgentTeamThreadReadData, AgentTeamThreadReadOperation, AgentTeamThreadReadReceipt, AgentTeamThreadReadResult, AgentTeamThreadRef } from '../src/types.ts'
 
 interface TeamHarness {
   readonly ctx: Context
@@ -630,7 +630,7 @@ describe('AgentTeam durable Thread Attention ledger', () => {
     // unread: one row, and the badge counts every unread fact on it.
     const followed = withTask(committed((await ledger.sendMessage({ asTask: true, requestId: requestId('followed'), workspaceId: alpha, channelRef: channel.channel.channelRef, body: 'Followed thread anchor', actor: agentTeamHumanActor() })).value))
     const mentioned = committed((await ledger.reply({ requestId: requestId('mention'), workspaceId: alpha, taskRef: followed.task.taskRef, body: 'Decision needed on the rollout', baseRevision: followed.thread.revision, recipients: [AGENT_TEAM_HUMAN_MEMBER_ID], actor })).value)
-    committed((await ledger.reply({ requestId: requestId('ordinary'), workspaceId: alpha, taskRef: followed.task.taskRef, body: 'Ordinary progress reply', baseRevision: mentioned.thread.revision, actor })).value)
+    const ordinary = committed((await ledger.reply({ requestId: requestId('ordinary'), workspaceId: alpha, taskRef: followed.task.taskRef, body: 'Ordinary progress reply', baseRevision: mentioned.thread.revision, actor })).value)
 
     // An unfollowed Thread whose fresh mention must still surface: direct
     // markers never depended on Human follow. Its anchor's first line exceeds
@@ -649,12 +649,18 @@ describe('AgentTeam durable Thread Attention ledger', () => {
     expect(inbox.items[1]).toMatchObject({
       channelRef: channel.channel.channelRef, channelName: 'engineering', taskNumber: 1,
       directCount: 1, unreadCount: 2, previewText: 'Followed thread anchor',
+      needsHumanDecision: true, latestReplyActor: { memberId: 'member:builder', name: 'builder' },
     })
     expect(inbox.items[0]).toMatchObject({
       channelName: 'engineering', taskNumber: 2, directCount: 1, unreadCount: 1,
       previewText: `${'x'.repeat(119)}…`,
+      needsHumanDecision: true, latestReplyActor: { memberId: 'member:builder', name: 'builder' },
     })
     expect(inbox.items[0]?.newestOccurredAt).not.toBe('')
+    // The row's own clocks: the anchor's instant is the creation time, and the
+    // newest reply after it is the reply clock nobody has answered yet.
+    expect(inbox.items[1]?.createdOccurredAt).toBe(followed.message.occurredAt)
+    expect(inbox.items[1]?.latestReplyOccurredAt).toBe(ordinary.message.occurredAt)
     const cold = replayLedger(test)
     expect(cold.inbox(agentTeamHumanActor(), { workspaceId: alpha }).totalUnreadCount).toBe(3)
 
@@ -686,6 +692,57 @@ describe('AgentTeam durable Thread Attention ledger', () => {
     expect(inbox.items).toHaveLength(1)
     expect(inbox.items[0]).toMatchObject({ thread: { threadRef: started.task.threadRef }, unreadCount: 1, directCount: 0 })
     expect(replayLedger(test).inbox(agentTeamHumanActor(), { workspaceId: alpha })).toEqual(inbox)
+  })
+
+  it('flags what waits on a Human decision and clears the flag once the Human speaks last', async () => {
+    const test = await harness()
+    const channel = await test.ctx.agentTeam.createChannel({ requestId: requestId('channel'), workspaceId: alpha, name: 'engineering', description: 'Engineering work' })
+    const ledger = replayLedger(test)
+    const { member, actor } = await addLedgerMember(ledger, channel.channel.channelRef, 'member:builder')
+    const started = withTask(committed((await ledger.sendMessage({ asTask: true, requestId: requestId('start'), workspaceId: alpha, channelRef: channel.channel.channelRef, body: 'Rollout plan', actor: agentTeamHumanActor() })).value))
+    // The anchor alone waits on nobody — the Human wrote the only line — and a
+    // Thread with no reply carries no reply clock at all, only its creation one.
+    const open = ledger.inbox(agentTeamHumanActor(), { workspaceId: alpha })
+    expect(open.items).toHaveLength(0)
+    const anchorRow = open.recent.find(item => item.thread.threadRef === started.task.threadRef)
+    expect(anchorRow).toMatchObject({ needsHumanDecision: false, createdOccurredAt: started.message.occurredAt })
+    expect(anchorRow?.latestReplyOccurredAt).toBeUndefined()
+    expect(anchorRow?.latestReplyActor).toBeUndefined()
+    // A Message naming the Human opens the decision flag on the queue row.
+    const asked = committed((await ledger.reply({ requestId: requestId('ask'), workspaceId: alpha, taskRef: started.task.taskRef, body: 'Approve A or B?', baseRevision: started.thread.revision, recipients: [AGENT_TEAM_HUMAN_MEMBER_ID], actor })).value)
+    expect(ledger.inbox(agentTeamHumanActor(), { workspaceId: alpha }).items[0]).toMatchObject({
+      needsHumanDecision: true, latestReplyOccurredAt: asked.message.occurredAt,
+      latestReplyActor: { memberId: member.memberId, name: 'builder' },
+    })
+    // The Human reads and answers: the Thread no longer waits, and the flag
+    // stays false on the row's new home in the 「最近活跃」 slice too.
+    const humanRead = (await ledger.readThread({ requestId: requestId('answer-read'), workspaceId: alpha, taskRef: started.task.taskRef, actor: agentTeamHumanActor() })).value
+    const answered = committed((await ledger.reply({ requestId: requestId('answer'), workspaceId: alpha, taskRef: started.task.taskRef, body: 'Go with A', baseRevision: humanRead.thread.revision, actor: agentTeamHumanActor() })).value)
+    const answeredInbox = ledger.inbox(agentTeamHumanActor(), { workspaceId: alpha })
+    const answeredRow = [...answeredInbox.items, ...answeredInbox.recent].find(item => item.thread.threadRef === started.task.threadRef)
+    expect(answeredRow).toMatchObject({ needsHumanDecision: false, latestReplyOccurredAt: answered.message.occurredAt })
+    // A mention that asks for nothing decides no more than a CC does: the
+    // report addressed to the Human still lights the unread row, never the chip.
+    const reported = committed((await ledger.reply({ requestId: requestId('report'), workspaceId: alpha, taskRef: started.task.taskRef, body: 'Rollout report: 5% shipped, no action needed', baseRevision: answered.thread.revision, recipients: [AGENT_TEAM_HUMAN_MEMBER_ID], actor })).value)
+    const reportedInbox = ledger.inbox(agentTeamHumanActor(), { workspaceId: alpha })
+    const reportedRow = [...reportedInbox.items, ...reportedInbox.recent].find(item => item.thread.threadRef === started.task.threadRef)
+    expect(reportedRow).toMatchObject({ needsHumanDecision: false, latestReplyOccurredAt: reported.message.occurredAt })
+    // The Member's next line actually asks for the call: the flag flips again.
+    const askedAgain = committed((await ledger.reply({ requestId: requestId('ask-again'), workspaceId: alpha, taskRef: started.task.taskRef, body: '是否按计划推进 50% 灰度？请定夺', baseRevision: reported.thread.revision, recipients: [AGENT_TEAM_HUMAN_MEMBER_ID], actor })).value)
+    const askedInbox = ledger.inbox(agentTeamHumanActor(), { workspaceId: alpha })
+    const askedRow = [...askedInbox.items, ...askedInbox.recent].find(item => item.thread.threadRef === started.task.threadRef)
+    expect(askedRow).toMatchObject({ needsHumanDecision: true, latestReplyOccurredAt: askedAgain.message.occurredAt })
+    // A Claim going done moves the open Task to in_review — awaiting the
+    // Human's acceptance is a decision the row must surface again.
+    const memberRead = (await ledger.readThread({ requestId: requestId('member-read'), workspaceId: alpha, taskRef: started.task.taskRef, actor })).value
+    const claim = committed((await ledger.changeClaim({ requestId: requestId('claim'), workspaceId: alpha, taskRef: started.task.taskRef, action: 'claim', direction: 'Ship A', baseRevision: memberRead.thread.revision, actor })).value)
+    const readDone = (await ledger.readThread({ requestId: requestId('done-read'), workspaceId: alpha, taskRef: started.task.taskRef, actor })).value
+    committed((await ledger.changeClaim({ requestId: requestId('done'), workspaceId: alpha, taskRef: started.task.taskRef, action: 'done', claimRef: claim.claim.claimRef, baseRevision: readDone.thread.revision, actor })).value)
+    const reviewInbox = ledger.inbox(agentTeamHumanActor(), { workspaceId: alpha })
+    const reviewRow = [...reviewInbox.items, ...reviewInbox.recent].find(item => item.thread.threadRef === started.task.threadRef)
+    expect(reviewRow?.task?.status).toBe('in_review')
+    expect(reviewRow).toMatchObject({ needsHumanDecision: true })
+    ledger.validate()
   })
 
   it('keeps the later follow watermark when an older direct marker is consumed', async () => {
@@ -2166,6 +2223,175 @@ describe('AgentTeam Member session rollover ledger command', () => {
       return [key, { ...rolled, data: { ...rolled.data, member: { ...rolled.data.member, handle: 'impostor' } } }] as [string, unknown]
     })
     await expect(harness(storedPool(forged))).rejects.toThrow(/invalid Member session rollover/)
+  })
+})
+
+describe('AgentTeam Member interrupt stack ledger', () => {
+  const checkpointAt = (marker: string): AgentTeamContextCheckpointRef => {
+    let hash = 2166136261
+    for (const char of marker) hash = ((hash ^ char.charCodeAt(0)) * 16777619) >>> 0
+    return (`context-checkpoint-${hash.toString(16).padStart(8, '0').repeat(8)}`) as AgentTeamContextCheckpointRef
+  }
+
+  async function recordInterrupt(
+    ledger: AgentTeamLedger,
+    member: AgentTeamAgentMember,
+    actor: AgentTeamMemberActor,
+    marker: string,
+    overrides: { readonly label?: string; readonly incompleteState?: string } = {},
+  ) {
+    return ledger.recordMemberInterrupt({
+      requestId: requestId(`interrupt:${marker}`),
+      workspaceId: alpha,
+      memberId: member.memberId,
+      actor,
+      sessionId: member.sessionId,
+      checkpointRef: checkpointAt(marker),
+      label: overrides.label ?? `Paused ${marker}`,
+      incompleteState: overrides.incompleteState ?? `Step ${marker} unfinished`,
+    })
+  }
+
+  it('records pending interrupts newest-first, replays the stack, and closes entries on release', async () => {
+    const test = await harness()
+    const ledger = replayLedger(test)
+    const { member, actor } = await addLedgerMember(ledger, undefined)
+    const first = await recordInterrupt(ledger, member, actor, 'first')
+    expect(first.committed).toBe(true)
+    const second = await recordInterrupt(ledger, member, actor, 'second')
+    expect(second.committed).toBe(true)
+    expect(ledger.pendingInterruptsForMember(member.memberId).map(interrupt => interrupt.label)).toEqual([
+      'Paused second', 'Paused first',
+    ])
+    expect(ledger.pendingInterruptForCheckpoint(member.memberId, checkpointAt('first'))?.interruptRef).toBe(first.value.interrupt.interruptRef)
+    // An exact retry by requestId resolves the recorded outcome, not a second entry.
+    const retried = await ledger.recordMemberInterrupt({
+      requestId: requestId('interrupt:first'), workspaceId: alpha, memberId: member.memberId, actor,
+      sessionId: member.sessionId, checkpointRef: checkpointAt('first'),
+      label: 'Paused first', incompleteState: 'Step first unfinished',
+    })
+    expect(retried.committed).toBe(false)
+    expect(retried.value.receipt.operationId).toBe(first.value.receipt.operationId)
+    // Re-pinning the same checkpoint under a fresh requestId joins the original entry.
+    const repinned = await ledger.recordMemberInterrupt({
+      requestId: requestId('interrupt:first-again'), workspaceId: alpha, memberId: member.memberId, actor,
+      sessionId: member.sessionId, checkpointRef: checkpointAt('first'),
+      label: 'Paused first again', incompleteState: 'Same anchor',
+    })
+    expect(repinned.committed).toBe(false)
+    expect(repinned.value.interrupt.interruptRef).toBe(first.value.interrupt.interruptRef)
+    expect(ledger.pendingInterruptsForMember(member.memberId)).toHaveLength(2)
+    const replay = replayLedger(test)
+    expect(replay.pendingInterruptsForMember(member.memberId).map(interrupt => interrupt.label)).toEqual([
+      'Paused second', 'Paused first',
+    ])
+    replay.validate()
+    const released = await ledger.resolveMemberInterrupt({
+      requestId: requestId('interrupt-release:first'), workspaceId: alpha, memberId: member.memberId,
+      actor, interruptRef: first.value.interrupt.interruptRef, resolution: 'released', reason: 'Obsoleted',
+    })
+    expect(released.committed).toBe(true)
+    expect(ledger.pendingInterruptsForMember(member.memberId).map(interrupt => interrupt.interruptRef)).toEqual([second.value.interrupt.interruptRef])
+    expect(replayLedger(test).pendingInterruptsForMember(member.memberId).map(interrupt => interrupt.interruptRef)).toEqual([second.value.interrupt.interruptRef])
+    replayLedger(test).validate()
+  })
+
+  it('enforces Member authority, session binding, and payload bounds on recording', async () => {
+    const test = await harness()
+    const ledger = replayLedger(test)
+    const { member, actor } = await addLedgerMember(ledger, undefined)
+    const { member: peer, actor: peerActor } = await addLedgerMember(ledger, undefined)
+    await expect(ledger.recordMemberInterrupt({
+      requestId: requestId('interrupt:human'), workspaceId: alpha, memberId: member.memberId,
+      actor: agentTeamHumanActor() as never, sessionId: member.sessionId, checkpointRef: checkpointAt('h'),
+      label: 'Human pin', incompleteState: 'Not allowed',
+    })).rejects.toThrow(/Member authority/)
+    await expect(ledger.recordMemberInterrupt({
+      requestId: requestId('interrupt:cross'), workspaceId: alpha, memberId: member.memberId,
+      actor: peerActor, sessionId: member.sessionId, checkpointRef: checkpointAt('c'),
+      label: 'Cross pin', incompleteState: 'Not allowed',
+    })).rejects.toThrow(/another Member/)
+    await expect(ledger.recordMemberInterrupt({
+      requestId: requestId('interrupt:stale'), workspaceId: alpha, memberId: member.memberId,
+      actor, sessionId: SessionId('session:detached'), checkpointRef: checkpointAt('s'),
+      label: 'Stale session', incompleteState: 'Unbound',
+    })).rejects.toThrow(/no longer bound/)
+    await expect(recordInterrupt(ledger, member, actor, 'blank', { label: '   ' })).rejects.toThrow(/label/)
+    await expect(recordInterrupt(ledger, member, actor, 'long', { incompleteState: 'x'.repeat(2001) })).rejects.toThrow(/incompleteState/)
+    await expect(ledger.recordMemberInterrupt({
+      requestId: requestId('interrupt:ghost-task'), workspaceId: alpha, memberId: member.memberId, actor,
+      sessionId: member.sessionId, checkpointRef: checkpointAt('g'),
+      label: 'Ghost task', incompleteState: 'Unknown ref', taskRef: 'task:missing' as never,
+    })).rejects.toThrow(/unknown Task/)
+    expect(ledger.pendingInterruptsForMember(member.memberId)).toEqual([])
+    // A peer recording its own interrupt stays on its own stack.
+    const pinned = await recordInterrupt(ledger, peer, peerActor, 'peer')
+    expect(pinned.committed).toBe(true)
+    expect(ledger.pendingInterruptsForMember(member.memberId)).toEqual([])
+    expect(ledger.pendingInterruptsForMember(peer.memberId)).toHaveLength(1)
+  })
+
+  it('caps the pending stack and keeps resolution owned by the entry Member', async () => {
+    const test = await harness()
+    const ledger = replayLedger(test)
+    const { member, actor } = await addLedgerMember(ledger, undefined)
+    const { member: peer, actor: peerActor } = await addLedgerMember(ledger, undefined)
+    const entries = []
+    for (let index = 0; index < MAX_PENDING_INTERRUPTS; index += 1) {
+      entries.push((await recordInterrupt(ledger, member, actor, `cap-${index}`)).value.interrupt)
+    }
+    await expect(recordInterrupt(ledger, member, actor, 'overflow')).rejects.toThrow(/pending interrupts/)
+    await expect(ledger.resolveMemberInterrupt({
+      requestId: requestId('interrupt:cross-resolve'), workspaceId: alpha, memberId: peer.memberId,
+      actor: peerActor, interruptRef: entries[0]!.interruptRef, resolution: 'released',
+    })).rejects.toThrow(/another Member/)
+    const resumed = await ledger.resolveMemberInterrupt({
+      requestId: requestId('interrupt:resume-cap-7'), workspaceId: alpha, memberId: member.memberId,
+      actor, interruptRef: entries[7]!.interruptRef, resolution: 'resumed',
+    })
+    expect(resumed.committed).toBe(true)
+    expect(resumed.value.resolution).toBe('resumed')
+    expect(ledger.pendingInterruptsForMember(member.memberId)).toHaveLength(MAX_PENDING_INTERRUPTS - 1)
+    // Re-resolving the same entry fails: it is no longer pending.
+    await expect(ledger.resolveMemberInterrupt({
+      requestId: requestId('interrupt:twice'), workspaceId: alpha, memberId: member.memberId,
+      actor, interruptRef: entries[7]!.interruptRef, resolution: 'released',
+    })).rejects.toThrow(/not pending|No Interrupt matches/)
+    // The Human may release a Member's entry through the Client surface.
+    const humanReleased = await ledger.resolveMemberInterrupt({
+      requestId: requestId('interrupt:human-release'), workspaceId: alpha, memberId: member.memberId,
+      actor: agentTeamHumanActor(), interruptRef: entries[6]!.interruptRef, resolution: 'released', reason: 'Dropped by Human',
+    })
+    expect(humanReleased.committed).toBe(true)
+    expect(ledger.pendingInterruptsForMember(member.memberId)).toHaveLength(MAX_PENDING_INTERRUPTS - 2)
+    expect(() => replayLedger(test).validate()).not.toThrow()
+  })
+
+  it('ties an interrupt to its Task and Thread, rejecting refs from different Threads', async () => {
+    const test = await harness()
+    const ledger = replayLedger(test)
+    const { member, actor } = await addLedgerMember(ledger, undefined)
+    const channel = (await ledger.createChannel({ requestId: requestId('interrupt-channel'), workspaceId: alpha,
+      name: 'work', description: '', memberIds: [member.memberId], actor: agentTeamHumanActor() })).value.channel
+    const sent = withTask(committed((await ledger.sendMessage({ requestId: requestId('interrupt-message'), workspaceId: alpha,
+      channelRef: channel.channelRef, body: 'Interrupted work', asTask: true, actor })).value))
+    const other = withTask(committed((await ledger.sendMessage({ requestId: requestId('interrupt-other'), workspaceId: alpha,
+      channelRef: channel.channelRef, body: 'Other thread', asTask: true, actor })).value))
+    await expect(ledger.recordMemberInterrupt({
+      requestId: requestId('interrupt:mismatch'), workspaceId: alpha, memberId: member.memberId, actor,
+      sessionId: member.sessionId, checkpointRef: checkpointAt('mismatch'),
+      label: 'Mismatched refs', incompleteState: 'Task and Thread differ',
+      taskRef: sent.task.taskRef, threadRef: other.thread.threadRef,
+    })).rejects.toThrow(/different Threads/)
+    const pinned = await ledger.recordMemberInterrupt({
+      requestId: requestId('interrupt:tasked'), workspaceId: alpha, memberId: member.memberId, actor,
+      sessionId: member.sessionId, checkpointRef: checkpointAt('tasked'),
+      label: 'Tasked pause', incompleteState: 'Blocked on review',
+      taskRef: sent.task.taskRef, threadRef: sent.thread.threadRef, notePath: 'notes/pause.md',
+    })
+    expect(pinned.committed).toBe(true)
+    expect(pinned.value.interrupt).toMatchObject({ taskRef: sent.task.taskRef, threadRef: sent.thread.threadRef, notePath: 'notes/pause.md' })
+    expect(() => replayLedger(test).validate()).not.toThrow()
   })
 })
 

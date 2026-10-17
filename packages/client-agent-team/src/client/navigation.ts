@@ -1,8 +1,15 @@
 import type { SessionId } from '@deepseek-ai/dsh-session'
 import type { WorkspaceId } from '@deepseek-ai/dsh-api-workspace-controller/client'
-import type { AgentTeamChannelRef, AgentTeamTaskRef, AgentTeamThreadRef } from '@wowyuarm/dsh-agent-team/types'
+import type { AgentTeamChannelRef, AgentTeamMemberId, AgentTeamTaskRef, AgentTeamThreadRef } from '@wowyuarm/dsh-agent-team/types'
 
 export type TeamMode = 'conversation' | 'team'
+
+/**
+ * The Team list an open Thread was entered from. It decides where Back lands:
+ * an Inbox or Tasks origin returns to that list, an absent origin returns to
+ * the Thread's Channel through the Channel row path.
+ */
+export type TeamThreadOrigin = 'inbox' | 'tasks'
 
 export interface TeamNavigationSnapshot {
   mode: TeamMode
@@ -12,6 +19,13 @@ export interface TeamNavigationSnapshot {
   threadRef?: AgentTeamThreadRef
   taskNumber?: number
   /**
+   * Which Team list the open Thread was entered from. It is a durable
+   * navigation fact: a Thread opened from the Inbox or Tasks list returns to
+   * that list after a reload; a Thread entered from its Channel carries no
+   * origin and returns there.
+   */
+  threadOrigin?: TeamThreadOrigin
+  /**
    * Durable position of the Human mention-Inbox page (a navigation fact, not
    * an unread fact): selecting Inbox clears the Channel/Thread faces, and a
    * reload reopens the page. Read markers only move through Thread reads.
@@ -19,6 +33,12 @@ export interface TeamNavigationSnapshot {
   inbox?: boolean
   /** Durable position of the Human Tasks page; same face discipline as `inbox`. */
   tasks?: boolean
+  /**
+   * Durable position of one Member's session-history review page: the Human's
+   * audit target survives a reload because the lineage read takes only the
+   * branded Member id. Same face discipline as `inbox` and `tasks`.
+   */
+  sessionHistory?: AgentTeamMemberId
   /** Runtime-only Member Session embedded in the conversation seat; never persisted. */
   memberSessionId?: SessionId
   /** Runtime-only session to restore when the Member view closes; never persisted. */
@@ -38,8 +58,10 @@ function readSnapshot(): TeamNavigationSnapshot {
       ...(typeof parsed.channelRef === 'string' ? { channelRef: parsed.channelRef as AgentTeamChannelRef } : {}),
       ...(parsed.inbox === true ? { inbox: true } : {}),
       ...(parsed.tasks === true ? { tasks: true } : {}),
+      ...(typeof parsed.sessionHistory === 'string' ? { sessionHistory: parsed.sessionHistory as AgentTeamMemberId } : {}),
       ...(hasThread ? {
         threadRef: parsed.threadRef as AgentTeamThreadRef,
+        ...(parsed.threadOrigin === 'inbox' || parsed.threadOrigin === 'tasks' ? { threadOrigin: parsed.threadOrigin } : {}),
         ...(typeof parsed.taskRef === 'string' ? { taskRef: parsed.taskRef as AgentTeamTaskRef } : {}),
         ...(typeof parsed.taskNumber === 'number' && Number.isInteger(parsed.taskNumber) && parsed.taskNumber > 0 ? { taskNumber: parsed.taskNumber } : {}),
       } : {}),
@@ -52,15 +74,17 @@ function readSnapshot(): TeamNavigationSnapshot {
 function persistSnapshot(snapshot: TeamNavigationSnapshot): void {
   if (typeof localStorage === 'undefined') return
   try {
-    const { mode, workspaceId, channelRef, taskRef, threadRef, taskNumber, inbox, tasks } = snapshot
+    const { mode, workspaceId, channelRef, taskRef, threadRef, taskNumber, threadOrigin, inbox, tasks, sessionHistory } = snapshot
     localStorage.setItem(STORAGE_KEY, JSON.stringify({
       mode,
       ...(workspaceId === undefined ? {} : { workspaceId }),
       ...(channelRef === undefined ? {} : { channelRef }),
       ...(inbox === true ? { inbox: true } : {}),
       ...(tasks === true ? { tasks: true } : {}),
+      ...(sessionHistory === undefined ? {} : { sessionHistory }),
       ...(taskRef === undefined ? {} : { taskRef }),
       ...(threadRef === undefined ? {} : { threadRef }),
+      ...(threadOrigin === undefined ? {} : { threadOrigin }),
       ...(taskNumber === undefined ? {} : { taskNumber }),
     }))
   } catch {
@@ -73,12 +97,21 @@ export interface TeamNavigationActions {
   leaveTeam: () => void
   selectWorkspace: (workspaceId: WorkspaceId) => void
   selectChannel: (channelRef: AgentTeamChannelRef) => void
-  selectThread: (threadRef: AgentTeamThreadRef, channelRef?: AgentTeamChannelRef, taskRef?: AgentTeamTaskRef, taskNumber?: number) => void
+  selectThread: (threadRef: AgentTeamThreadRef, channelRef?: AgentTeamChannelRef, taskRef?: AgentTeamTaskRef, taskNumber?: number, origin?: TeamThreadOrigin) => void
   /** Open the Human mention-Inbox page; clears the Channel/Thread faces. */
   selectInbox: () => void
   /** Open the Human Tasks page; clears the Channel/Thread faces. */
   selectTasks: () => void
-  backToWorkspace: () => void
+  /** Open one Member's session-history review page; clears the other Team faces. */
+  selectSessionHistory: (memberId: AgentTeamMemberId) => void
+  /** Leave the session-history page; the Workspace face underneath takes the seat back. */
+  exitSessionHistory: () => void
+  /**
+   * Leave the open Thread for whichever Team list it was entered from: the
+   * Inbox or Tasks list when the Thread carries that origin, its Channel
+   * otherwise.
+   */
+  backFromThread: () => void
   /** Leave the selected Channel for the workspace Channel list; keeps mode and Workspace. */
   backToChannels: () => void
   /**
@@ -109,10 +142,12 @@ export class TeamNavigation {
       leaveTeam: () => { this.setMode('conversation') },
       selectWorkspace: workspaceId => { this.clearMemberSession(); this.setWorkspace(workspaceId) },
       selectChannel: channelRef => { this.clearMemberSession(); this.setChannel(channelRef) },
-      selectThread: (threadRef, channelRef, taskRef, taskNumber) => { this.clearMemberSession(); this.setThread(threadRef, channelRef, taskRef, taskNumber) },
+      selectThread: (threadRef, channelRef, taskRef, taskNumber, origin) => { this.clearMemberSession(); this.setThread(threadRef, channelRef, taskRef, taskNumber, origin) },
       selectInbox: () => { this.clearMemberSession(); this.setInbox() },
       selectTasks: () => { this.clearMemberSession(); this.setTasks() },
-      backToWorkspace: () => { this.clearMemberSession(); this.setThread(undefined) },
+      selectSessionHistory: memberId => { this.clearMemberSession(); this.setSessionHistory(memberId) },
+      exitSessionHistory: () => { this.clearSessionHistory() },
+      backFromThread: () => { this.clearMemberSession(); this.leaveThread() },
       backToChannels: () => { this.clearMemberSession(); this.clearChannel() },
       enterMemberSession: (sessionId, returnToSessionId) => { this.setMemberSession(sessionId, returnToSessionId) },
       exitMemberSession: () => { this.clearMemberSession() },
@@ -151,32 +186,47 @@ export class TeamNavigation {
   }
 
   private setWorkspace(workspaceId: WorkspaceId): void {
-    if (this.snapshot.workspaceId === workspaceId && this.snapshot.inbox !== true && this.snapshot.tasks !== true) return
-    const { channelRef: _channelRef, taskRef: _taskRef, threadRef: _threadRef, taskNumber: _taskNumber, inbox: _inbox, tasks: _tasks, ...base } = this.snapshot
+    if (this.snapshot.workspaceId === workspaceId && this.snapshot.inbox !== true && this.snapshot.tasks !== true && this.snapshot.sessionHistory === undefined) return
+    const { channelRef: _channelRef, taskRef: _taskRef, threadRef: _threadRef, taskNumber: _taskNumber, threadOrigin: _threadOrigin, inbox: _inbox, tasks: _tasks, sessionHistory: _sessionHistory, ...base } = this.snapshot
     this.snapshot = { ...base, workspaceId }
     this.commit()
   }
 
   private setChannel(channelRef: AgentTeamChannelRef): void {
-    if (this.snapshot.channelRef === channelRef && this.snapshot.threadRef === undefined && this.snapshot.inbox !== true && this.snapshot.tasks !== true) return
-    const { taskRef: _taskRef, threadRef: _threadRef, taskNumber: _taskNumber, inbox: _inbox, tasks: _tasks, ...base } = this.snapshot
+    if (this.snapshot.channelRef === channelRef && this.snapshot.threadRef === undefined && this.snapshot.inbox !== true && this.snapshot.tasks !== true && this.snapshot.sessionHistory === undefined) return
+    const { taskRef: _taskRef, threadRef: _threadRef, taskNumber: _taskNumber, threadOrigin: _threadOrigin, inbox: _inbox, tasks: _tasks, sessionHistory: _sessionHistory, ...base } = this.snapshot
     this.snapshot = { ...base, channelRef }
     this.commit()
   }
 
   /** The Inbox is a face, not workspace content: selecting a Workspace leaves it. */
   private setInbox(): void {
-    if (this.snapshot.inbox === true && this.snapshot.channelRef === undefined && this.snapshot.threadRef === undefined) return
-    const { channelRef: _channelRef, taskRef: _taskRef, threadRef: _threadRef, taskNumber: _taskNumber, tasks: _tasks, ...base } = this.snapshot
+    if (this.snapshot.inbox === true && this.snapshot.channelRef === undefined && this.snapshot.threadRef === undefined && this.snapshot.sessionHistory === undefined) return
+    const { channelRef: _channelRef, taskRef: _taskRef, threadRef: _threadRef, taskNumber: _taskNumber, threadOrigin: _threadOrigin, tasks: _tasks, sessionHistory: _sessionHistory, ...base } = this.snapshot
     this.snapshot = { ...base, inbox: true }
     this.commit()
   }
 
   /** Same face discipline as the Inbox: the Tasks page owns the seat while its flag stands. */
   private setTasks(): void {
-    if (this.snapshot.tasks === true && this.snapshot.channelRef === undefined && this.snapshot.threadRef === undefined) return
-    const { channelRef: _channelRef, taskRef: _taskRef, threadRef: _threadRef, taskNumber: _taskNumber, inbox: _inbox, ...base } = this.snapshot
+    if (this.snapshot.tasks === true && this.snapshot.channelRef === undefined && this.snapshot.threadRef === undefined && this.snapshot.sessionHistory === undefined) return
+    const { channelRef: _channelRef, taskRef: _taskRef, threadRef: _threadRef, taskNumber: _taskNumber, threadOrigin: _threadOrigin, inbox: _inbox, sessionHistory: _sessionHistory, ...base } = this.snapshot
     this.snapshot = { ...base, tasks: true }
+    this.commit()
+  }
+
+  /** Same face discipline as the Inbox: one Member's history page owns the seat while its flag stands. */
+  private setSessionHistory(memberId: AgentTeamMemberId): void {
+    if (this.snapshot.sessionHistory === memberId && this.snapshot.channelRef === undefined && this.snapshot.threadRef === undefined) return
+    const { channelRef: _channelRef, taskRef: _taskRef, threadRef: _threadRef, taskNumber: _taskNumber, threadOrigin: _threadOrigin, inbox: _inbox, tasks: _tasks, ...base } = this.snapshot
+    this.snapshot = { ...base, sessionHistory: memberId }
+    this.commit()
+  }
+
+  private clearSessionHistory(): void {
+    if (this.snapshot.sessionHistory === undefined) return
+    const { sessionHistory: _sessionHistory, ...base } = this.snapshot
+    this.snapshot = base
     this.commit()
   }
 
@@ -187,22 +237,31 @@ export class TeamNavigation {
     this.commit()
   }
 
-  private setThread(threadRef: AgentTeamThreadRef | undefined, channelRef?: AgentTeamChannelRef, taskRef?: AgentTeamTaskRef, taskNumber?: number): void {
-    if (this.snapshot.threadRef === threadRef && this.snapshot.taskRef === taskRef && this.snapshot.channelRef === channelRef && this.snapshot.taskNumber === taskNumber && this.snapshot.inbox !== true && this.snapshot.tasks !== true) return
+  private setThread(threadRef: AgentTeamThreadRef | undefined, channelRef?: AgentTeamChannelRef, taskRef?: AgentTeamTaskRef, taskNumber?: number, origin?: TeamThreadOrigin): void {
+    if (this.snapshot.threadRef === threadRef && this.snapshot.taskRef === taskRef && this.snapshot.channelRef === channelRef && this.snapshot.taskNumber === taskNumber && this.snapshot.threadOrigin === origin && this.snapshot.inbox !== true && this.snapshot.tasks !== true && this.snapshot.sessionHistory === undefined) return
     if (threadRef === undefined) {
-      const { taskRef: _taskRef, threadRef: _threadRef, taskNumber: _taskNumber, ...base } = this.snapshot
+      const { taskRef: _taskRef, threadRef: _threadRef, taskNumber: _taskNumber, threadOrigin: _threadOrigin, sessionHistory: _sessionHistory, ...base } = this.snapshot
       this.snapshot = base
     } else {
-      const { channelRef: _channelRef, taskRef: _taskRef, threadRef: _threadRef, taskNumber: _taskNumber, inbox: _inbox, tasks: _tasks, ...base } = this.snapshot
+      const { channelRef: _channelRef, taskRef: _taskRef, threadRef: _threadRef, taskNumber: _taskNumber, threadOrigin: _threadOrigin, inbox: _inbox, tasks: _tasks, sessionHistory: _sessionHistory, ...base } = this.snapshot
       this.snapshot = {
         ...base,
         threadRef,
         ...(channelRef === undefined ? {} : { channelRef }),
         ...(taskRef === undefined ? {} : { taskRef }),
         ...(taskNumber === undefined ? {} : { taskNumber }),
+        ...(origin === undefined ? {} : { threadOrigin: origin }),
       }
     }
     this.commit()
+  }
+
+  /** Back from the open Thread to the list it was entered from, else its Channel. */
+  private leaveThread(): void {
+    const origin = this.snapshot.threadOrigin
+    if (origin === 'inbox') { this.setInbox(); return }
+    if (origin === 'tasks') { this.setTasks(); return }
+    this.setThread(undefined)
   }
 
   private commit(): void {

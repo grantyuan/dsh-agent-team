@@ -1,15 +1,17 @@
 /**
- * The restart affordance is the only operator action left for an unavailable
- * Member, and the row diagnostic is the only place the Client says why it is
- * unavailable. Both verdicts are projection-derived pure functions, so they are
- * pinned here; `team-mode-agents.client.spec.tsx` covers the row menu that
- * consumes them, and the artifact path a refusal carries is asserted below.
+ * The row diagnostic is the only place the Client says why an unavailable
+ * Member is unavailable; the restart affordance now covers every unavailable
+ * state (including a transition the Host could not finish — its recovery read
+ * completes the swap). The verdict here is projection-derived and pure, so it
+ * is pinned in this file; `team-mode-agents.client.spec.tsx` covers the row
+ * menu that consumes it, and the artifact path a refusal carries is asserted
+ * below.
  */
 import { describe, expect, it } from 'vitest'
 import type { AgentTeamClientMemberStatus, AgentTeamMemberDiagnostic } from '@wowyuarm/dsh-agent-team/types'
 import { zh } from '../src/client/locales.ts'
 import type { TeamSidebarProps } from '../src/client/slots.ts'
-import { diagnosticText, presenceLabel, restartOffered } from '../src/client/TeamPresenceDot.tsx'
+import { diagnosticText, presenceLabel } from '../src/client/TeamPresenceDot.tsx'
 
 const t = ((key: keyof typeof zh, params?: Record<string, string | number>) => {
   let value: string = zh[key]
@@ -22,25 +24,7 @@ function unavailable(diagnostic?: AgentTeamMemberDiagnostic): AgentTeamClientMem
   return { presence: 'unavailable', ...(diagnostic === undefined ? {} : { diagnostic }) } as unknown as AgentTeamClientMemberStatus
 }
 
-describe('Member restart affordance', () => {
-  it('offers restart when the Member carries no diagnostic at all', () => {
-    expect(restartOffered(unavailable())).toBe(true)
-  })
-
-  it('withholds restart inside a rollover window, which resolves on its own', () => {
-    expect(restartOffered(unavailable({ class: 'rollover', detail: 'rolling over' }))).toBe(false)
-  })
-
-  it('keeps offering restart for a refused session, whose heal may still repair it', () => {
-    // No write-side repair pass exists, so a restart re-runs the activation;
-    // it is never withheld because a refusal looked deterministic.
-    expect(restartOffered(unavailable({ class: 'session-refused', detail: 'cannot safely transform unclassified message source' }))).toBe(true)
-    // No other class suppresses the action.
-    for (const failureClass of ['session-unreadable', 'preset-composition', 'runtime', 'activation'] as const) {
-      expect(restartOffered(unavailable({ class: failureClass, detail: 'failed' }))).toBe(true)
-    }
-  })
-
+describe('Member row diagnostics', () => {
   it('renders the refused artifact path beside the reason', () => {
     const refused = unavailable({
       class: 'session-refused',

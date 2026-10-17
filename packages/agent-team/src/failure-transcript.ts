@@ -8,8 +8,15 @@
  * prompt). The transcript is framed as a research subject, never as
  * instructions — the transcript's own text is untrusted data, and the
  * rendering plus the analysis prompt say so explicitly.
+ *
+ * The same event fold also feeds the Human-facing session-history page, in a
+ * `multiline` mode that keeps the stored text whole — line breaks and all —
+ * because the reviewer reads the entry as authored. The page bounds transport
+ * by paging entries; the fold never cuts content.
  * @module @wowyuarm/dsh-agent-team/failure-transcript
  */
+
+import { isAgentTeamSourceKind } from './context-source.ts'
 
 /** Hard character budget of one rendered transcript (tail-kept). */
 export const DOCTOR_TRANSCRIPT_MAX_CHARS = 60_000
@@ -17,7 +24,7 @@ export const DOCTOR_TRANSCRIPT_MAX_CHARS = 60_000
 /** Hard event budget of one rendered transcript; the tail is kept. */
 export const DOCTOR_TRANSCRIPT_MAX_EVENTS = 400
 
-/** Per-line truncation for message and tool text inside the transcript. */
+/** Per-line truncation for message and tool text inside the model-facing transcript. */
 const LINE_TEXT_LIMIT = 2_000
 
 /** One Session event, narrowed to the shape the fold actually reads. */
@@ -30,6 +37,12 @@ export interface TranscriptEvent {
 function clamp(text: string, limit: number = LINE_TEXT_LIMIT): string {
   const flat = text.replace(/\s+/g, ' ').trim()
   return flat.length <= limit ? flat : `${flat.slice(0, limit)}…`
+}
+
+/** The Human-facing multiline fold: the stored text passes whole (outer
+ *  whitespace trimmed); line breaks survive so Markdown renders as authored. */
+function keepMultiline(text: string): string {
+  return text.trim()
 }
 
 /** Extract concatenated text from one message-shaped content body. */
@@ -45,32 +58,95 @@ function textOf(message: unknown): string {
     .join(' ')
 }
 
-/** One model-visible transcript line, split into the role/text pair both surfaces render from. */
+/**
+ * One model-visible transcript line, split into the role/text pair both
+ * surfaces render from. `system` is the rendered system prompt, `team` a
+ * Member-to-Member relay, and `notice` a Host-injected Team notice or
+ * context envelope — the three kinds the Human reviewer asked to tell apart
+ * from ordinary Human input.
+ */
 export interface TranscriptEntry {
-  readonly role: 'user' | 'assistant' | 'tool-call' | 'tool-result'
+  readonly role: 'system' | 'notice' | 'team' | 'user' | 'assistant' | 'tool-call' | 'tool-result'
   readonly text: string
 }
 
-/** Render one event's role/text pair, or undefined for events the transcript does not show. */
-export function transcriptEntryOf(event: TranscriptEvent): TranscriptEntry | undefined {
+/**
+ * `multiline` mode keeps the stored line breaks and the entry's full text, so
+ * a Markdown-rendering surface can show the text as authored; the default
+ * folds every entry to a single bounded line, which is what the doctor's
+ * model-facing transcript needs.
+ */
+export function transcriptEntryOf(event: TranscriptEvent, options: { readonly multiline?: boolean } = {}): TranscriptEntry | undefined {
+  const multiline = options.multiline === true
+  const bound = (text: string, limit = LINE_TEXT_LIMIT): string =>
+    multiline ? keepMultiline(text) : clamp(text, limit)
   const data = event.data as Record<string, unknown> | undefined
   switch (event.type) {
+    case 'system/message': {
+      const text = bound(textOf(data?.message))
+      if (text === '') return undefined
+      return { role: 'system', text }
+    }
     case 'user/message':
-      return { role: 'user', text: clamp(textOf(data)) }
+      return userLaneEntryOf(data, bound)
     case 'assistant/message':
-      return { role: 'assistant', text: clamp(textOf(data)) }
+      return { role: 'assistant', text: bound(textOf(data?.message)) }
     case 'tool/call': {
       const name = typeof data?.name === 'string' ? data.name : 'unknown-tool'
       const args = typeof data?.arguments === 'string' ? data.arguments : JSON.stringify(data?.arguments ?? {})
-      return { role: 'tool-call', text: `${name} ${clamp(args, 500)}` }
+      return { role: 'tool-call', text: multiline ? `${name}\n${keepMultiline(args)}` : `${name} ${clamp(args, 500)}` }
     }
     case 'tool/result': {
       const message = data?.message
+      if (multiline) {
+        const text = typeof message === 'string' ? message : textOf(message)
+        return { role: 'tool-result', text: keepMultiline(text === '' ? JSON.stringify(message ?? {}) : text) }
+      }
       return { role: 'tool-result', text: clamp(typeof message === 'string' ? message : JSON.stringify(message ?? {}), 800) }
     }
     default:
       return undefined
   }
+}
+
+/**
+ * One user-role message's lane: Team relays are peer exchanges, every other
+ * injected form (notice, context snapshot envelope) reads as a Host notice,
+ * and an ordinary source is Human input. Shared by the `user/message` event
+ * and the messages an `agent/inbox/spliced` batch carried onto the surface.
+ */
+function userLaneEntryOf(data: Record<string, unknown> | undefined, bound: (text: string, limit?: number) => string): TranscriptEntry | undefined {
+  const source = data?.source as { readonly kind?: unknown; readonly form?: unknown } | undefined
+  const text = bound(textOf(data))
+  if (text === '') return undefined
+  if (typeof source?.kind === 'string' && isAgentTeamSourceKind(source.kind)) {
+    return { role: source.form === 'relay' ? 'team' : 'notice', text }
+  }
+  return { role: 'user', text }
+}
+
+/**
+ * The Human-facing fold as the review page consumes it: one event renders to
+ * zero, one, or several entries. An `agent/inbox/spliced` batch is where the
+ * agent loop carried a Member's wake input onto the model-visible surface —
+ * Team relays and notices included — so the page reads each inserted message
+ * on its own lane instead of dropping the batch. The doctor's single-line fold
+ * deliberately keeps ignoring splices: its budget and ordering are the
+ * tail-evidence contract that surfaces failures to the model.
+ */
+export function humanTranscriptEntriesOf(event: TranscriptEvent): readonly TranscriptEntry[] {
+  if (event.type === 'agent/inbox/spliced') {
+    const inserted = (event.data as { readonly inserted?: unknown } | undefined)?.inserted
+    if (!Array.isArray(inserted)) return []
+    const entries: TranscriptEntry[] = []
+    for (const message of inserted) {
+      const entry = userLaneEntryOf(message as Record<string, unknown> | undefined, keepMultiline)
+      if (entry !== undefined) entries.push(entry)
+    }
+    return entries
+  }
+  const entry = transcriptEntryOf(event, { multiline: true })
+  return entry === undefined ? [] : [entry]
 }
 
 /** Render one event line, or undefined for events the transcript does not show. */

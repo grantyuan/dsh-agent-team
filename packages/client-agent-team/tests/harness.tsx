@@ -228,9 +228,12 @@ export async function runtimeWithTeam(options?: { mode?: 'team'; workspaceId?: s
     ok: true as const,
     value: { receipt: {}, status: memberRows.find(entry => entry.member.memberId === request.memberId) },
   }))
-  // The session-history dialog's two reads: the lineage walk answers with a
+  // The session-history page's two reads: the lineage walk answers with a
   // fixed live generation plus one archived ancestor, and the transcript
-  // pages the tail first with one earlier page behind the cursor.
+  // pages the tail first with one earlier page behind the cursor. The tail
+  // carries one multi-line entry per lane (system instructions, a Team
+  // relay, an assistant reply) so the page's Markdown rendering is what
+  // runs under the test.
   const memberSessions = vi.fn(async (_request: { memberId: string }) => ({
     ok: true as const,
     value: [
@@ -241,7 +244,15 @@ export async function runtimeWithTeam(options?: { mode?: 'team'; workspaceId?: s
   const memberSessionTranscript = vi.fn(async (request: { memberId: string; sessionId: string; beforeSeq?: number }) => ({
     ok: true as const,
     value: request.beforeSeq === undefined
-      ? { entries: [{ seq: 100, time: 1_729_000_000_500, role: 'assistant', text: `transcript tail of ${request.sessionId}` }], hasEarlier: true, nextBeforeSeq: 100 }
+      ? {
+          entries: [
+            { seq: 98, time: 1_729_000_000_300, role: 'system', text: 'You are an Agent Team Member.\n\n# Loop discipline' },
+            { seq: 99, time: 1_729_000_000_400, role: 'team', text: 'Direct message from @builder:\n**quick check**: is the build green?' },
+            { seq: 100, time: 1_729_000_000_500, role: 'assistant', text: `transcript tail of ${request.sessionId}` },
+          ],
+          hasEarlier: true,
+          nextBeforeSeq: 98,
+        }
       : { entries: [{ seq: 10, time: 1_729_000_000_100, role: 'user', text: 'the earliest page' }], hasEarlier: false },
   }))
   // Archival hides the row: the mock transitions the member the way the real
@@ -417,6 +428,24 @@ export async function runtimeWithTeam(options?: { mode?: 'team'; workspaceId?: s
     inboxRows = rows.map(row => ({ workspaceId: row.workspaceId, item: row as Record<string, unknown> }))
     wakeAll()
   }
+  // The digest double: opening a Thread asks for a recap, and every bench
+  // answer is seeded here. The default is a quiet no-decision digest so
+  // Thread specs never trip on the panel; `seedDigest` reshapes it and
+  // `failDigest` refuses the call the way an unavailable route would.
+  let digestValue: Record<string, unknown> = { summary: '测试速览', keyPoints: [], needsHumanDecision: false }
+  let digestFailing = false
+  const summarizeThread = vi.fn(async () => digestFailing
+    ? { ok: false as const, error: { message: 'digest unavailable' } }
+    : { ok: true as const, value: { digest: digestValue, modelUsed: { provider: 'test', model: 'test-model' }, revision: 5 } })
+  /** Seed the digest the next Thread opening answers with. */
+  const seedDigest = (next: Record<string, unknown>): void => {
+    digestValue = { ...digestValue, ...next }
+    digestFailing = false
+  }
+  /** Make the next digest reads refuse, or clear the refusal. */
+  const failDigest = (failing = true): void => {
+    digestFailing = failing
+  }
   // The Human Task-list double: one `tasks` call per visible Workspace reads
   // the seeded rows, and `changeTasks` mutates them the way the ledger's
   // per-Task commits would — accept lands a row in done, close in closed — so
@@ -571,7 +600,7 @@ export async function runtimeWithTeam(options?: { mode?: 'team'; workspaceId?: s
   // refuses by contract.
   runtime.remote.provideNamespaces({
     session: { modelCatalog },
-    agentTeam: { members, joinWorkspace, leaveWorkspace, addMember, view: viewChannels, inbox, tasks, readThread, threadHistory: loadThreadHistory, threadObservations, putAttachment, getAttachment, createChannel, updateChannel, archiveChannel, updateMember, recoverMember, clearMemberContext, compactMemberContext, memberSessions, memberSessionTranscript, archiveMember, joinChannel, removeChannelMember, sendMessage, reply, changeTask, changeTasks, promoteThread, resolveTaskRefs, changes, environment, humanProfile, setHumanProfile, putHumanAvatar, getHumanAvatar, removeHumanAvatar },
+    agentTeam: { members, joinWorkspace, leaveWorkspace, addMember, view: viewChannels, inbox, tasks, readThread, threadHistory: loadThreadHistory, threadObservations, summarizeThread, putAttachment, getAttachment, createChannel, updateChannel, archiveChannel, updateMember, recoverMember, clearMemberContext, compactMemberContext, memberSessions, memberSessionTranscript, archiveMember, joinChannel, removeChannelMember, sendMessage, reply, changeTask, changeTasks, promoteThread, resolveTaskRefs, changes, environment, humanProfile, setHumanProfile, putHumanAvatar, getHumanAvatar, removeHumanAvatar },
   })
   Object.assign(runtime.remote, {
     $stream: <T,>(options: ConstructorParameters<typeof RemoteStream<T>>[1]) => new RemoteStream(connection, options),
@@ -603,5 +632,5 @@ export async function runtimeWithTeam(options?: { mode?: 'team'; workspaceId?: s
   const disposeSettings = runtime.slots.register({ name: 'sidebar.settings', priority: 0 }, BaselineSettings as never)
   const team = await runtime.mount({ inject: [...inject], apply })
   const view = runtime.renderRoot()
-  return { runtime, team, view, disposeWorkspace, disposeSettings, members, humanProfile, setHumanProfile, getHumanAvatar, putHumanAvatar, removeHumanAvatar, seedHumanProfile, failHumanProfile, failHumanProfileWrite, environment, seedEnvironment, failEnvironment, joinWorkspace, leaveWorkspace, addMember, status, viewChannels, createChannel, updateChannel, archiveChannel, putAttachment, getAttachment, updateMember, recoverMember, clearMemberContext, compactMemberContext, memberSessions, memberSessionTranscript, archiveMember, modelCatalog, joinChannel, removeChannelMember, sendMessage, reply, changeTask, changeTasks, promoteThread, resolveTaskRefs, publishAgentReply, publishPresence, seedChannel, publishChannelUpdate, failChanges, recoverChanges, readThread, loadThreadHistory, threadObservations, changes, inbox, seedInbox, tasks, seedTasks, openSession }
+  return { runtime, team, view, disposeWorkspace, disposeSettings, members, humanProfile, setHumanProfile, getHumanAvatar, putHumanAvatar, removeHumanAvatar, seedHumanProfile, failHumanProfile, failHumanProfileWrite, environment, seedEnvironment, failEnvironment, joinWorkspace, leaveWorkspace, addMember, status, viewChannels, createChannel, updateChannel, archiveChannel, putAttachment, getAttachment, updateMember, recoverMember, clearMemberContext, compactMemberContext, memberSessions, memberSessionTranscript, archiveMember, modelCatalog, joinChannel, removeChannelMember, sendMessage, reply, changeTask, changeTasks, promoteThread, resolveTaskRefs, publishAgentReply, publishPresence, seedChannel, publishChannelUpdate, failChanges, recoverChanges, readThread, loadThreadHistory, threadObservations, changes, inbox, seedInbox, tasks, seedTasks, openSession, summarizeThread, seedDigest, failDigest }
 }
