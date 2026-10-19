@@ -28,7 +28,7 @@ import { daySeparatorLabel, isRunGap, timelineDayKey } from './team-separators.t
 import { useTimelineScroll } from './timeline-scroll.ts'
 import { hostTaskRefLookup, jumpToTaskThread } from './refs.ts'
 import { hostThreadRefLookup, jumpToThread } from './refs.ts'
-import { rosterChannelName, rosterMember } from './refs.ts'
+import { rosterChannelName, rosterMember, TEAM_ASSISTANT_MEMBER_ID, TEAM_ASSISTANT_NAME } from './refs.ts'
 import css from './conversation.module.css'
 import threadCss from './thread.module.css'
 
@@ -449,6 +449,7 @@ export function TeamThreadPage(props: TeamThreadPageProps) {
 
   const memberName = (memberId: AgentTeamMemberId): string => {
     if (memberId === channelView?.humanMemberId) return humanName
+    if (memberId === TEAM_ASSISTANT_MEMBER_ID) return TEAM_ASSISTANT_NAME
     const status = members.find(candidate => candidate.member.memberId === memberId)
     return status === undefined ? t('memberUnknown') : `@${status.member.handle}`
   }

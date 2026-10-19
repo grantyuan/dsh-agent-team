@@ -30,7 +30,7 @@ import { DomainFacility, type KvTable } from '@deepseek-ai/dsh-storage-domain'
 import SystemPrompt from '@deepseek-ai/dsh-system-prompt'
 import ToolRuntime from '@deepseek-ai/dsh-tools'
 import { WorkspaceId } from '@deepseek-ai/dsh-workspace'
-import AgentTeam, { AGENT_TEAM_HUMAN_MEMBER_ID, AGENT_TEAM_TOOL_NAMES, isTsxDevMode, markAgentTeamPreset, retirementRecapDigestMessages, teamPresetScopeMismatchMessage } from '../src/index.ts'
+import AgentTeam, { AGENT_TEAM_ASSISTANT_MEMBER_ID, AGENT_TEAM_HUMAN_MEMBER_ID, AGENT_TEAM_TOOL_NAMES, isTsxDevMode, markAgentTeamPreset, retirementRecapDigestMessages, teamPresetScopeMismatchMessage } from '../src/index.ts'
 import type { TranscriptEntry } from '../src/failure-transcript.ts'
 import { DIGEST_SYSTEM_PREFIX } from '../src/thread-digest.ts'
 import { checkpointRefFor, foldTeamContextProjection } from '../src/context-projection.ts'
@@ -4724,7 +4724,7 @@ describe('Member supervision handover', () => {
     await expect(readFile(join(replacement!.member.privateMemoryPath, 'notes', 'design.md'), 'utf8')).resolves.toBe('inherited note')
     const notice = view.items.map(item => item.message).filter(message => message.body.includes('Supervision retirement'))
     expect(notice).toHaveLength(1)
-    expect(notice[0]!.sender).toBe(replacement!.member.memberId)
+    expect(notice[0]!.sender).toBe(AGENT_TEAM_ASSISTANT_MEMBER_ID)
     expect(notice[0]!.body).toContain('Supervision retirement — builder')
     expect(notice[0]!.body).toContain('@human')
     expect(notice[0]!.body).toContain('builder stopped abnormally and stayed stopped after 3/3 bring-up attempts')
@@ -4951,9 +4951,9 @@ describe('Member supervision handover', () => {
     const notices = view.items.map(item => item.message).filter(message => message.body.includes('Supervision retirement'))
     expect(notices).toHaveLength(2)
     expect(new Set(notices.map(message => message.channelRef))).toEqual(new Set([channel.channel.channelRef, second.channel.channelRef]))
-    for (const notice of notices) expect(notice.sender).toBe(replacement!.member.memberId)
+    for (const notice of notices) expect(notice.sender).toBe(AGENT_TEAM_ASSISTANT_MEMBER_ID)
     // The bystander was addressed directly on the shared Channel, so its Inbox
-    // carries the mention even though the notice is authored by the replacement.
+    // carries the mention even though the notice is authored by the Team Assistant.
     // The reset attempt before it stayed private — the broken mount left no
     // live Session to renew and no alert or notice reached any Channel — so
     // the handover mention is the bystander's only direct.
@@ -4992,13 +4992,13 @@ describe('Member supervision handover', () => {
 
     const replacement = ctx.agentTeam.members().find(status => status.member.handle === 'builder-2')
     expect(replacement, JSON.stringify(ctx.agentTeam.members().map(status => status.member.handle))).toMatchObject({ availability: 'active' })
-    // Exactly one notice, in the leader's Channel, authored by the Human actor
-    // (not the replacement) and addressed to the leader by handle.
+    // Exactly one notice, in the leader's Channel, authored by the Team
+    // Assistant (not the replacement) and addressed to the leader by handle.
     const view = ctx.agentTeam.view({ workspaceId })
     const notices = view.items.map(item => item.message).filter(message => message.body.includes('Supervision retirement'))
     expect(notices).toHaveLength(1)
     expect(notices[0]!.channelRef).toBe(second.channel.channelRef)
-    expect(notices[0]!.sender).toBe(AGENT_TEAM_HUMAN_MEMBER_ID)
+    expect(notices[0]!.sender).toBe(AGENT_TEAM_ASSISTANT_MEMBER_ID)
     expect(notices[0]!.body).toContain('@chief please reassign the items above to builder-2.')
     // Only the leader is a direct recipient: the leader's Inbox carries the
     // mention, the bystander's stays untouched — no broadcast fallback ran.

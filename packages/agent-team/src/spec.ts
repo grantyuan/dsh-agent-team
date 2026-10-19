@@ -46,6 +46,7 @@ export const MEMBER_CONTEXT_WINDOW_FLOOR = 8192
 
 const actorSchema = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('human'), memberId: memberIdSchema, handle: z.string().min(1) }).strict(),
+  z.object({ kind: z.literal('assistant'), memberId: memberIdSchema, handle: z.string().min(1) }).strict(),
   z.object({ kind: z.literal('member'), memberId: memberIdSchema, handle: z.string().min(1) }).strict(),
 ])
 

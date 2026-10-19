@@ -3129,7 +3129,7 @@ it('retires a supervised Member into a successor in real Web', async () => {
     .filter(item => item.message.body.includes('Supervision retirement — builder'))
   expect(noticeItems).toHaveLength(1)
   const notice = noticeItems[0]!
-  expect(notice.message.sender).toBe('member:human')
+  expect(notice.message.sender).toBe('member:assistant')
   expect([...notice.mentions]).toEqual([reviewerMember.memberId])
   const noticeBody = notice.message.body
   expect(noticeBody).toContain('Cause: builder')

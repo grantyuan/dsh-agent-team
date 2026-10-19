@@ -85,6 +85,25 @@ describe('TeamMessage structured mention rendering', () => {
     expect(hasClassToken(chips[0]!.closest('div')!, 'messageText')).toBe(true)
   })
 
+  it('keeps Team Assistant notices literal like Human input, with the authored dash lines intact', () => {
+    const { container } = render(
+      <TeamMessage
+        senderName="Team Assistant"
+        memberId={'member:assistant' as AgentTeamMemberId}
+        human={false}
+        body={'Supervision retirement — builder\n\nReleased work now unclaimed:\n- integrates the interface (task #2)\n\n@lead please reassign the items above.'}
+        mentionNames={['lead']}
+      />,
+    )
+    // The body is a fixed plain-text block, so the authored `- ` lines survive
+    // instead of becoming Markdown list items, and the ask renders as a chip.
+    expect(container.textContent).toContain('- integrates the interface (task #2)')
+    const chips = spansWithText(container, '@lead')
+    expect(chips).toHaveLength(1)
+    expect(hasClassToken(chips[0]!.closest('div')!, 'messageText')).toBe(true)
+    expect([...container.querySelectorAll('div')].some(div => hasClassToken(div, 'mentionsRow'))).toBe(false)
+  })
+
   it('renders resolved thread refs as titled chips in rich Markdown bodies', () => {
     const threadRef = 'thread:0f0ad7ce-11d3-4c05-8a9e-6f2b1c9d7e32' as AgentTeamThreadRef
     const { container, findAllByRole } = render(

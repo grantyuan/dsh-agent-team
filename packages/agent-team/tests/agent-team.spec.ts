@@ -16,8 +16,8 @@ import { SessionId } from '@deepseek-ai/dsh-session'
 import { WorkspaceId } from '@deepseek-ai/dsh-workspace'
 import { MemoryMediaPool, MemoryStorageBackend } from './helpers/memory-backend.ts'
 import { snapshotReadData, receiptReadData } from './helpers/legacy-thread-read.ts'
-import AgentTeam, { AGENT_TEAM_HUMAN_HANDLE, AGENT_TEAM_HUMAN_MEMBER_ID, AGENT_TEAM_INITIALIZE_REQUEST_ID } from '../src/index.ts'
-import { AgentTeamLedger, agentTeamHumanActor, isThreadReadSnapshot, MAX_PENDING_INTERRUPTS } from '../src/ledger.ts'
+import AgentTeam, { AGENT_TEAM_ASSISTANT_HANDLE, AGENT_TEAM_ASSISTANT_MEMBER_ID, AGENT_TEAM_HUMAN_HANDLE, AGENT_TEAM_HUMAN_MEMBER_ID, AGENT_TEAM_INITIALIZE_REQUEST_ID } from '../src/index.ts'
+import { AgentTeamLedger, agentTeamAssistantActor, agentTeamHumanActor, isThreadReadSnapshot, MAX_PENDING_INTERRUPTS } from '../src/ledger.ts'
 import { agentTeamDomainSpec } from '../src/spec.ts'
 import * as agentTeamInvariant from '../src/invariant.ts'
 import type { AgentTeamAgentMember, AgentTeamChannelRef, AgentTeamContextCheckpointRef, AgentTeamMemberActor, AgentTeamOperation, AgentTeamOperationId, AgentTeamRequestId, AgentTeamTask, AgentTeamTaskRef, AgentTeamThreadReadData, AgentTeamThreadReadOperation, AgentTeamThreadReadReceipt, AgentTeamThreadReadResult, AgentTeamThreadRef } from '../src/types.ts'
@@ -3165,5 +3165,46 @@ describe('AgentTeam per-Workspace durable position', () => {
     expect(replay.positionInWorkspace(alpha)).toBe(ledger.positionInWorkspace(alpha))
     expect(replay.positionInWorkspace(beta)).toBe(ledger.positionInWorkspace(beta))
     replay.validate()
+  })
+})
+
+describe('AgentTeam Team Assistant actor', () => {
+  it('delivers a system notice in its own voice, waking the @human mention it could never carry before', async () => {
+    const test = await harness()
+    const ledger = replayLedger(test)
+    const channel = (await ledger.createChannel({ requestId: requestId('channel'), workspaceId: alpha, name: 'ops', description: '', memberIds: [], actor: agentTeamHumanActor() })).value.channel
+    const sent = committed((await ledger.sendMessage({ requestId: requestId('notice'), workspaceId: alpha,
+      channelRef: channel.channelRef, body: `Supervision retirement — @${AGENT_TEAM_HUMAN_HANDLE} please reassign the items.`, asTask: false, actor: agentTeamAssistantActor() })).value)
+    expect(sent.message.sender).toBe(AGENT_TEAM_ASSISTANT_MEMBER_ID)
+    expect(sent.directMarkers).toEqual([expect.objectContaining({ memberId: AGENT_TEAM_HUMAN_MEMBER_ID })])
+    // The direct mention puts the ask on the Human's Inbox like any other
+    // addressed Message — the reason these notices stopped riding Human voice.
+    const inbox = ledger.inbox(agentTeamHumanActor(), { workspaceId: alpha })
+    expect(inbox.totalDirectCount).toBe(1)
+    // The assistant-voice operation replays exactly like any other Message.
+    const replay = replayLedger(test)
+    expect(replay.threadHistory(agentTeamHumanActor(), { workspaceId: alpha, threadRef: sent.message.threadRef }).facts[0])
+      .toMatchObject({ kind: 'message', message: { sender: AGENT_TEAM_ASSISTANT_MEMBER_ID } })
+    replay.validate()
+  })
+
+  it('is a speak-only authority: admin and reply lanes refuse it, and a forged identity fails', async () => {
+    const test = await harness()
+    const ledger = replayLedger(test)
+    const { member } = await addLedgerMember(ledger, undefined)
+    const channel = (await ledger.createChannel({ requestId: requestId('channel'), workspaceId: alpha, name: 'ops', description: '', memberIds: [member.memberId], actor: agentTeamHumanActor() })).value.channel
+    await expect(ledger.createChannel({ requestId: requestId('forge-channel'), workspaceId: alpha, name: 'x', description: '', memberIds: [], actor: agentTeamAssistantActor() as never })).rejects.toThrow(/lacks Human authority/)
+    const started = withTask(committed((await ledger.sendMessage({ requestId: requestId('start'), workspaceId: alpha, channelRef: channel.channelRef, body: 'Work', asTask: true, actor: { kind: 'member', memberId: member.memberId, handle: member.handle } })).value))
+    await expect(ledger.reply({ requestId: requestId('forge-reply'), workspaceId: alpha, taskRef: started.task.taskRef,
+      baseRevision: started.thread.revision, body: 'reply', actor: agentTeamAssistantActor() as never })).rejects.toThrow(/unknown Agent Member/)
+    await expect(ledger.sendMessage({ requestId: requestId('forge-id'), workspaceId: alpha, channelRef: channel.channelRef,
+      body: 'forged', asTask: false, actor: { kind: 'assistant', memberId: 'member:human' as never, handle: 'Team Assistant' } })).rejects.toThrow(/lacks Team Assistant authority/)
+  })
+
+  it('reserves its handle against the Member @ namespace', async () => {
+    const test = await harness()
+    const ledger = replayLedger(test)
+    await expect(addLedgerMember(ledger, undefined, 'member:impostor', '', 'Team Assistant')).rejects.toThrow(/collides with the Team Assistant/)
+    await expect(addLedgerMember(ledger, undefined, 'member:impostor-2', '', 'team assistant')).rejects.toThrow(/collides with the Team Assistant/)
   })
 })

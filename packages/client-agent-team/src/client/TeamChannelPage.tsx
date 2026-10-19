@@ -19,7 +19,7 @@ import { useChannelMembership } from './team-membership.ts'
 import { useTimelineScroll } from './timeline-scroll.ts'
 import { hostTaskRefLookup, jumpToTaskThread } from './refs.ts'
 import { hostThreadRefLookup, jumpToThread } from './refs.ts'
-import { rosterChannelName, rosterMember } from './refs.ts'
+import { rosterChannelName, rosterMember, TEAM_ASSISTANT_MEMBER_ID, TEAM_ASSISTANT_NAME } from './refs.ts'
 import { chunkRunsWithDays, isRunGap } from './team-separators.ts'
 import channelCss from './channel.module.css'
 import css from './conversation.module.css'
@@ -431,7 +431,9 @@ export function TeamChannelPage({ workspaceId, channelRef, humanName, humanAvata
           {block.items.map((item, index) => {
             const senderStatus = members.find(member => member.member.memberId === item.message.sender)
             const human = item.message.sender === view!.humanMemberId
-            const sender = human ? humanName : senderStatus?.member.handle ?? item.message.sender
+            const sender = human ? humanName
+              : item.message.sender === TEAM_ASSISTANT_MEMBER_ID ? TEAM_ASSISTANT_NAME
+              : senderStatus?.member.handle ?? item.message.sender
             const turnGap = isRunGap(index > 0 ? block.items[index - 1]!.message.occurredAt : undefined, item.message.occurredAt)
             const task = item.task
             // The entry's own line is the gate under the body, and its state

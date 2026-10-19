@@ -38,7 +38,7 @@ import { CONTEXT_CONTINUITY_PROJECTION_KEY, readContextTimeline, type ContextPro
 import { createTeamContextManagement, TEAM_CONTEXT_CODEC } from './context-continuity-host.ts'
 import { AGENT_TEAM_PLUGIN_ID, isAgentTeamSource } from './context-source.ts'
 import { boundaryByRef, carriedInputOf, checkpointByRef, checkpointRefFor, createTeamContextProjectionConfig, createTeamContextProjectionDefinition, foldTeamContextProjection, retainedTopicsThrough, TeamContextProjectionHost } from './context-projection.ts'
-import { AGENT_TEAM_HUMAN_HANDLE, AGENT_TEAM_HUMAN_MEMBER_ID, AgentTeamLedger, agentTeamHumanActor, type AgentTeamDurableMemberResult } from './ledger.ts'
+import { AGENT_TEAM_HUMAN_HANDLE, AGENT_TEAM_HUMAN_MEMBER_ID, AGENT_TEAM_ASSISTANT_HANDLE, AGENT_TEAM_ASSISTANT_MEMBER_ID, AgentTeamLedger, agentTeamAssistantActor, agentTeamHumanActor, type AgentTeamDurableMemberResult } from './ledger.ts'
 import { LedgerFence, ledgerFenceFor } from './ledger-fence.ts'
 import { AGENT_TEAM_TOOL_NAMES, BUNDLED_SKILLS_DIRECTORY, deepCopyCapabilities, deepCopyPrompt, isProtectedPromptSection, memberMemoryDirectoryName, memberMemoryDirectoryPath, MemberRuntime, promptSectionByteLength, sectionToolMapping } from './member-runtime.ts'
 import { PRUNE_WINDOW_DAYS, PRUNE_WINDOW_TURNS, foldLineageUsage, type UsageFold } from './member-section-usage.ts'
@@ -109,6 +109,7 @@ import type {
   AgentTeamLeaveWorkspaceRequest,
   AgentTeamLeaveWorkspaceResult,
   AgentTeamHumanActor,
+  AgentTeamAssistantActor,
   AgentTeamDirectMarker,
   AgentTeamInterruptView,
   AgentTeamMemberActor,
@@ -204,7 +205,7 @@ import type {
 
 export { agentTeamDomainSpec, agentTeamOperationSchema } from './spec.ts'
 export type * from './types.ts'
-export { AGENT_TEAM_HUMAN_HANDLE, AGENT_TEAM_HUMAN_MEMBER_ID, AGENT_TEAM_INITIALIZE_REQUEST_ID } from './ledger.ts'
+export { AGENT_TEAM_HUMAN_HANDLE, AGENT_TEAM_HUMAN_MEMBER_ID, AGENT_TEAM_ASSISTANT_HANDLE, AGENT_TEAM_ASSISTANT_MEMBER_ID, AGENT_TEAM_INITIALIZE_REQUEST_ID } from './ledger.ts'
 export { HUMAN_PROFILE_DEFAULT_NAME, HUMAN_PROFILE_REPO_URL, HUMAN_PROFILE_SETTINGS_NAMESPACE, HUMAN_PROFILE_SETTINGS_SCHEMA, HUMAN_PROFILE_VERSION, assertValidHumanName, normalizeHumanName } from './human-profile.ts'
 export { humanAvatarsRoot } from './human-avatar.ts'
 export { AGENT_TEAM_TOOL_NAMES } from './member-runtime.ts'
@@ -3162,10 +3163,11 @@ export default class AgentTeam extends TypertRemoteService {
 
   /**
    * Delivery for the idle-continuation watcher: the nudge rides the ordinary
-   * mention path under the Human admin's voice, posted into the leader's
-   * Channel holding the most named open Tasks (ties fall back to the oldest),
-   * with the leader as the only explicit recipient. A throw is caught by the
-   * watcher and logged — the next episode retries.
+   * mention path in the Team Assistant's voice — the Host's own supervision
+   * identity, never the Human's — posted into the leader's Channel holding
+   * the most named open Tasks (ties fall back to the oldest), with the leader
+   * as the only explicit recipient. A throw is caught by the watcher and
+   * logged — the next episode retries.
    */
   private async announceContinuationNudge(input: { readonly workspaceId: WorkspaceId, readonly leader: ContinuationLeader, readonly tasks: readonly ContinuationTask[] }): Promise<void> {
     const ledger = this.requireLedger()
@@ -3182,7 +3184,7 @@ export default class AgentTeam extends TypertRemoteService {
     // on the leader's founding Channel.
     const channelRef = [...channels].sort((a, b) => (openByChannel.get(b) ?? 0) - (openByChannel.get(a) ?? 0))[0]
     if (channelRef === undefined) throw new Error(`leader '${input.leader.handle}' has no resolvable Channel in workspace '${input.workspaceId}'`)
-    await this.sendMessageAs(agentTeamHumanActor(), {
+    await this.sendMessageAs(agentTeamAssistantActor(), {
       requestId: randomUUID() as AgentTeamRequestId,
       workspaceId: input.workspaceId,
       channelRef,
@@ -3212,14 +3214,14 @@ export default class AgentTeam extends TypertRemoteService {
   }
 
   /**
-   * Report-check delivery: the Human admin's voice names the idle Member in
-   * the leader's oldest Channel of the Workspace, with the leader as the only
-   * explicit recipient — the ordinary Inbox path wakes them into a turn.
+   * Report-check delivery: the Team Assistant's voice names the idle Member
+   * in the leader's oldest Channel of the Workspace, with the leader as the
+   * only explicit recipient — the ordinary Inbox path wakes them into a turn.
    */
   private async notifyLiaisonLeader(input: { readonly memberId: AgentTeamMemberId, readonly memberHandle: string, readonly workspaceId: WorkspaceId, readonly leader: LiaisonLeader }): Promise<void> {
     const channelRef = this.requireLedger().channelsForMember(input.leader.memberId, input.workspaceId)[0]
     if (channelRef === undefined) throw new Error(`leader '${input.leader.handle}' has no Channel in workspace '${input.workspaceId}'`)
-    await this.sendMessageAs(agentTeamHumanActor(), {
+    await this.sendMessageAs(agentTeamAssistantActor(), {
       requestId: randomUUID() as AgentTeamRequestId,
       workspaceId: input.workspaceId,
       channelRef,
@@ -3230,7 +3232,7 @@ export default class AgentTeam extends TypertRemoteService {
   }
 
   /**
-   * Truncation-escalation delivery: the Human admin's voice names the
+   * Truncation-escalation delivery: the Team Assistant's voice names the
    * truncated Member in the leader's Channel for the Workspace, with the
    * leader as the only explicit recipient — the ordinary Inbox path wakes
    * them into a turn where they decide what happens to the Member.
@@ -3238,7 +3240,7 @@ export default class AgentTeam extends TypertRemoteService {
   private async notifyLeaderOfTruncation(input: { readonly memberId: AgentTeamMemberId, readonly memberHandle: string, readonly workspaceId: WorkspaceId, readonly leader: TruncationLeader }): Promise<void> {
     const channelRef = this.requireLedger().channelsForMember(input.leader.memberId, input.workspaceId)[0]
     if (channelRef === undefined) throw new Error(`leader '${input.leader.handle}' has no Channel in workspace '${input.workspaceId}'`)
-    await this.sendMessageAs(agentTeamHumanActor(), {
+    await this.sendMessageAs(agentTeamAssistantActor(), {
       requestId: randomUUID() as AgentTeamRequestId,
       workspaceId: input.workspaceId,
       channelRef,
@@ -3250,14 +3252,14 @@ export default class AgentTeam extends TypertRemoteService {
 
   /**
    * Open-Task push for a leaderless Workspace: the Member's busiest Channel,
-   * the Member as the only explicit recipient. The mention is direct work, so
-   * a fresh-context Member armed at completion consumes its arm first and
-   * reads the Task list in the fresh generation.
+   * the Member as the only explicit recipient, in the Team Assistant's voice.
+   * The mention is direct work, so a fresh-context Member armed at completion
+   * consumes its arm first and reads the Task list in the fresh generation.
    */
   private async pushLiaisonTasks(input: { readonly memberId: AgentTeamMemberId, readonly memberHandle: string, readonly workspaceId: WorkspaceId, readonly tasks: readonly ContinuationTask[] }): Promise<void> {
     const channelRef = this.liaisonChannelFor(input.memberId, input.workspaceId, input.tasks)
     if (channelRef === undefined) throw new Error(`member '${input.memberHandle}' has no Channel in workspace '${input.workspaceId}'`)
-    await this.sendMessageAs(agentTeamHumanActor(), {
+    await this.sendMessageAs(agentTeamAssistantActor(), {
       requestId: randomUUID() as AgentTeamRequestId,
       workspaceId: input.workspaceId,
       channelRef,
@@ -3431,9 +3433,9 @@ export default class AgentTeam extends TypertRemoteService {
       }
       // The notice is addressed to the workspace's designated leader when there
       // is one: a single addressed recipient keeps the Channel quiet, and the
-      // human-actor send bypasses the member-in-Channel gate that a Member actor
-      // would have to clear. Only with no reachable leader does it fall back to
-      // the inherited-Channel broadcast.
+      // assistant-actor send bypasses the member-in-Channel gate that a Member
+      // actor would have to clear. Only with no reachable leader does it fall
+      // back to the inherited-Channel broadcast.
       const leader = ledger.listMembers().find(member =>
         member.state === 'enabled' && member.leader === true
         && member.memberId !== memberId && member.memberId !== stored.memberId
@@ -3453,7 +3455,7 @@ export default class AgentTeam extends TypertRemoteService {
         ...(sessionRecap === undefined ? {} : { sessionRecap }),
       })
       if (leader !== undefined && leaderChannel !== undefined) {
-        await this.sendMessageAs(agentTeamHumanActor(), {
+        await this.sendMessageAs(agentTeamAssistantActor(), {
           requestId: randomUUID() as AgentTeamRequestId,
           workspaceId: failed.workspaceId,
           channelRef: leaderChannel,
@@ -3470,15 +3472,17 @@ export default class AgentTeam extends TypertRemoteService {
         return
       }
       // No qualifying leader: the notice is broadcast on every Channel the
-      // replacement inherited, and delivered to every live Member of those
-      // Channels — the `@human` body mention carries the admin ask, while the
-      // explicit recipients put the notice into each other Member's Inbox so the
-      // whole Team learns which handle now owns the failed Member's reach.
+      // replacement inherited, in the Team Assistant's voice, and delivered to
+      // every live Member of those Channels — the `@human` body mention now
+      // actually carries the admin ask to the Human's Inbox (a Human-voiced
+      // Message could never mention itself), while the explicit recipients put
+      // the notice into each other Member's Inbox so the whole Team learns
+      // which handle now owns the failed Member's reach.
       const noticeChannels = ledger.workspacesOf(stored.memberId)
         .flatMap(workspaceId => ledger.channelsForMember(stored.memberId, workspaceId).map(channelRef => ({ workspaceId, channelRef })))
       for (const { workspaceId, channelRef } of noticeChannels) {
         const audience = ledger.enabledChannelMembers(channelRef).filter(enabledMemberId => enabledMemberId !== stored.memberId)
-        await this.sendMessageAs({ kind: 'member', memberId: stored.memberId, handle: stored.handle }, {
+        await this.sendMessageAs(agentTeamAssistantActor(), {
           requestId: randomUUID() as AgentTeamRequestId,
           workspaceId,
           channelRef,
@@ -5094,7 +5098,7 @@ export default class AgentTeam extends TypertRemoteService {
   }
 
   /** Shared Task-creation commit: resolve uploads into metadata lines and append through the ledger. */
-  private async sendMessageAs(actor: AgentTeamHumanActor | AgentTeamMemberActor, request: AgentTeamSendMessageRequest): Promise<AgentTeamSendMessageResult> {
+  private async sendMessageAs(actor: AgentTeamHumanActor | AgentTeamAssistantActor | AgentTeamMemberActor, request: AgentTeamSendMessageRequest): Promise<AgentTeamSendMessageResult> {
     const metadata = await this.resolveMessageAttachments(request)
     const result = await this.requireLedger().sendMessage({
       ...request, body: this.appendAttachmentLines(request.body, metadata),
@@ -5858,7 +5862,10 @@ export default class AgentTeam extends TypertRemoteService {
         }
         if (direct && fact.kind === 'message') {
           const sender = fact.message.sender === AGENT_TEAM_HUMAN_MEMBER_ID
-            ? 'human' : this.requireLedger().getMember(fact.message.sender)?.handle ?? fact.message.sender
+            ? 'human'
+            : fact.message.sender === AGENT_TEAM_ASSISTANT_MEMBER_ID
+              ? AGENT_TEAM_ASSISTANT_HANDLE
+              : this.requireLedger().getMember(fact.message.sender)?.handle ?? fact.message.sender
           const detail = ['Direct Team mention', `Occurred at: ${formatTeamTimestamp(fact.occurredAt)}`, `From: ${sender}`, `Channel: ${item.channelRef}`,
             ...(item.task === undefined ? [] : [`Task: ${item.task.taskRef}`]),
             `Thread: ${item.thread.threadRef}`, `Message ref: ${fact.message.messageRef}`,
@@ -5891,7 +5898,10 @@ export default class AgentTeam extends TypertRemoteService {
 
   private activityNotification(activity: AgentTeamActivity, readerId?: AgentTeamMemberId): string {
     const actor = activity.actor === AGENT_TEAM_HUMAN_MEMBER_ID
-      ? 'human' : this.requireLedger().getMember(activity.actor)?.handle ?? activity.actor
+      ? 'human'
+      : activity.actor === AGENT_TEAM_ASSISTANT_MEMBER_ID
+        ? AGENT_TEAM_ASSISTANT_HANDLE
+        : this.requireLedger().getMember(activity.actor)?.handle ?? activity.actor
     // An acceptance concludes the reader's own Claims in two ways: a Claim
     // already finished before the accept was accepted (its work stands), and
     // a still-open Claim the accept completed atomically (no further work is

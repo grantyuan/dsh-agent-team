@@ -1,5 +1,5 @@
 import type { Context } from '@deepseek-ai/cordis'
-import AgentTeam, { AgentTeamDmDeliveryError, markAgentTeamPreset } from '@wowyuarm/dsh-agent-team/host'
+import AgentTeam, { AGENT_TEAM_ASSISTANT_HANDLE, AGENT_TEAM_ASSISTANT_MEMBER_ID, AgentTeamDmDeliveryError, markAgentTeamPreset } from '@wowyuarm/dsh-agent-team/host'
 import { formatTeamTimestamp } from '@wowyuarm/dsh-agent-team/time-format'
 import { registerContextTools } from './context-tools.ts'
 import { service, workspaceOf, workspaceParam } from './host-access.ts'
@@ -693,6 +693,7 @@ const teamView = defineTool({
       channels: view.channels.map(channel => ({ channelRef: channel.channelRef, name: channel.name })),
       members: [
         { memberId: view.humanMemberId, kind: 'human', handle: host.humanHandle(), description: 'Human Team Member', presence: 'available' },
+        { memberId: AGENT_TEAM_ASSISTANT_MEMBER_ID, kind: 'assistant', handle: AGENT_TEAM_ASSISTANT_HANDLE, description: 'Team Host supervision program — sends system notices; it reads nothing and cannot be messaged', presence: 'available' },
         ...host.members().filter(status => visibleMemberIds.has(status.member.memberId)).map(status => ({ memberId: status.member.memberId,
           kind: 'agent', handle: status.member.handle, description: status.member.description, presence: status.presence,
           contextStart: status.member.contextStartPolicy === 'fresh' ? 'fresh context per task' : 'continues its context' })),

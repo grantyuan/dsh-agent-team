@@ -10,6 +10,7 @@ import { cachedResolvedTaskRef, resolveUnknownTaskRefs, useResolvedTaskRefVersio
 import { cachedResolvedThreadRef, resolveUnknownThreadRefs, useResolvedThreadRefVersion, type ResolvedThreadRef } from './refs.ts'
 import { formatMessageTime, isSingleBrandedRef, memberHue, planMessageBody, shouldClampMessage, splitBrandedRefs, splitMentionNames, type MentionHandle } from './team-formatters.ts'
 import { useAvatarImage } from './avatar-image.ts'
+import { TEAM_ASSISTANT_MEMBER_ID } from './refs.ts'
 import css from './conversation.module.css'
 
 export interface TeamMessageProps {
@@ -64,6 +65,10 @@ export const TeamMessage = memo(function TeamMessage({ senderName, memberId, hum
   // people alike. A seat draws it while those bytes decode; anything else keeps
   // the initial, which is what the fallback promises.
   const identityImage = useAvatarImage(human ? avatarUrl : undefined)
+  // The Team Assistant is the Host's system voice: its notices are fixed
+  // plain-text blocks, so they render like Human input (literal, mentions
+  // inline) while the avatar seat below stays the assistant's own.
+  const literalSender = human || memberId === TEAM_ASSISTANT_MEMBER_ID
   // Literal bodies carry mention chips inline — Human input always, and
   // plain-prose Agent bodies where literal rendering loses nothing. Rich
   // Markdown keeps unmatched structured mentions in the trailing row.
@@ -71,7 +76,7 @@ export const TeamMessage = memo(function TeamMessage({ senderName, memberId, hum
   // humans see the attachment strip rendered from the message metadata instead.
   // One pure plan resolves the stored body into the rendering branch, the
   // trailing fallback rows, and the literal Task/Thread refs that resolve in place.
-  const plan = planMessageBody(body, { human, ...(mentionNames === undefined ? {} : { mentionNames }), canOpenRefs: onOpenRef !== undefined })
+  const plan = planMessageBody(body, { human: literalSender, ...(mentionNames === undefined ? {} : { mentionNames }), canOpenRefs: onOpenRef !== undefined })
   const displayBody = plan.displayBody
   const { richAgentBody } = plan
   // Resolved refs re-label once the Host lookup lands; the version tokens

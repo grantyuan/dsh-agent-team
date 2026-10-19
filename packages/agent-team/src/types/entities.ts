@@ -88,6 +88,18 @@ export interface AgentTeamHumanActor {
   readonly handle: string
 }
 
+/**
+ * Snapshot of the fixed Team Assistant authority: the Team Host's own
+ * supervision voice. The Host alone constructs it, and it may only speak —
+ * deliver Message facts — never administer. The Human actor stays reserved
+ * for the real user's own sends.
+ */
+export interface AgentTeamAssistantActor {
+  readonly kind: 'assistant'
+  readonly memberId: AgentTeamMemberId
+  readonly handle: string
+}
+
 /** Snapshot of the exact Agent Member authorized by its live Agent binding. */
 export interface AgentTeamMemberActor {
   readonly kind: 'member'
@@ -95,7 +107,7 @@ export interface AgentTeamMemberActor {
   readonly handle: string
 }
 
-export type AgentTeamActor = AgentTeamHumanActor | AgentTeamMemberActor
+export type AgentTeamActor = AgentTeamHumanActor | AgentTeamAssistantActor | AgentTeamMemberActor
 
 /** Provider route plus provider-owned model id one Member can be pinned to. */
 export interface AgentTeamModelSelection {

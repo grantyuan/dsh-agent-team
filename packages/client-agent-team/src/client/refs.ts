@@ -41,6 +41,15 @@ export function refKeyOf(ref: string): string {
   return ref.toLowerCase().replaceAll('-', '')
 }
 
+/**
+ * The Team Host's fixed supervision identity, mirrored from the ledger's
+ * constants (`AGENT_TEAM_ASSISTANT_MEMBER_ID` / `AGENT_TEAM_ASSISTANT_HANDLE`).
+ * The client only type-imports from the Host package, so the literal lives
+ * here; a rename on the Host side must land here too.
+ */
+export const TEAM_ASSISTANT_MEMBER_ID = 'member:assistant' as AgentTeamMemberId
+export const TEAM_ASSISTANT_NAME = 'Team Assistant'
+
 type Listener = () => void
 
 /** Session cache behind one Host-resolved ref kind: resolved entries, in-flight refs, and parked unknowns. */
@@ -268,6 +277,11 @@ export const rosterMember = (
 ): ResolvedMemberRef | undefined => {
   if (humanMemberId !== undefined && refKeyOf(memberRef) === refKeyOf(humanMemberId)) {
     return { memberId: humanMemberId, handle: humanHandle, openable: false }
+  }
+  // The Team Assistant is Host-owned supervision identity, never a roster row:
+  // its chips render the fixed name and open nothing.
+  if (refKeyOf(memberRef) === refKeyOf(TEAM_ASSISTANT_MEMBER_ID)) {
+    return { memberId: TEAM_ASSISTANT_MEMBER_ID, handle: TEAM_ASSISTANT_NAME, openable: false }
   }
   const hit = uniqueByPrefix(members, status => status.member.memberId, memberRef)
   if (hit === undefined) return undefined

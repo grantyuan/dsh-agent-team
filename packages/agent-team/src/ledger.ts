@@ -43,6 +43,7 @@ import type {
   AgentTeamActiveTaskThread,
   AgentTeamDmResult,
   AgentTeamDmSentOperation,
+  AgentTeamAssistantActor,
   AgentTeamHumanActor,
   AgentTeamInbox,
   AgentTeamInboxActor,
@@ -154,6 +155,20 @@ import type { AgentTeamBodyMentionCandidate } from './mentions.ts'
 export const AGENT_TEAM_HUMAN_MEMBER_ID = 'member:human' as AgentTeamMemberId
 
 /**
+ * Stable Team Assistant identity: the one voice the Team Host's supervision
+ * program speaks through. It is a fixed virtual identity like the Human's —
+ * never a roster Member with a Session — and the Host alone constructs its
+ * actor, so no Remote caller can speak as it.
+ */
+export const AGENT_TEAM_ASSISTANT_MEMBER_ID = 'member:assistant' as AgentTeamMemberId
+
+/**
+ * The Team Assistant's display handle. Reserved in the Member @ namespace so
+ * no Agent can take the name the system notices arrive under.
+ */
+export const AGENT_TEAM_ASSISTANT_HANDLE = 'Team Assistant'
+
+/**
  * The handle the Human is addressed by in Message bodies. The body parser and
  * the Member directory both read this one constant, so a configurable display
  * name has a single place to land instead of a hard-coded literal per surface.
@@ -175,6 +190,17 @@ const HUMAN_ACTOR: AgentTeamHumanActor = Object.freeze({
 /** Resolve the one Human authority owned by this Team. */
 export function agentTeamHumanActor(): AgentTeamHumanActor {
   return HUMAN_ACTOR
+}
+
+const ASSISTANT_ACTOR: AgentTeamAssistantActor = Object.freeze({
+  kind: 'assistant',
+  memberId: AGENT_TEAM_ASSISTANT_MEMBER_ID,
+  handle: AGENT_TEAM_ASSISTANT_HANDLE,
+})
+
+/** Resolve the one Team Assistant authority the Host's supervision speaks through. */
+export function agentTeamAssistantActor(): AgentTeamAssistantActor {
+  return ASSISTANT_ACTOR
 }
 
 /** Caller-owned payload of the idempotent Team initialization request. */
@@ -294,7 +320,7 @@ export interface AgentTeamAuthorizedLeaveWorkspaceRequest extends AgentTeamLeave
 }
 
 export interface AgentTeamAuthorizedSendMessageRequest extends AgentTeamSendMessageRequest {
-  readonly actor: AgentTeamHumanActor | AgentTeamMemberActor
+  readonly actor: AgentTeamHumanActor | AgentTeamAssistantActor | AgentTeamMemberActor
   /** Metadata the Host resolved from the attachment cache before the append. */
   readonly resolvedAttachments?: readonly AgentTeamMessageAttachment[] | undefined
 }
@@ -1494,7 +1520,12 @@ export class AgentTeamLedger {
 
   sendMessage(request: AgentTeamAuthorizedSendMessageRequest): Promise<AgentTeamLedgerResult<AgentTeamSendMessageResult>> {
     return this.enqueue(async () => {
-      const actor = this.assertActorForWorkspace(request.actor, request.workspaceId)
+      // The Team Assistant enters here alone: the Host's supervision voice may
+      // only deliver top-level Messages, never touch any other lane.
+      const requestedActor = request.actor
+      const actor = requestedActor.kind === 'assistant'
+        ? (this.assertAssistantActor(requestedActor), requestedActor)
+        : this.assertActorForWorkspace(requestedActor, request.workspaceId)
       const channel = this.requireActiveChannel(request.workspaceId, request.channelRef)
       if (actor.kind === 'member') this.requireMemberChannel(this.requireMember(actor.memberId), channel.channelRef)
       const body = request.body.trim()
@@ -2307,6 +2338,7 @@ export class AgentTeamLedger {
    */
   private memberActor(memberId: AgentTeamMemberId): AgentTeamInboxActor {
     if (memberId === this.initialization().data.humanMemberId) return Object.freeze({ memberId, name: this.humanHandle })
+    if (memberId === AGENT_TEAM_ASSISTANT_MEMBER_ID) return Object.freeze({ memberId, name: AGENT_TEAM_ASSISTANT_HANDLE })
     return Object.freeze({ memberId, name: this.state.members.get(memberId)?.handle ?? memberId })
   }
 
@@ -2980,6 +3012,11 @@ export class AgentTeamLedger {
       }
       return member
     }
+    const assertAssistant = (): void => {
+      if (operation.actor.kind !== 'assistant' || operation.actor.memberId !== AGENT_TEAM_ASSISTANT_MEMBER_ID) {
+        throw new Error(`agent-team operation ${operation.sequence} has invalid Team Assistant authority`)
+      }
+    }
     if (operation.kind === 'team/initialized') throw new Error('agent-team initialization must be first')
     if (operation.kind === 'team/channel-created') {
       assertHuman()
@@ -3267,7 +3304,11 @@ export class AgentTeamLedger {
       return
     }
     if (operation.kind === 'team/message-sent' || operation.kind === 'team/thread-replied') {
-      const actor = operation.actor.kind === 'member' ? assertMember() : (assertHuman(), undefined)
+      // A Member sender must clear its Channel membership; the Human and the
+      // Team Assistant speak across Channels without one.
+      const actor = operation.actor.kind === 'member' ? assertMember()
+        : operation.actor.kind === 'assistant' ? (assertAssistant(), undefined)
+        : (assertHuman(), undefined)
       const { message, task, thread } = operation.data
       const channel = projection.channels.get(message.channelRef)
       if (channel === undefined || channel.workspaceId !== operation.data.workspaceId || message.sender !== operation.actor.memberId
@@ -4575,6 +4616,14 @@ export class AgentTeamLedger {
     }
   }
 
+  private assertAssistantActor(actor: AgentTeamAssistantActor): void {
+    // The Team Assistant is a fixed Host-owned identity: only the exact
+    // constant passes, and no operation kind ever widens it to administer.
+    if (actor.kind !== 'assistant' || actor.memberId !== AGENT_TEAM_ASSISTANT_MEMBER_ID) {
+      throw new Error('agent-team operation lacks Team Assistant authority')
+    }
+  }
+
   private assertMemberActor(actor: AgentTeamMemberActor): AgentTeamAgentMember {
     const member = this.requireMember(actor.memberId)
     if (member.state !== 'enabled' || member.handle !== actor.handle) throw new Error('agent-team operation lacks enabled Member authority')
@@ -4797,7 +4846,7 @@ export class AgentTeamLedger {
     if (member.state !== 'enabled') throw new Error(`Agent Member '${memberId}' is ${member.state}; only enabled Members can join a Channel`)
   }
 
-  private normalizeRecipients(actor: AgentTeamHumanActor | AgentTeamMemberActor, recipients: readonly AgentTeamMemberId[] | undefined): readonly AgentTeamMemberId[] {
+  private normalizeRecipients(actor: AgentTeamHumanActor | AgentTeamAssistantActor | AgentTeamMemberActor, recipients: readonly AgentTeamMemberId[] | undefined): readonly AgentTeamMemberId[] {
     const normalized = this.normalizeUnique(recipients, 'recipient set')
     if (normalized.includes(actor.memberId)) throw new Error('sender cannot be a recipient intent')
     return normalized
@@ -4917,6 +4966,12 @@ export class AgentTeamLedger {
     const humanNormalized = this.humanHandle.normalize('NFKC').trim().toLowerCase()
     if (humanNormalized !== '' && normalized === humanNormalized) {
       throw new Error(`Agent Member handle '${handle}' collides with the human display name`)
+    }
+    // The Team Assistant's handle is reserved for the same reason: system
+    // notices arrive under that name, and an Agent wearing it would forge
+    // the Host's voice in every body mention.
+    if (normalized === AGENT_TEAM_ASSISTANT_HANDLE.normalize('NFKC').trim().toLowerCase()) {
+      throw new Error(`Agent Member handle '${handle}' collides with the Team Assistant`)
     }
     if (normalized === AGENT_TEAM_HUMAN_HANDLE) {
       throw new Error(`Agent Member handle '${handle}' collides with the reserved human alias`)
@@ -5225,7 +5280,7 @@ export class AgentTeamLedger {
       && left.privateMemoryPath === right.privateMemoryPath
   }
 
-  private sameActor(left: AgentTeamHumanActor | AgentTeamMemberActor, right: AgentTeamHumanActor | AgentTeamMemberActor): boolean {
+  private sameActor(left: AgentTeamHumanActor | AgentTeamAssistantActor | AgentTeamMemberActor, right: AgentTeamHumanActor | AgentTeamAssistantActor | AgentTeamMemberActor): boolean {
     return left.kind === right.kind && left.memberId === right.memberId && left.handle === right.handle
   }
 
@@ -5369,7 +5424,7 @@ export class AgentTeamLedger {
       releasedClaims: operation.data.claims, removedAttention: operation.data.inbox.attention.removed })
   }
 
-  private operationBase(request: { readonly requestId: AgentTeamRequestId; readonly actor: AgentTeamHumanActor | AgentTeamMemberActor }, sequence: number) {
+  private operationBase(request: { readonly requestId: AgentTeamRequestId; readonly actor: AgentTeamHumanActor | AgentTeamAssistantActor | AgentTeamMemberActor }, sequence: number) {
     return { sequence, operationId: this.createOperationId(), requestId: request.requestId, occurredAt: this.createOccurredAt(),
       actor: Object.freeze({ ...request.actor }), previousOperationId: this.state.ordered.at(-1)?.operationId ?? null }
   }
