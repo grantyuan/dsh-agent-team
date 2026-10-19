@@ -6,13 +6,15 @@
 `memory.md` 是有界路由索引而非仓库：只装身份与职责、必须每步生效的长期规则、当前在手，以及每个主题簇一行；`notes/` 按需读取、从不注入。成员把索引常态保持在 8 KiB 以内、硬顶 16 KiB——超过硬顶索引整块不再注入，注入块始终自带用量。维护手艺（什么配得上一行、三层结构、压实与降级）归内置 `member-memory-manager` core skill，与 skill 写作归 `member-skill-manager` 同一套路；persona 只常驻「索引必须有界、细节留在它点名的那篇笔记里」这一条，成员首次生成的 `memory.md` 脚手架陈述同样的小节。
 
 ## 上下文压力归属
-Host 端到端拥有 Member 的上下文压力管理。两个预算阈值从该 Member 的 live routed selection 派生——当前 step 已进入 prompt assembly 时取其捕获的 selection，否则取 current selection——经 LLM 服务解析（handoff 预算上限 200K、硬上限 256K，并留安全 reserve）：达到 handoff 预算时，Member 在该 generation 内收到一条结构化压力通知，且它是命令而非建议——先把必须超出这份上下文存活的内容写进 private memory，再压缩上下文（`context_rollover`，或该 route 自带的压缩）——同一 generation 不重复，rollover 后重新武装。
+Host 不再盯 Member 的上下文大小。Member 通过 `context_rollover` 与 `context_checkpoint` 自管上下文；除下述 provider 溢出自救与 Member 自己的显式选择外，Host 不再代它执行任何 compaction。
 
-持续在 handoff 预算之上推进的 Member 随后会收到该 generation 唯一一条压缩令；再耗尽压缩令自己的额度后，由 Host 代它执行这次压缩。Host 无法证明压回预算之内的上下文会阻断该请求，并被交给 supervision 强制链的 fresh-context 重置：Member 保住自己的 identity、private memory 与 Channels，并据此重新定位。
+Member 按需读到的预算阈值——未读验收读上的 `contextAdvice` 段、`context_timeline` 工具、checkpoint 回返守卫——仍从该 Member 的 live routed selection 派生（当前 step 已进入 prompt assembly 时取其捕获的 selection，否则取 current selection），经 LLM 服务解析，完全由该 route 自身的模型信息定价、不套固定产品封顶：硬上限 = 上下文窗口 − 输出 reserve（该 route 披露的默认单请求输出上限，未披露按下限 16K），handoff 预算在此之上再减一道 handoff reserve（`max(8K, 窗口 4%)`）。
 
-直接拒绝 Host 压缩的 route 仍交回它自带的压缩，那里由 provider 指明上下文超限——supervision 把这种停止当作「继续」提示治不了的一类。
+Supervision 的进度判定只有纯故障计数：连续 3 次 `agent/error` 且中间没有任何干净 turn，即开启强制链的 fresh-context 重置——Member 保住自己的 identity、private memory 与 Channels，并据此重新定位。失败诊断不做任何分类；滚动窗口失败率车道、abnormal-stop 拉起预算、hung 检测与连续失败计数各走各的车道。
 
-达到硬上限时，Host 在转发下一个模型请求前强制一次原地 compaction，只有实测压力被证明降到硬上限之下才放行该 step——无法测量或仍超标即 fail closed（拒绝该 step，不超限提交）。每次恢复链只一次强制压缩，仅在干净响应或低于硬限的读数后重新武装，压不下来的上下文不再每步重复压缩重写、击穿 provider prompt cache。Provider context-overflow 失败获得一条有界的 compact-and-retry 序列后再上浮。无法测量窗口的 route 会显式拒绝，绝不静默超限提交。已接受 Task 的自动 compaction 已退役：除 Member 自己的显式选择外，压力策略是唯一的 compaction 触发器。
+Provider 的 context-overflow 拒绝在每次开放故障链上获得一条有界的 compact-and-retry 序列再上浮，且只有成功请求才重新武装——每次 surface 重写都会击穿 provider prompt cache，压不下去的循环只会每请求重灌整份上下文。被路由 proxy 接管压缩的车道（`dsh_compaction_refused` 拒绝）永不重试：溢出作为普通失败交给计数判定。
+
+无法测量窗口的 route 显式拒绝，绝不静默超限提交。已接受 Task 的自动 compaction 已退役：除 Member 自己的显式选择外，溢出自救是 Host 唯一的 compaction 触发器。
 
 Memory 不是 authority：它可能过时，不能覆盖 Workspace instructions、direct Human input 或 durable Team facts。Member 只能记录已验证且持久的知识，不得记录 credentials、sensitive data、guesses、chat logs、其他 Members' memory，或 ledger 已拥有的 facts。
 
@@ -55,6 +57,8 @@ Agent 行菜单对 live Member 持有两个上下文动作，并对每一行提�
 「历史会话」以独立审计页面占据对话席位：沿存储的 `parentSession` 谱系列出该 Member 的全部 Session 世代，由新到旧。当前世代经 live handle 读取——即使上下文转换已把 durable 绑定前移到它之前；不可读的当前绑定降级为带标记的条目，游走继续接上 ledger 记录的前驱世代，最新代际未能落盘的崩溃因此不吞掉归档历史。页面默认打开最新可读世代，全部不可读时如实说明。
 
 所选世代自身的事件经 `memberSessions` 与 `memberSessionTranscript` 分页呈现；每条条目保留完整存储文本——传输由分页限界，绝不靠裁剪内容——并按原始 Markdown 展示：系统指令、Team relay 与 Host notice 各占一个 lane，Inbox splice 批次按 lane 展开，thread 驱动的唤醒输入因此可读。
+
+这个折叠呈现的是完整真实过程，而不只是活下来的那些消息：失败的、被取消或被阻断的回合、没有产出回复的模型尝试、developer message、上下文压缩、以及工具的结构化拒绝，都会各自作为一条条目落到页面上——审阅者看到的是实际发生过什么，而不是一份写到文字停止处就静默截断的转录。面向模型的 doctor 折叠则刻意继续忽略这些结果事件与 splice：它的单行预算与尾部排序正是把失败暴露给模型的手段。
 
 它从不激活、恢复或写入任何 Session，因此即便 Harness 拒绝把归档会话作为 live 对话打开，归档世代仍可浏览。
 

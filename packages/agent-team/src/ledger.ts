@@ -31,6 +31,9 @@ import type {
   AgentTeamClaimRequest,
   AgentTeamClaimResult,
   AgentTeamClaimRef,
+  AgentTeamCompletedDirection,
+  AgentTeamCompletedTask,
+  AgentTeamCompletedWork,
   AgentTeamConfirmationRequired,
   AgentTeamConfirmationToken,
   AgentTeamCreateChannelRequest,
@@ -46,6 +49,9 @@ import type {
   AgentTeamInboxRequest,
   AgentTeamInboxDelta,
   AgentTeamInboxItem,
+  AgentTeamPendingDecision,
+  AgentTeamPendingDecisions,
+  AgentTeamPendingDecisionsRequest,
   AgentTeamInitializedOperation,
   AgentTeamInterruptRef,
   AgentTeamInterruptResolution,
@@ -218,7 +224,7 @@ export interface AgentTeamAuthorizedRolloverMemberSessionRequest {
   readonly newSessionId: SessionId
   /** Seq of the successful `context_rollover` tool result in the previous Session log. */
   readonly handoffEventSeq: SessionSeq
-  /** Why the rollover happened: the model asked, or honored a pressure notice. */
+  /** Why the rollover happened: the model asked, or ('pressure') a historical Host order no longer produced. */
   readonly trigger: 'model' | 'pressure'
   /** Seed source Session for a checkpoint return; absent on a fresh rollover. */
   readonly sourceSessionId?: SessionId
@@ -532,6 +538,22 @@ const HUMAN_DECISION_ASKS: readonly RegExp[] = [
 
 function namesHumanDecisionAsk(body: string): boolean {
   return HUMAN_DECISION_ASKS.some(pattern => pattern.test(body))
+}
+
+/** How many asks the decision queue hands over at most, one Workspace per read. */
+const PENDING_DECISIONS_LIMIT = 100
+
+/**
+ * Transport bound for one queue row's ask: generous enough that the Human can
+ * answer from the queue itself — the row exists to decide from, not to force
+ * a Thread opening — while one pathological body cannot grow the read without
+ * bound.
+ */
+const PENDING_DECISION_ASK_CAP = 4_000
+
+function boundedDecisionAsk(body: string): string {
+  const trimmed = body.trim()
+  return trimmed.length <= PENDING_DECISION_ASK_CAP ? trimmed : `${trimmed.slice(0, PENDING_DECISION_ASK_CAP)}…`
 }
 
 /**
@@ -1153,7 +1175,8 @@ export class AgentTeamLedger {
 
   /**
    * One Member's active Claims on open Tasks in active Channels, oldest
-   * first — the read-only input for the pressure notice's Claim labels.
+   * first — the read-only input for the retirement notice's released-Claims
+   * list.
    */
   activeClaimsForMember(memberId: AgentTeamMemberId): readonly AgentTeamClaim[] {
     const active: AgentTeamClaim[] = []
@@ -1165,6 +1188,49 @@ export class AgentTeamLedger {
       active.push(claim)
     }
     return active.sort((a, b) => a.claimRef.localeCompare(b.claimRef))
+  }
+
+  /**
+   * The finished work one Member left behind, derived from operations — the
+   * read-only input to the supervision retirement notice. Directions are the
+   * Member's `done` Claims, Tasks are the ones those Claims finished and the
+   * Human then accepted or closed, and participation counts the Threads the
+   * Member wrote a Message in or held a Claim on. Archived Channels stay in
+   * the record: the notice is a historical account, not a live work surface.
+   */
+  completedWorkForMember(memberId: AgentTeamMemberId): AgentTeamCompletedWork {
+    const numbers = this.state.taskNumberByTask
+    const finishedDirections: AgentTeamCompletedDirection[] = []
+    const completedTasks = new Map<AgentTeamTaskRef, AgentTeamCompletedTask>()
+    const threads = new Set<AgentTeamThreadRef>(this.state.threadsByWriter.get(memberId) ?? [])
+    for (const claim of this.state.claims.values()) {
+      if (claim.owner !== memberId) continue
+      threads.add(claim.threadRef)
+      if (claim.state !== 'done') continue
+      const task = this.state.tasks.get(claim.taskRef)
+      const subject = task === undefined ? '' : boundedInboxPreview(this.threadAnchor(task.threadRef).body)
+      finishedDirections.push(Object.freeze({
+        direction: claim.direction,
+        taskRef: claim.taskRef,
+        taskNumber: numbers.get(claim.taskRef) ?? 0,
+        subject,
+      }))
+      if (task !== undefined && (task.resolution === 'accepted' || task.resolution === 'closed')) {
+        completedTasks.set(task.taskRef, Object.freeze({
+          taskRef: task.taskRef,
+          taskNumber: numbers.get(task.taskRef) ?? 0,
+          subject,
+          resolution: task.resolution,
+        }))
+      }
+    }
+    finishedDirections.sort((left, right) => left.taskNumber - right.taskNumber || left.taskRef.localeCompare(right.taskRef))
+    const tasks = [...completedTasks.values()].sort((left, right) => left.taskNumber - right.taskNumber || left.taskRef.localeCompare(right.taskRef))
+    return Object.freeze({
+      finishedDirections: Object.freeze(finishedDirections),
+      completedTasks: Object.freeze(tasks),
+      participatedThreadCount: threads.size,
+    })
   }
 
   listMembers(): readonly AgentTeamAgentMember[] {
@@ -2142,6 +2208,94 @@ export class AgentTeamLedger {
       ...(latestReply === undefined ? {} : { latestReplyOccurredAt: latestReply.occurredAt, latestReplyActor: this.memberActor(latestReply.sender) }),
       needsHumanDecision: awaitingHuman || awaitingReview,
     }
+  }
+
+  /**
+   * The decision material one Thread carries when it still waits on the Human,
+   * or `undefined` when it does not. This is the same Thread fact behind
+   * `inboxThreadClock`'s `needsHumanDecision` — an open Task awaiting
+   * acceptance, or the newest Human-naming Message that asked for a call and
+   * came after the Human's own last word — resolved to the ask the reader can
+   * answer directly: its body (for a Message) or the Member's latest report on
+   * the Thread (for an awaiting-acceptance Task), the person waiting, and the
+   * instant. The row's revision is read live at projection time, so a durable
+   * reply fenced against it uses the current value, not a stale one.
+   */
+  private threadDecisionAsk(threadRef: AgentTeamThreadRef, task: AgentTeamTask | undefined): {
+    readonly reason: 'decision_request' | 'task_review'
+    readonly askText: string
+    readonly askOccurredAt: string
+    readonly askActor: AgentTeamInboxActor
+  } | undefined {
+    const humanMemberId = this.initialization().data.humanMemberId
+    let decisionAsk: AgentTeamMessage | undefined
+    let latestNonHuman: AgentTeamMessage | undefined
+    for (const fact of this.threadFacts(threadRef)) {
+      if (fact.kind !== 'message') continue
+      if (fact.message.sender === humanMemberId) decisionAsk = undefined
+      else {
+        latestNonHuman = fact.message
+        if (fact.mentions.includes(humanMemberId)) decisionAsk = namesHumanDecisionAsk(fact.message.body) ? fact.message : undefined
+      }
+    }
+    if (decisionAsk !== undefined) {
+      return { reason: 'decision_request', askText: boundedDecisionAsk(decisionAsk.body), askOccurredAt: decisionAsk.occurredAt, askActor: this.memberActor(decisionAsk.sender) }
+    }
+    const awaitingReview = task !== undefined && task.resolution === 'open' && task.status === 'in_review'
+    if (awaitingReview) {
+      // The Member's latest word on the Thread is what awaits acceptance; with
+      // no non-Human word yet, fall back to the Thread anchor.
+      const report = latestNonHuman ?? this.threadAnchor(threadRef)
+      return { reason: 'task_review', askText: boundedDecisionAsk(report.body), askOccurredAt: report.occurredAt, askActor: this.memberActor(report.sender) }
+    }
+    return undefined
+  }
+
+  /**
+   * Human decision queue: every non-archived Thread in the Workspace that still
+   * waits on the Human, oldest-wait first, each row carrying the ask the reader
+   * answers from the queue itself plus the Thread ref and revision that fence a
+   * durable reply. It is a projection over the same `threadDecisionAsk` fact the
+   * Inbox chip reads, so the two surfaces never disagree about who is waiting —
+   * this one just shows the whole ask instead of a chip.
+   */
+  pendingDecisions(actor: AgentTeamHumanActor, request: AgentTeamPendingDecisionsRequest): AgentTeamPendingDecisions {
+    this.assertActorForWorkspace(actor, request.workspaceId)
+    const taskNumbers = this.taskNumbers(request.workspaceId)
+    const items: AgentTeamPendingDecision[] = []
+    for (const [threadRef] of this.state.threads) {
+      const channelRef = this.channelRefForThread(threadRef)
+      if (channelRef === undefined) continue
+      const channel = this.state.channels.get(channelRef)
+      if (channel === undefined || channel.workspaceId !== request.workspaceId) continue
+      if (channel.state === 'archived') continue
+      const thread = this.state.threads.get(threadRef)!
+      const task = thread.taskRef === undefined ? undefined : this.state.tasks.get(thread.taskRef)
+      const ask = this.threadDecisionAsk(threadRef, task)
+      if (ask === undefined) continue
+      const clock = this.inboxThreadClock(threadRef, task)
+      const unread = this.unreadFor(actor.memberId, threadRef)
+      const attention = this.attentionFor(actor.memberId, threadRef)
+      items.push(Object.freeze({
+        workspaceId: request.workspaceId, channelRef,
+        channelName: channel.name,
+        ...(task === undefined ? {} : { task }), ...(task === undefined || !taskNumbers.has(task.taskRef) ? {} : { taskNumber: taskNumbers.get(task.taskRef)! }),
+        thread,
+        reason: ask.reason, askText: ask.askText, askOccurredAt: ask.askOccurredAt, askActor: ask.askActor,
+        createdOccurredAt: clock.createdOccurredAt,
+        ...(clock.latestReplyOccurredAt === undefined ? {} : { latestReplyOccurredAt: clock.latestReplyOccurredAt }),
+        unreadCount: unread.length,
+        ...(attention === undefined ? {} : { attention }),
+      }))
+      if (items.length >= PENDING_DECISIONS_LIMIT) break
+    }
+    // Oldest wait first; an unparseable instant (which the ledger never
+    // writes) falls back to the ref so the order stays deterministic.
+    items.sort((left, right) => {
+      const at = Date.parse(left.askOccurredAt) - Date.parse(right.askOccurredAt)
+      return Number.isNaN(at) ? left.thread.threadRef.localeCompare(right.thread.threadRef) : at
+    })
+    return Object.freeze({ humanMemberId: this.initialization().data.humanMemberId, items: Object.freeze(items) })
   }
 
   /**

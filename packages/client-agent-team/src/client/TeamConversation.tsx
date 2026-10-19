@@ -2,13 +2,14 @@ import { useSyncExternalStore } from 'react'
 import type { TeamConversationProps } from './slots.ts'
 import { useHumanIdentity } from './human-identity.ts'
 import { TeamChannelPage } from './TeamChannelPage.tsx'
+import { TeamDecisionsPage } from './TeamDecisionsPage.tsx'
 import { TeamInboxPage } from './TeamInboxPage.tsx'
 import { TeamSessionHistoryPage } from './TeamSessionHistoryPage.tsx'
 import { TeamTasksPage } from './TeamTasksPage.tsx'
 import { TeamThreadPage } from './TeamThreadPage.tsx'
 import css from './conversation.module.css'
 
-export function TeamConversation({ t, useWorkspaces, navigation, drafts, humanIdentity, putAttachment, getAttachment, loadChannels, readThread, loadThreadHistory, threadObservations, summarizeThread, subscribeChanges, loadMembers, loadInbox, loadTasks, sendMessage, joinChannel, removeChannelMember, reply, changeTask, changeTasks, promoteThread, selectThread, selectChannel, selectWorkspace, backFromThread, backToChannels, resolveTaskRefs, resolveThreadRefs, openMemberSession, loadMemberSessions, loadMemberSessionTranscript, exitSessionHistory }: TeamConversationProps) {
+export function TeamConversation({ t, useWorkspaces, navigation, drafts, humanIdentity, putAttachment, getAttachment, loadChannels, readThread, loadThreadHistory, threadObservations, changeAttention, summarizeThread, subscribeChanges, loadMembers, loadInbox, loadTasks, loadPendingDecisions, sendMessage, joinChannel, removeChannelMember, reply, changeTask, changeTasks, promoteThread, selectThread, selectChannel, selectWorkspace, backFromThread, backToChannels, resolveTaskRefs, resolveThreadRefs, openMemberSession, loadMemberSessions, loadMemberSessionTranscript, exitSessionHistory }: TeamConversationProps) {
   const navigationState = useSyncExternalStore(navigation.subscribe, navigation.getSnapshot, navigation.getSnapshot)
   // Every seat names and draws the Human from this one projection: the
   // localized fallback stands only until the first profile read lands.
@@ -22,13 +23,20 @@ export function TeamConversation({ t, useWorkspaces, navigation, drafts, humanId
     // this face owns the seat while the flag stands. The Human identity rides
     // along for the same reason it rides on the other two faces: a row that
     // names or draws the reader must draw the one identity every seat draws.
-    return <TeamInboxPage key="inbox" useWorkspaces={useWorkspaces} loadInbox={loadInbox} subscribeChanges={subscribeChanges} selectWorkspace={selectWorkspace} selectThread={selectThread} humanName={humanName} {...(identity.avatarUrl === undefined ? {} : { humanAvatarUrl: identity.avatarUrl })} t={t} />
+    return <TeamInboxPage key="inbox" useWorkspaces={useWorkspaces} loadInbox={loadInbox} subscribeChanges={subscribeChanges} readThread={readThread} selectWorkspace={selectWorkspace} selectThread={selectThread} humanName={humanName} {...(identity.avatarUrl === undefined ? {} : { humanAvatarUrl: identity.avatarUrl })} t={t} />
   }
   if (navigationState.tasks === true) {
     // The Tasks page is global in the same way: it merges every visible
     // Workspace and needs no selected Workspace, and it owns the seat while
     // its navigation flag stands.
     return <TeamTasksPage key="tasks" useWorkspaces={useWorkspaces} loadTasks={loadTasks} subscribeChanges={subscribeChanges} selectWorkspace={selectWorkspace} selectThread={selectThread} changeTasks={changeTasks} humanName={humanName} {...(identity.avatarUrl === undefined ? {} : { humanAvatarUrl: identity.avatarUrl })} t={t} />
+  }
+  if (navigationState.decisions === true) {
+    // The decision queue is global in the same way: it merges every visible
+    // Workspace and needs no selected Workspace, and it owns the seat while its
+    // navigation flag stands. Its rows answer the Host directly, so the seat
+    // also carries the reads and writes a Thread answer needs.
+    return <TeamDecisionsPage key="decisions" useWorkspaces={useWorkspaces} loadPendingDecisions={loadPendingDecisions} subscribeChanges={subscribeChanges} readThread={readThread} changeAttention={changeAttention} reply={reply} changeTask={changeTask} selectWorkspace={selectWorkspace} selectThread={selectThread} humanName={humanName} {...(identity.avatarUrl === undefined ? {} : { humanAvatarUrl: identity.avatarUrl })} t={t} />
   }
   if (navigationState.sessionHistory !== undefined) {
     // The session-history page is a durable audit face: it reads the Member's

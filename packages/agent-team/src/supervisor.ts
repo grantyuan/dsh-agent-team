@@ -15,15 +15,10 @@
  * - {@link SUPERVISION_MAX_CONSECUTIVE_FAILURES} `agent/error` occurrences with
  *   no clean turn end between them, or {@link SUPERVISION_WINDOW_FAILURES}
  *   occurrences inside {@link SUPERVISION_FAILURE_WINDOW_MS} however separated,
- *   prove it cannot make progress even while it runs;
- * - {@link SUPERVISION_MAX_CONTEXT_FAILURES} occurrences in a row whose
- *   diagnostic names an oversized context prove it sooner, because the next
- *   turn re-sends the very context the refusal rejected;
- * - a stopped Member whose failure signature proves the bring-up nudge futile
- *   — its context no longer fits the route, either because its own context
- *   policy refuses every model request or because the provider reported a
- *   context-window or preflight-compression failure — skips the nudge and
- *   enters the chain on the spot via {@link onBlockedStop}.
+ *   prove it cannot make progress even while it runs. Failure counting is the
+ *   Host's whole progress judgment: the context itself is never policed, so a
+ *   context the route refuses is just one more failing turn, and the third one
+ *   in a row ends in the same reset.
  *
  * Once proven, the Host resets the Member's context itself — the same
  * fresh-context renewal the Human menu performs, privately noticed to the
@@ -55,8 +50,7 @@
  * @module @wowyuarm/dsh-agent-team/supervisor
  */
 
-import type { AgentTeamMemberId } from './types.ts'
-import { isContextCapacityFailureDiagnostic, isPressureRequestBlockDiagnostic } from './pressure-policy.ts'
+import type { AgentTeamCompletedWork, AgentTeamMemberId } from './types.ts'
 
 /** How often one supervision pass runs once the Host has restored its Members. */
 export const SUPERVISION_INTERVAL_MS = 10 * 60 * 1000
@@ -80,18 +74,6 @@ export const SUPERVISION_WINDOW_FAILURES = 3
 export const SUPERVISION_FAILURE_WINDOW_MS = 20 * 60 * 1000
 
 /**
- * Consecutive `agent/error` occurrences whose diagnostic says the context no
- * longer fits its route (a Team-side request block or a provider context-window
- * or preflight-compression failure) that end the bring-up lane: one of them may
- * still be cleared by a route change or a reduction the Member runs itself, so
- * the first keeps its gentle nudge, and the second — the same wall met again
- * with no clean turn in between — goes straight to the coercion chain's reset.
- * A member that keeps being nudged into an oversized context only re-pays for
- * the same failing request.
- */
-export const SUPERVISION_MAX_CONTEXT_FAILURES = 2
-
-/**
  * A Member whose Agent has been running with no durable Session event for this
  * long reads as hung ("stuck"): a healthy turn produces events continuously,
  * so half an hour of silence while nominally running is a wedge, not work.
@@ -108,7 +90,7 @@ export type MemberSupervisionState =
   | 'stopped'
 
 /** Why the policy gave up on one Member. */
-export type SupervisionTrigger = 'abnormal-stop' | 'consecutive-failures' | 'failure-rate' | 'context-oversize' | 'hung'
+export type SupervisionTrigger = 'abnormal-stop' | 'consecutive-failures' | 'failure-rate' | 'hung'
 
 export interface SupervisorOptions {
   /** Every enabled Member: the watch list. */
@@ -145,17 +127,11 @@ export interface SupervisorOptions {
   readonly maxConsecutiveFailures?: number
   readonly windowFailures?: number
   readonly failureWindowMs?: number
-  readonly maxContextFailures?: number
 }
 
 interface WatchedMember {
   restartAttempts: number
   consecutiveFailures: number
-  /**
-   * Consecutive failures whose diagnostic names an oversized context — a Team
-   * request block or a provider capacity refusal — since the last clean turn.
-   */
-  contextFailures: number
   /** Timestamps of recent `agent/error` occurrences, pruned to the rolling window. */
   failureTimes: number[]
 }
@@ -167,7 +143,6 @@ export class MemberSupervisor {
   private readonly maxConsecutiveFailures: number
   private readonly windowFailures: number
   private readonly failureWindowMs: number
-  private readonly maxContextFailures: number
   private timer: ReturnType<typeof setInterval> | undefined
   private passRunning = false
   /** Serializes the whole periodic tick (escalation advance plus bring-up pass). */
@@ -180,7 +155,6 @@ export class MemberSupervisor {
     this.maxConsecutiveFailures = options.maxConsecutiveFailures ?? SUPERVISION_MAX_CONSECUTIVE_FAILURES
     this.windowFailures = options.windowFailures ?? SUPERVISION_WINDOW_FAILURES
     this.failureWindowMs = options.failureWindowMs ?? SUPERVISION_FAILURE_WINDOW_MS
-    this.maxContextFailures = options.maxContextFailures ?? SUPERVISION_MAX_CONTEXT_FAILURES
   }
 
   /** Begin the periodic pass; called once the Host has restored every Member. */
@@ -209,11 +183,9 @@ export class MemberSupervisor {
    * over yet, and the pass leaves it to the operator exactly as
    * `recovery.ts` does.
    *
-   * `diagnostic` is the recorded failure text, which carries its own shorter
-   * route: {@link SUPERVISION_MAX_CONTEXT_FAILURES} occurrences in a row that
-   * name an oversized context escalate on the spot, because a bring-up nudge
-   * re-sends exactly the context the refusal rejected. A caller with no text to
-   * classify passes none and is judged on the failure counts alone.
+   * `diagnostic` is the recorded failure text, kept for future classification;
+   * a caller with no text to record passes none and is judged on the failure
+   * counts alone.
    */
   onError(memberId: AgentTeamMemberId, diagnostic = ''): void {
     if (this.disposed || !this.watched.has(memberId) && !this.options.candidates().includes(memberId)) return
@@ -222,19 +194,10 @@ export class MemberSupervisor {
     watched.failureTimes.push(now)
     watched.failureTimes = watched.failureTimes.filter(time => now - time <= this.failureWindowMs)
     watched.consecutiveFailures += 1
-    watched.contextFailures = isPressureRequestBlockDiagnostic(diagnostic) || isContextCapacityFailureDiagnostic(diagnostic)
-      ? watched.contextFailures + 1
-      : 0
     if (watched.consecutiveFailures >= this.maxConsecutiveFailures) {
       const attempts = watched.restartAttempts
       this.watched.delete(memberId)
       void this.replace(memberId, 'consecutive-failures', attempts)
-      return
-    }
-    if (watched.contextFailures >= this.maxContextFailures) {
-      const attempts = watched.restartAttempts
-      this.watched.delete(memberId)
-      void this.replace(memberId, 'context-oversize', attempts)
       return
     }
     if (watched.failureTimes.length < this.windowFailures) return
@@ -248,29 +211,6 @@ export class MemberSupervisor {
     const watched = this.watched.get(memberId)
     if (watched === undefined) return
     watched.consecutiveFailures = 0
-    watched.contextFailures = 0
-  }
-
-  /**
-   * One proven un-bring-up-able stop, reported by the Host when a stopped
-   * Member's failure signature proves a continuation nudge cannot heal it: the
-   * Member's context no longer fits its route, either because its own context
-   * policy is refusing every model request (a failed or refused hard-limit
-   * compaction, a spent forced-compaction budget, an unknown route capacity, a
-   * pressure notice the Member never acted on — see
-   * `isPressureRequestBlockDiagnostic`) or because the provider itself reported
-   * a context-window or preflight-compression failure no further turn can fix
-   * (see `isContextCapacityFailureDiagnostic`). The gentle bring-up is skipped
-   * and the coercion chain starts on the spot, exactly like a fully spent
-   * failure streak: the Host's private context reset first, the
-   * archive-and-replace handover only while the Member still reads abnormal
-   * afterwards.
-   */
-  onBlockedStop(memberId: AgentTeamMemberId): void {
-    if (this.disposed || !this.watched.has(memberId) && !this.options.candidates().includes(memberId)) return
-    const attempts = this.watched.get(memberId)?.restartAttempts ?? 0
-    this.watched.delete(memberId)
-    void this.replace(memberId, 'context-oversize', attempts)
   }
 
   /**
@@ -345,7 +285,7 @@ export class MemberSupervisor {
   private entryFor(memberId: AgentTeamMemberId): WatchedMember {
     const existing = this.watched.get(memberId)
     if (existing !== undefined) return existing
-    const created: WatchedMember = { restartAttempts: 0, consecutiveFailures: 0, contextFailures: 0, failureTimes: [] }
+    const created: WatchedMember = { restartAttempts: 0, consecutiveFailures: 0, failureTimes: [] }
     this.watched.set(memberId, created)
     return created
   }
@@ -403,41 +343,85 @@ export function nextReplacementHandle(base: string, takenHandles: Iterable<strin
 /** One released Claim summarized for the admin handover notice. */
 export interface SupervisionReleasedClaim {
   readonly direction: string
-  readonly taskRef?: string
+  readonly taskNumber: number
 }
 
 /**
- * The public handover notice a replacement Member posts in the failed Member's
- * Channel. It is authored by the replacement, so the Channel sees the new owner
- * asking for the work, and `@human` is the permanent admin alias that carries
- * the ask into the admin's Inbox.
+ * A best-effort plain-language recap of the retired Member's final Session,
+ * produced by the one-shot propose-only digest. It is not a Team fact: it is
+ * appended to the retirement notice only when the call resolved in time.
  */
-export function supervisionHandoffText(input: {
+export interface SupervisionSessionRecap {
+  readonly summary: string
+  readonly keyPoints: readonly string[]
+}
+
+/**
+ * The structured retirement notice posted into the affected business Channel
+ * when a Member is archived and replaced. It is a plain-text headed block — the
+ * Human admin's voice renders literally in the Client, so the body carries no
+ * Markdown — listing the retirement cause, the work the Member finished in
+ * service (from the ledger projection), the work left unclaimed again (the
+ * released Claims), and the succession line.
+ *
+ * `sessionRecap` is optional and best-effort: when the retired Member's final
+ * Session was recapable, its summary rides the notice as a `Final Session
+ * recap` block; when the call timed out, aborted, or failed, the notice is
+ * unchanged apart from the missing block.
+ *
+ * `addressedHandle` names who the reassignment ask mentions — the designated
+ * leader when the notice is delivered to them, `human` when it falls back to a
+ * Channel broadcast — so the same body reaches whoever is expected to act.
+ */
+export function supervisionRetirementNotice(input: {
   readonly failedHandle: string
   readonly replacementHandle: string
+  readonly addressedHandle: string
   readonly trigger: SupervisionTrigger
   readonly restartAttempts: number
   readonly maxRestartAttempts: number
   readonly maxConsecutiveFailures: number
   readonly maxWindowFailures: number
   readonly maxFailureWindowMs: number
+  readonly completedWork: AgentTeamCompletedWork
   readonly releasedClaims: readonly SupervisionReleasedClaim[]
+  readonly sessionRecap?: SupervisionSessionRecap
 }): string {
   const cause = input.trigger === 'abnormal-stop'
     ? `stopped abnormally and stayed stopped after ${input.restartAttempts}/${input.maxRestartAttempts} bring-up attempts`
     : input.trigger === 'failure-rate'
       ? `failed ${input.maxWindowFailures} times within ${Math.round(input.maxFailureWindowMs / 60000)} minutes`
-      : input.trigger === 'context-oversize'
-        ? 'could not fit its work into its context any more — every model request was refused, by its own context policy or by the provider itself'
-        : `failed ${input.maxConsecutiveFailures} turns in a row without finishing any of them`
-  const claims = input.releasedClaims.length === 0
+      : `failed ${input.maxConsecutiveFailures} turns in a row without finishing any of them`
+  const finished = input.completedWork.finishedDirections.length === 0
+    ? '- none recorded'
+    : input.completedWork.finishedDirections.map(direction => `- ${direction.direction} (task #${direction.taskNumber})`).join('\n')
+  const released = input.releasedClaims.length === 0
     ? '- none (its Claims were already released)'
-    : input.releasedClaims.map(claim => `- ${claim.direction}${claim.taskRef === undefined ? '' : ` (${claim.taskRef})`}`).join('\n')
+    : input.releasedClaims.map(claim => `- ${claim.direction} (task #${claim.taskNumber})`).join('\n')
+  const recap = input.sessionRecap === undefined
+    ? []
+    : [
+        '',
+        'Final Session recap:',
+        input.sessionRecap.summary,
+        ...input.sessionRecap.keyPoints.map(point => `- ${point}`),
+      ]
   return [
-    `@human Supervision handover: \`${input.failedHandle}\` ${cause} and was archived.`,
-    `I am \`${input.replacementHandle}\`, \`${input.failedHandle}\`'s same-role replacement — same preset, same pinned settings, inherited private memory, and the same Channel reach — and I am now on the team.`,
-    'Work it left behind is unclaimed again:',
-    claims,
-    `@human please reassign the items above to \`${input.replacementHandle}\`.`,
+    `Supervision retirement — ${input.failedHandle}`,
+    '',
+    `Cause: ${input.failedHandle} ${cause} and was archived.`,
+    '',
+    'Completed work in service:',
+    'Finished directions:',
+    finished,
+    `Completed tasks: ${input.completedWork.completedTasks.length}`,
+    `Participated Threads: ${input.completedWork.participatedThreadCount}`,
+    ...recap,
+    '',
+    'Released work now unclaimed:',
+    released,
+    `@${input.addressedHandle} please reassign the items above to ${input.replacementHandle}.`,
+    '',
+    `Succession: ${input.replacementHandle} is ${input.failedHandle}'s same-role replacement: same preset, same pinned settings, inherited private memory, and the same Channel reach.`,
   ].join('\n')
 }

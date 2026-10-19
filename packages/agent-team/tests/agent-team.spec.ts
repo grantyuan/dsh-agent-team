@@ -599,6 +599,29 @@ describe('AgentTeam durable Thread Attention ledger', () => {
     expect(() => replayLedger(revived).validate()).not.toThrow()
   })
 
+  // A supervised succession appends a `team/member-added` record whose Member
+  // names the one it succeeded. That record has to survive the durable read
+  // boundary on the next boot, or the whole `agent_team` Domain open rejects
+  // and the Host refuses to start.
+  it('opens a persisted succession Member that names its predecessor in a fresh Host', async () => {
+    const first = await harness()
+    const ledger = replayLedger(first)
+    await ledger.addMember({
+      requestId: requestId('succession'), actor: agentTeamHumanActor(), workspaceId: alpha,
+      handle: 'builder-2', description: 'Successor', presetId: 'team-member', channelRefs: [],
+      member: {
+        memberId: 'member:successor' as never, sessionId: SessionId('session:successor'),
+        predecessorMemberId: 'member:predecessor' as never, workspaceId: alpha, handle: 'builder-2',
+        description: 'Successor', presetId: 'team-member', privateMemoryPath: '/tmp/successor', state: 'enabled',
+      },
+    })
+    const records = [...first.facility.get('agent_team')!.table('operations').entries()] as Array<[string, unknown]>
+    const revived = await harness(storedPool(records))
+    expect(revived.ctx.agentTeam.status()).toMatchObject({ agentMemberCount: 1 })
+    expect(revived.ctx.agentTeam.members()[0]!.member.predecessorMemberId).toBe('member:predecessor')
+    expect(() => replayLedger(revived).validate()).not.toThrow()
+  })
+
   it('starts Agent Attention and direct Inbox delivery after a top-level mention without confirmation', async () => {
     const test = await harness()
     const channel = await test.ctx.agentTeam.createChannel({ requestId: requestId('channel'), workspaceId: alpha, name: 'engineering', description: 'Engineering work' })
@@ -742,6 +765,72 @@ describe('AgentTeam durable Thread Attention ledger', () => {
     const reviewRow = [...reviewInbox.items, ...reviewInbox.recent].find(item => item.thread.threadRef === started.task.threadRef)
     expect(reviewRow?.task?.status).toBe('in_review')
     expect(reviewRow).toMatchObject({ needsHumanDecision: true })
+    ledger.validate()
+  })
+
+  it('queues every Thread still waiting on the Human, oldest wait first, with the ask in the words its author used', async () => {
+    const test = await harness()
+    const channel = await test.ctx.agentTeam.createChannel({ requestId: requestId('channel'), workspaceId: alpha, name: 'engineering', description: 'Engineering work' })
+    const ledger = replayLedger(test)
+    const { member, actor } = await addLedgerMember(ledger, channel.channel.channelRef, 'member:builder')
+    // One Thread the Agent asks a question on, and one whose finished work
+    // awaits acceptance: the queue serves both reasons from a single read.
+    const asked = withTask(committed((await ledger.sendMessage({ asTask: true, requestId: requestId('asked'), workspaceId: alpha, channelRef: channel.channel.channelRef, body: 'Rollout plan', actor: agentTeamHumanActor() })).value))
+    const askReply = committed((await ledger.reply({ requestId: requestId('ask'), workspaceId: alpha, taskRef: asked.task.taskRef, body: 'Approve A or B?', baseRevision: asked.thread.revision, recipients: [AGENT_TEAM_HUMAN_MEMBER_ID], actor })).value)
+    const reviewing = withTask(committed((await ledger.sendMessage({ asTask: true, requestId: requestId('reviewing'), workspaceId: alpha, channelRef: channel.channel.channelRef, body: 'Docs pass', actor: agentTeamHumanActor() })).value))
+    const claim = committed((await ledger.changeClaim({ requestId: requestId('claim'), workspaceId: alpha, taskRef: reviewing.task.taskRef, action: 'claim', direction: 'Write docs', baseRevision: (await ledger.readThread({ requestId: requestId('claim-read'), workspaceId: alpha, taskRef: reviewing.task.taskRef, actor })).value.thread.revision, actor })).value)
+    const report = committed((await ledger.reply({ requestId: requestId('report'), workspaceId: alpha, taskRef: reviewing.task.taskRef, body: 'Docs drafted', baseRevision: (await ledger.readThread({ requestId: requestId('report-read'), workspaceId: alpha, taskRef: reviewing.task.taskRef, actor })).value.thread.revision, actor })).value)
+    committed((await ledger.changeClaim({ requestId: requestId('done'), workspaceId: alpha, taskRef: reviewing.task.taskRef, action: 'done', claimRef: claim.claim.claimRef, baseRevision: (await ledger.readThread({ requestId: requestId('done-read'), workspaceId: alpha, taskRef: reviewing.task.taskRef, actor })).value.thread.revision, actor })).value)
+    // A Thread the Human spoke on last waits on nobody, and an Agent line that
+    // asks for no call decides nothing.
+    const settled = withTask(committed((await ledger.sendMessage({ asTask: true, requestId: requestId('settled'), workspaceId: alpha, channelRef: channel.channel.channelRef, body: 'Release notes', actor: agentTeamHumanActor() })).value))
+    committed((await ledger.reply({ requestId: requestId('settled-report'), workspaceId: alpha, taskRef: settled.task.taskRef, body: 'Notes published', baseRevision: settled.thread.revision, recipients: [AGENT_TEAM_HUMAN_MEMBER_ID], actor })).value)
+    committed((await ledger.reply({ requestId: requestId('settled-answer'), workspaceId: alpha, taskRef: settled.task.taskRef, body: 'Thanks', baseRevision: (await ledger.readThread({ requestId: requestId('settled-read'), workspaceId: alpha, taskRef: settled.task.taskRef, actor: agentTeamHumanActor() })).value.thread.revision, actor: agentTeamHumanActor() })).value)
+
+    const queue = ledger.pendingDecisions(agentTeamHumanActor(), { workspaceId: alpha })
+    expect(queue.humanMemberId).toBe(AGENT_TEAM_HUMAN_MEMBER_ID)
+    // Oldest wait first, and the settled Thread is absent: the queue is exactly
+    // the Threads that still owe the reader an answer.
+    expect(queue.items.map(item => item.thread.threadRef)).toEqual([asked.task.threadRef, reviewing.task.threadRef])
+    expect(queue.items[0]).toMatchObject({
+      workspaceId: alpha, channelRef: channel.channel.channelRef, channelName: 'engineering', taskNumber: 1,
+      reason: 'decision_request', askText: 'Approve A or B?', askOccurredAt: askReply.message.occurredAt,
+      askActor: { memberId: member.memberId, name: 'builder' },
+      thread: { threadRef: asked.task.threadRef, revision: askReply.thread.revision },
+      task: { taskRef: asked.task.taskRef, status: 'todo' },
+      // The row carries its own clocks, so a reader can order the queue by the
+      // newest message without a second read: the anchor's instant, and the
+      // newest reply after it.
+      createdOccurredAt: asked.message.occurredAt, latestReplyOccurredAt: askReply.message.occurredAt,
+      // Unread is derived from Attention, so the row reports both: the count
+      // the 「已读」 mark clears and the Attention the toggle drives.
+      unreadCount: 1,
+    })
+    expect(queue.items[0]!.attention).toMatchObject({ memberId: AGENT_TEAM_HUMAN_MEMBER_ID, threadRef: asked.task.threadRef })
+    // The awaiting-acceptance row states the Member's latest word rather than
+    // its opening line, and names the reason separately from the ask.
+    expect(queue.items[1]).toMatchObject({
+      channelName: 'engineering', taskNumber: 2,
+      reason: 'task_review', askText: 'Docs drafted', askOccurredAt: report.message.occurredAt,
+      askActor: { memberId: member.memberId, name: 'builder' },
+      thread: { threadRef: reviewing.task.threadRef },
+      task: { taskRef: reviewing.task.taskRef, status: 'in_review' },
+      createdOccurredAt: reviewing.message.occurredAt, latestReplyOccurredAt: report.message.occurredAt,
+    })
+    expect(queue.items[1]!.unreadCount).toBeGreaterThan(0)
+    // A Thread the reader does not follow reads no unread at all: the row stays
+    // (the ask still waits) and only the two personal facts change.
+    await ledger.changeAttention({ requestId: requestId('queue-unfollow'), workspaceId: alpha, taskRef: asked.task.taskRef,
+      action: 'unfollow', actor: agentTeamHumanActor() })
+    const unfollowedQueue = ledger.pendingDecisions(agentTeamHumanActor(), { workspaceId: alpha })
+    expect(unfollowedQueue.items[0]).toMatchObject({ unreadCount: 0, latestReplyOccurredAt: askReply.message.occurredAt })
+    expect(unfollowedQueue.items[0]!.attention).toBeUndefined()
+    // Reading and answering removes the row, and only that row.
+    const humanRead = (await ledger.readThread({ requestId: requestId('queue-read'), workspaceId: alpha, taskRef: asked.task.taskRef, actor: agentTeamHumanActor() })).value
+    committed((await ledger.reply({ requestId: requestId('queue-answer'), workspaceId: alpha, taskRef: asked.task.taskRef, body: 'Go with A', baseRevision: humanRead.thread.revision, actor: agentTeamHumanActor() })).value)
+    expect(ledger.pendingDecisions(agentTeamHumanActor(), { workspaceId: alpha }).items.map(item => item.thread.threadRef)).toEqual([reviewing.task.threadRef])
+    // The queue is a pure read over the same facts a cold replay rebuilds.
+    expect(replayLedger(test).pendingDecisions(agentTeamHumanActor(), { workspaceId: alpha }).items.map(item => item.thread.threadRef)).toEqual([reviewing.task.threadRef])
     ledger.validate()
   })
 
@@ -2922,6 +3011,54 @@ describe('AgentTeam Task list and sub-task ledger', () => {
     await ledger.archiveChannel({ requestId: requestId('ch-arch'), workspaceId: alpha, channelRef, actor: agentTeamHumanActor() })
     expect(ledger.tasksForWorkspace({ workspaceId: alpha }).tasks).toEqual([])
     expect(ledger.incompleteTasksForWatch()).toEqual([])
+    replayLedger(test).validate()
+  })
+
+  it('projects a Member finished directions and completed tasks, never its open or untouched work', async () => {
+    const test = await harness()
+    const channelRef = await engineeringChannel(test)
+    const ledger = replayLedger(test)
+    const { actor } = await addLedgerMember(ledger, channelRef)
+    const accepted = await startTask(ledger, channelRef, actor, 'accepted', 'Ship the parser')
+    const closed = await startTask(ledger, channelRef, actor, 'closed', 'Retire the old flag')
+    const active = await startTask(ledger, channelRef, actor, 'active', 'Still in flight')
+    await startTask(ledger, channelRef, actor, 'untouched', 'Never claimed')
+    // Before any Claim the Member has authored every Thread but finished none:
+    // participation counts what it touched, the finished and completed slices
+    // stay empty.
+    expect(ledger.completedWorkForMember(actor.memberId)).toMatchObject({
+      finishedDirections: [], completedTasks: [], participatedThreadCount: 4,
+    })
+
+    const finishClaim = async (task: Awaited<ReturnType<typeof startTask>>, direction: string) => {
+      const claimed = committed((await ledger.changeClaim({ requestId: requestId(`claim:${direction}`), workspaceId: alpha,
+        taskRef: task.task.taskRef, action: 'claim', direction, baseRevision: task.thread.revision, actor })).value)
+      committed((await ledger.changeClaim({ requestId: requestId(`done:${direction}`), workspaceId: alpha, taskRef: task.task.taskRef,
+        action: 'done', claimRef: claimed.claim.claimRef, baseRevision: claimed.thread.revision, actor })).value)
+    }
+    await finishClaim(accepted, 'Implement parsing')
+    await finishClaim(closed, 'Retire the flag')
+    // The third Task keeps only an active Claim and the fourth stayed
+    // untouched, so neither contributes finished or completed work.
+    await ledger.changeClaim({ requestId: requestId('claim-active'), workspaceId: alpha, taskRef: active.task.taskRef,
+      action: 'claim', direction: 'Keep probing', baseRevision: active.thread.revision, actor })
+    // A done Claim is finished work wherever its Task landed; the Human then
+    // resolves the first as accepted and the second as closed.
+    await ledger.changeTasks({ requestId: requestId('resolve-accepted'), workspaceId: alpha,
+      taskRefs: [accepted.task.taskRef], action: 'accept', actor: agentTeamHumanActor() })
+    await ledger.changeTasks({ requestId: requestId('resolve-closed'), workspaceId: alpha,
+      taskRefs: [closed.task.taskRef], action: 'close', actor: agentTeamHumanActor() })
+
+    const work = ledger.completedWorkForMember(actor.memberId)
+    expect(work.finishedDirections.map(row => [row.taskNumber, row.direction, row.subject])).toEqual([
+      [1, 'Implement parsing', 'Ship the parser'],
+      [2, 'Retire the flag', 'Retire the old flag'],
+    ])
+    expect(work.completedTasks.map(row => [row.taskNumber, row.resolution, row.subject])).toEqual([
+      [1, 'accepted', 'Ship the parser'],
+      [2, 'closed', 'Retire the old flag'],
+    ])
+    expect(work.participatedThreadCount).toBe(4)
     replayLedger(test).validate()
   })
 

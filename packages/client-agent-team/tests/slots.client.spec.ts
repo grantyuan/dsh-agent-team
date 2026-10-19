@@ -1,5 +1,6 @@
 import { Context } from '@deepseek-ai/cordis'
 import { describe, expect, it, vi } from 'vitest'
+import { RemoteStream } from '@deepseek-ai/dsh-api-gateway/client'
 import { LocaleRuntime } from '@deepseek-ai/dsh-client-locale/client'
 import { SlotRegistry } from '@deepseek-ai/dsh-client-ui-renderer/client'
 import { apply, inject } from '../src/client/index.ts'
@@ -20,8 +21,25 @@ async function bench(persisted: string | null = null) {
   const ctx = new Context()
   await ctx.plugin(SlotRegistry).await()
   ctx.provide('locale', new LocaleRuntime(ctx))
-  ctx.provide('remote', { $mount: async () => async () => {} } as never)
-  ctx.provide('remote.agentTeam', {})
+  // The decision queue's arrival cue stands outside Team mode: it opens its own
+  // change stream and reads the queue as soon as the Client mounts, so the
+  // bench supplies the two faces it reaches through `remote`.
+  const agentTeamFace = {
+    changes: vi.fn(async function* () { /* the bench never renders, so nothing consumes a change */ }),
+    pendingDecisions: vi.fn(async () => ({ ok: true, value: { humanMemberId: 'member:human', items: [] } })),
+  }
+  ctx.provide('remote', {
+    $mount: async () => async () => {},
+    $stream: (options: ConstructorParameters<typeof RemoteStream<{ version: number }>>[1]) => new RemoteStream<{ version: number }>({
+      generation: { getSnapshot: () => ({}) as never, subscribe: () => () => {} },
+    }, options),
+    agentTeam: agentTeamFace,
+  } as never)
+  // The real Remote service registers each namespace twice — as a property of
+  // `ctx.remote` and as the dotted service `remote.<name>` — because a plugin
+  // reaches one or the other depending on whether it injects the namespace
+  // (`ctx.inject(['remote.agentTeam'])`) or reads the mounted object.
+  ctx.provide('remote.agentTeam', agentTeamFace)
   // rc.1: the client declares the model-catalog sub-namespace; the bench
   // supplies it so the takeover fiber is not left pending on inject.
   ctx.provide('remote.session', { modelCatalog: vi.fn(async () => ({ ok: true, value: { groups: [], failures: [] } })) })

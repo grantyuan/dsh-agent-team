@@ -1,0 +1,162 @@
+/* The Human decision queue: one card per waiting decision, laid out as
+ * Workspace → Channel groups. The shared conversation seat carries the header
+ * band, reading column, gutters, and scrollbar, and the group headings
+ * themselves; this sheet styles only the cards and their list. Every color
+ * rides the shipped DSW aliases so the page follows the active theme. */
+.groups {
+  display: flex;
+  flex-direction: column;
+}
+.list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+/* A card rather than a one-line row: the ask is the page's subject, so it gets
+   a line of its own at reading size instead of being clamped to an ellipsis
+   behind a pointer into the Thread. The hairline is the same one every quiet
+   chip on the neighbouring pages uses, so the queue still reads as one family
+   with the Inbox and Tasks lists it stands beside. */
+.row {
+  border: 1px solid var(--dsw-alias-border-l2);
+  border-radius: var(--dsw-radius-lg, 8px);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px 12px;
+}
+
+/* Who is waiting leads, then the provenance, the reason, and the instant
+   closing the line — the same scan order the Inbox row keeps, so a reader who
+   knows one page reads the other without learning a second grammar. */
+.rowHead {
+  align-items: baseline;
+  display: flex;
+  gap: 2px 8px;
+  min-width: 0;
+}
+/* The face is presentational and takes only the width it draws, so the text
+   column follows it instead of reserving room for the widest stack. */
+.rowActor {
+  align-self: center;
+  display: flex;
+  flex: none;
+}
+/* The provenance line now carries only the Task marker: which Workspace and
+   which Channel this decision came from is stated by the card's own group
+   headings, so repeating them here would spend the card's most readable
+   position on something the reader already read one line above. */
+.rowCrumb {
+  flex: 1 1 auto;
+  font-size: 13px;
+  line-height: 20px;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* The Task marker is the hairline chip the Inbox row already draws, so the two
+   lists speak the same grammar for the same fact. */
+.rowTask {
+  border: 1px solid var(--dsw-alias-border-l2);
+  border-radius: var(--dsw-radius-sm, 6px);
+  color: var(--dsw-alias-label-secondary);
+  flex: none;
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 15px;
+  margin-left: 3px;
+  padding: 0 5px;
+  white-space: nowrap;
+}
+/* The reason is the one chip on the card that asks for action, carrying the
+   business hue inside the same hairline shape — one chip grammar per card. */
+.rowReason {
+  border: 1px solid var(--dsw-alias-border-l2);
+  border-radius: var(--dsw-radius-sm, 6px);
+  color: var(--dsw-alias-state-business-primary);
+  flex: none;
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 15px;
+  padding: 0 5px;
+  white-space: nowrap;
+}
+/* When the ask arrived, in the quiet tabular ink every other surface dates a
+   fact with; the element still carries the exact instant for the reader who
+   needs it. */
+.rowTime {
+  color: var(--dsw-alias-label-tertiary);
+  flex: none;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  line-height: 18px;
+  white-space: nowrap;
+}
+/* The ask speaks in its author's words at reading size: it is what the reader
+   is being asked, so it is the card's subject rather than a preview of one.
+   Newlines are kept — the Member wrote them — and a long unbroken run wraps
+   instead of pushing the card past its own edge. */
+.rowAsk {
+  color: var(--dsw-alias-label-primary);
+  font-size: 14px;
+  line-height: 22px;
+  margin: 0;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+.rowActions {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+/* Answering the Thread and looking after it are two different acts, so the
+   personal marks — 「已读」 and 「关注/取消关注」 — take the row's right edge while
+   the answers stay on the reading edge the card opens on. Defining from the end
+   is what keeps the split without a spacer element in the markup. */
+.rowPersonal {
+  align-items: center;
+  display: flex;
+  gap: 8px;
+  margin-left: auto;
+}
+
+/* The inline composer: the smallest form that can answer a Thread — the same
+   field every other Team composer uses, and nothing else, because everything
+   else about the answer is already stated by the card above it. */
+.composer {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.composerInput {
+  background: var(--dsw-alias-bg-l1);
+  border: 1px solid var(--dsw-alias-border-l2);
+  border-radius: var(--dsw-radius-md, 8px);
+  color: var(--dsw-alias-label-primary);
+  font: inherit;
+  font-size: 13px;
+  line-height: 20px;
+  padding: 8px;
+  resize: vertical;
+  width: 100%;
+}
+.composerInput:focus-visible {
+  outline: var(--dsw-focus-ring-width, 2px) solid var(--dsw-focus-ring-color, var(--dsw-alias-state-business-primary));
+  outline-offset: -1px;
+}
+.composerActions {
+  display: flex;
+  justify-content: flex-end;
+}
+/* A refusal the reader has to act on — the Host fenced the write, or the
+   transport failed — belongs to the card that raised it, under the answer it
+   refused, rather than on a page-level line far from what it is about. */
+.rowError {
+  color: var(--dsw-alias-state-error-primary);
+  font-size: 12px;
+  line-height: 18px;
+  margin: 0;
+}

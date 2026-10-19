@@ -83,12 +83,15 @@ function forgetDigest(key: string): void {
 
 /**
  * The plain-language recap above the timeline: what the Thread asked, what
- * has happened, and — when it waits on the Human — the choices on offer. The
- * reader answers a decision without reading the whole timeline: pick the
- * Thread's own options (one when the digest read them as mutually exclusive,
- * several when it read them as combinable), or write an opinion; either way
- * the answer goes out through the normal durable reply path, so it lands in
- * the ledger as an ordinary Message like every other Human word.
+ * has happened, and — when it waits on the Human — the choices on offer.
+ * Reading a Thread never spends a model call on it: the seat opens with a
+ * stored recap for the current state if there is one, and otherwise waits for
+ * the reader to ask. Once it is there, the reader answers a decision without
+ * reading the whole timeline: pick the Thread's own options (one when the
+ * digest read them as mutually exclusive, several when it read them as
+ * combinable), or write an opinion; either way the answer goes out through the
+ * normal durable reply path, so it lands in the ledger as an ordinary Message
+ * like every other Human word.
  */
 export function TeamThreadDigest({ workspaceId, threadRef, taskRef, revision, summarizeThread, reply, disabled, t }: TeamThreadDigestProps) {
   // The recap is read once per opening at the revision the reader arrived at:
@@ -137,8 +140,10 @@ export function TeamThreadDigest({ workspaceId, threadRef, taskRef, revision, su
     }
   }, [cacheKey, summarizeThread, threadRef, workspaceId])
 
-  // One call per opening: the pinned key answers from memory when the reader
-  // comes back to the same Thread state, and nothing here re-reads mid-view.
+  // Opening a Thread costs nothing: a digest already stored for this pinned
+  // state is shown, and an unread Thread stays unread until the reader asks
+  // for its recap. Generating a recap is a model call, so it is the reader's
+  // to start rather than something every Thread opening spends on spec.
   useEffect(() => {
     mountedRef.current = true
     ticketRef.current += 1
@@ -147,12 +152,11 @@ export function TeamThreadDigest({ workspaceId, threadRef, taskRef, revision, su
     setStatus(undefined)
     setChosen([])
     setOpinion('')
-    if (loadDigest(cacheKey) === undefined) void generate()
     return () => {
       mountedRef.current = false
       abortRef.current?.abort()
     }
-  }, [cacheKey, generate])
+  }, [cacheKey])
 
   const options = digest?.options ?? []
   const multiple = digest?.optionSelection === 'multiple'
@@ -209,7 +213,17 @@ export function TeamThreadDigest({ workspaceId, threadRef, taskRef, revision, su
     </section>
   }
   if (digest === undefined) {
-    if (error === undefined) return <div />
+    // The recap is a model call, so the seat waits for the reader to ask for
+    // it. The prompt states what the button does in the same words the stored
+    // recap's heading uses, so the reader recognises what they asked for when
+    // it arrives.
+    if (error === undefined) return <section className={digestCss.digestSection} aria-label={t('digestTitle')} data-team-digest>
+      <h2>{t('digestTitle')}</h2>
+      <p className={digestCss.digestHint}>{t('digestIdleHint')}</p>
+      <div className={digestCss.digestFooter}>
+        <Button size="sm" variant="outline" disabled={disabled} onClick={() => { void generate() }}>{t('digestGenerate')}</Button>
+      </div>
+    </section>
     return <section className={digestCss.digestSection} aria-label={t('digestTitle')}>
       <div className={digestCss.digestError} role="alert"><span>{t('digestFailed')}</span><Button size="sm" variant="outline" onClick={() => { void generate() }}>{t('retry')}</Button></div>
     </section>

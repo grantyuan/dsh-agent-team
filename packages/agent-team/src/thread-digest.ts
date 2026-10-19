@@ -29,6 +29,9 @@ export const DIGEST_MESSAGE_CAP = 1200
 /** How many Messages the digest call reads at most, oldest first. */
 export const DIGEST_MESSAGE_LIMIT = 60
 
+/** How many final-Session transcript entries the retirement recap reads at most. */
+export const DIGEST_RETIREMENT_ENTRY_LIMIT = 20
+
 /** Caps the reply parser enforces on each digest field. */
 export const DIGEST_SUMMARY_CAP = 600
 export const DIGEST_KEY_POINT_LIMIT = 6
@@ -83,11 +86,16 @@ export function buildDigestMessages(input: ThreadDigestInput): { readonly system
     'Answer with EXACTLY one JSON object and nothing else — no prose, no code fences.',
     'Shape: {"summary": string, "keyPoints": string[], "needsHumanDecision": boolean,',
     '"decisionQuestion": string, "options": string[], "optionSelection": "single"|"multiple"}.',
+    '- Write for a person who never saw this system: plain everyday language, complete words,',
+    '  names people use for each other. Never expose internal identifiers, refs, raw handles,',
+    '  tool or protocol names, or status codes — say what something means, not what the ledger',
+    '  calls it (e.g. "the rework proposal" rather than "Task task:3f9a in in_review").',
     '- summary: one plain-language paragraph (max 600 chars) a busy lead can act on without reading the Thread.',
     '- keyPoints: up to 6 lines, oldest first, each one turn that matters (max 200 chars each).',
     '- needsHumanDecision: true only when the Thread is waiting on the human: someone asked the human',
     '  to choose or approve and the human has not answered since, or a Task awaits acceptance.',
-    '- decisionQuestion: what exactly the human must decide. Only when needsHumanDecision is true.',
+    '- decisionQuestion: what exactly the human must decide, phrased so it reads as a person asking,',
+    '  not as a system prompt. Only when needsHumanDecision is true.',
     '- options: the concrete alternatives the Messages actually propose, max 4 (max 200 chars each).',
     '  Never invent options the Thread never offered; omit the field when there is no choice to pick.',
     '- optionSelection: read the semantics of the ask — "single" when the options are mutually exclusive',

@@ -1,3 +1,4 @@
+import type { WorkspaceId } from '@deepseek-ai/dsh-api-workspace-controller/client'
 import type { AgentTeamActivity, AgentTeamClaim, AgentTeamClientMemberStatus, AgentTeamMemberDiagnosticClass, AgentTeamMemberId, AgentTeamTask, AgentTeamTaskRef, AgentTeamThreadRef } from '@wowyuarm/dsh-agent-team/types'
 import { hasAllMarker, resolveBodyMentions, scanBodyHandles } from '@wowyuarm/dsh-agent-team/mentions'
 import type { TeamKey } from './locales.ts'
@@ -270,6 +271,65 @@ export function mentionNamesOf(
 /** Accessible label for one "who is on this work" stack: its owners' handles, comma-separated. */
 export function claimersLabel(owners: ReadonlyArray<{ readonly name: string }>, t: TeamConversationProps['t']): string {
   return t('claimers', { names: owners.map(owner => `@${owner.name}`).join(', ') })
+}
+
+/** One Channel inside one Workspace's slice of a Team list: its rows, in the caller's own order. */
+export interface TeamThreadChannelGroup<Row> {
+  readonly channelRef: string
+  readonly channelName: string
+  readonly rows: readonly Row[]
+}
+
+/** One Workspace's slice of a Team list, split by the Channel each row belongs to. */
+export interface TeamThreadWorkspaceGroup<Row> {
+  readonly workspaceId: WorkspaceId
+  readonly workspaceTitle: string
+  readonly channels: readonly TeamThreadChannelGroup<Row>[]
+}
+
+/**
+ * Partition one already-ordered Team list into Workspace → Channel groups: the
+ * shape every cross-Workspace Team list page (Inbox, decisions) now speaks, so
+ * 「which Workspace, which Channel」 is answered by a heading instead of being
+ * repeated down every row.
+ *
+ * Group order is fixed and independent of the reader's sort key, because a
+ * grouping whose members move between renderings is not a grouping. Workspaces
+ * keep the visible roster's own order — the order the Workspace switcher shows
+ * — with any Workspace the roster no longer names trailing by name; Channels
+ * inside one Workspace run by name. Only the rows *inside* a Channel group keep
+ * the caller's order, which is what lets one sort key re-lay a group without
+ * disturbing where the group sits.
+ *
+ * Rows are placed once and grouped in a single pass, so the result preserves
+ * the caller's own sequence inside every group.
+ */
+export function groupThreadRows<Row>(
+  rows: readonly Row[],
+  keysOf: (row: Row) => { readonly workspaceId: WorkspaceId; readonly workspaceTitle: string; readonly channelRef: string; readonly channelName: string },
+  workspaceOrder: readonly WorkspaceId[],
+): readonly TeamThreadWorkspaceGroup<Row>[] {
+  const workspaces = new Map<string, { workspaceId: WorkspaceId; workspaceTitle: string; channels: Map<string, { channelRef: string; channelName: string; rows: Row[] }> }>()
+  for (const row of rows) {
+    const keys = keysOf(row)
+    const workspace = workspaces.get(keys.workspaceId) ?? { workspaceId: keys.workspaceId, workspaceTitle: keys.workspaceTitle, channels: new Map() }
+    workspaces.set(keys.workspaceId, workspace)
+    const channel = workspace.channels.get(keys.channelRef) ?? { channelRef: keys.channelRef, channelName: keys.channelName, rows: [] }
+    workspace.channels.set(keys.channelRef, channel)
+    channel.rows.push(row)
+  }
+  const rank = new Map(workspaceOrder.map((workspaceId, index) => [workspaceId as string, index]))
+  return Object.freeze([...workspaces.values()]
+    .sort((left, right) => (rank.get(left.workspaceId) ?? Number.MAX_SAFE_INTEGER) - (rank.get(right.workspaceId) ?? Number.MAX_SAFE_INTEGER)
+      || left.workspaceTitle.localeCompare(right.workspaceTitle)
+      || left.workspaceId.localeCompare(right.workspaceId))
+    .map(workspace => Object.freeze({
+      workspaceId: workspace.workspaceId,
+      workspaceTitle: workspace.workspaceTitle,
+      channels: Object.freeze([...workspace.channels.values()]
+        .sort((left, right) => left.channelName.localeCompare(right.channelName) || left.channelRef.localeCompare(right.channelRef))
+        .map(channel => Object.freeze({ channelRef: channel.channelRef, channelName: channel.channelName, rows: Object.freeze(channel.rows) }))),
+    })))
 }
 
 const MARKDOWN_BLOCK_CONSTRUCT = /(^|\n)[ \t]{0,3}(?:#{1,6}[ \t]|>[ \t]|[-*+][ \t]|\d+[.)][ \t])|^[ \t]*\|.+\|/m

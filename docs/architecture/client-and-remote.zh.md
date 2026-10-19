@@ -67,7 +67,7 @@ UI work 的边界如下：
 
   解析出的提案——建议移除的段落名、现有目录子集内的技能白名单、自定义角色段落草稿——只回填表单：Human 审阅、编辑后经同一次合并保存提交，失败的调用在对话框内渲染错误，绝不阻塞手动编辑。创建表单不提供策划入口，因为其输入需要暂存表单不具备的实时成员范围。策划输入在设计上可被注入——段落文本与策划要求按原文进入提示词，只做截断不做清洗——因此防护在于 propose-only 解析、对同一实时快照的重新校验，以及每次提交本就要求的人工审阅。
 
-  Thread 页把同样的 propose-only 形态放宽到另一类调用：`summarizeThread` 经 ledger 读取有界的 Thread history，经由同一 `ctx.llm.stream` 接缝、按团队自身配置的路由构造一次调用——可取消，硬性限时六十秒，结果报告 `modelUsed` 与所读取的 revision——返回通俗速览：一段 summary、若干 keyPoints，以及当 Thread 在等 Human 时，Host 判定出的 decisionQuestion 与 Messages 里真实出现过的 options。
+  Thread 页把同样的 propose-only 形态放宽到另一类调用：`summarizeThread` 经 ledger 读取有界的 Thread history，经由同一 `ctx.llm.stream` 接缝、按团队自身配置的路由构造一次调用——可取消，硬性限时六十秒，结果报告 `modelUsed` 与所读取的 revision——返回通俗速览：一段 summary、若干 keyPoints，以及当 Thread 在等 Human 时，Host 判定出的 decisionQuestion 与 Messages 里真实出现过的 options。这次调用是读者发起的、永不是页面发起的：打开 Thread 不花任何代价，买到速览的是席位自己那个「生成速览」按钮。
 
   该路由是纯读取侧的团队偏好，绝不写任何 Member fact：本 Workspace 内已启用的指定 leader 的钉选模型优先（leader 未钉选即等于持有 Host 默认，就按 Host 默认跑）；没有指定 leader 时，取第一个钉选了模型的启用成员来解释；全员都没钉选才落回 Host 默认路由。这个请求按构造与装配隔离：接缝只收到速览指令与有界 transcript，不带 tools、skills、MCP、memory 或成员身份。
 
@@ -75,7 +75,15 @@ UI work 的边界如下：
 
   速览是留在浏览器里的呈现记忆，不是 Team fact：`localStorage` 按 Thread revision 每条存一份，刷新后同一 Thread 状态直接由存储作答、不再付第二次模型调用，只有 revision 真的前进了才强制重读；「重新生成」清掉该 Thread 的存储条目再问一次。
 
-  Human Client 消费 Host 的 Inbox 投影（「收件箱 / Inbox」队列：合并各 Workspace 的徽标与页，覆盖读者的整片未读——mention 只在其中计数，绝不是准入条件——外加该读者写过 Message 的「最近活跃」段（回复过的 Thread 无论是否 follow 都算他的；按最新活跃降序，Host 侧每个 Workspace 上限 10，合并到页面上最多 5 条，永不进入 agent 的 Inbox）），但绝不维护并行 Inbox authority；打开页不确认任何内容。 Thread reads 使用 Host projections（`readThread`、`threadHistory`）和 Host mutations（replies、promotion、Task actions）。 当前 Thread UI 不提供 Attention controls 或 observations；其 Host Remote methods 留给后续自有 UI。 Browser 会持久化 Team navigation mode、Workspace selection、最近选中的 Channel 或 Thread 以及 Inbox 页位置（回到 Team 时恢复位置），但不持久化 unread 或 Attention。
+  决策队列有自己的 Host 投影，而不是 Client 侧扫描：`pendingDecisions` 收一个 Workspace id，返回 Human 的 member id 与该 Workspace 里仍在等的 Thread——作者原话的提问、所属的 Channel/Task/提问者、提问时间、Thread 自己的时钟（锚点消息时间与锚点之后最新回复的时间）、这位读者在该 Thread 上的未读数，以及读取时的 Thread revision——每个 Workspace 上限 100 行，最久等待在前，每条提问截断到 4000 字符。准入规则与排序都只住在 Host 侧，于是每个「有什么在等我」的 Client 表面读的都是同一份权威；Client 把可见 Workspace 的切片分区成一页——一级 Workspace 标题、二级 Channel 标题、读者的排序键只作用于分组内部——并用既有的 durable `reply`、Task `accept`、Thread read（已读）与 `changeAttention`（关注/取消关注）作答，几者都由 Host 设栅栏，因为写入者身上不得挂着未读。
+
+  两张队列都在排序控件旁挂着同样的整页动作 全部已读：它对每一条还挂着未读的行各做一次那趟 Thread read，读者因此不必逐行点过去就能清掉整页；它改变的是读者自己持有的东西，而不是 Host 在问什么，之后哪一页上还剩什么，仍由 Host 自己的准入规则说了算。
+
+  一个 Client 级实例为所有需要的表面读这份投影：侧栏入口的计数、队列页的行、以及新到提示音都来自同一次读取，因此彼此不可能对不上，也没有任何一处重复轮询。提示音刻意站在 Team 模式之外——它挂在整份 Client 上，而不是挂在 Team 模式的影子上——因为「有 Agent 在等 Human」恰恰是切到普通会话的读者绝不能错过的消息；首次成功读取只建立基线，已经积压的存量永不发声。
+
+  Human Client 消费 Host 的 Inbox 投影（「收件箱 / Inbox」队列：合并各 Workspace 的徽标，页面按 Workspace、再按 Channel 分区，覆盖读者的整片未读——mention 只在其中计数，绝不是准入条件——外加该读者写过 Message 的「最近活跃」段（回复过的 Thread 无论是否 follow 都算他的；按最新活跃降序，Host 侧每个 Workspace 上限 10，合并到页面上最多 5 条，永不进入 agent 的 Inbox）），但绝不维护并行 Inbox authority；打开页不确认任何内容。
+
+  Thread reads 使用 Host projections（`readThread`、`threadHistory`）和 Host mutations（replies、promotion、Task actions）。 当前 Thread UI 不提供 Attention controls 或 observations；其 Host Remote methods 留给后续自有 UI。 Browser 会持久化 Team navigation mode、Workspace selection、最近选中的 Channel 或 Thread 以及 Inbox、Tasks、决策三张列表页的位置（回到 Team 时恢复位置），但不持久化 unread、Attention 与「有什么在等 Human」。
 
   每条 Inbox row 自带 Host 解析好的时间戳——`createdOccurredAt`、`latestReplyOccurredAt` 与其 `latestReplyActor`、以及 `needsHumanDecision`（某个 open Task 停在 `in_review` 等验收，或一条点名 Human 的 Message 在向其要决定且其后 Human 再无发言——单纯点名从不点亮它）——行因此不需自己再做 Thread read；页头的 排序 控件按本浏览器偏好重排这些行，这份偏好存 `localStorage`，从不成为 Team fact。
 

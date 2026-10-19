@@ -6,10 +6,10 @@ export type TeamMode = 'conversation' | 'team'
 
 /**
  * The Team list an open Thread was entered from. It decides where Back lands:
- * an Inbox or Tasks origin returns to that list, an absent origin returns to
- * the Thread's Channel through the Channel row path.
+ * an Inbox, Tasks, or Decisions origin returns to that list, an absent origin
+ * returns to the Thread's Channel through the Channel row path.
  */
-export type TeamThreadOrigin = 'inbox' | 'tasks'
+export type TeamThreadOrigin = 'inbox' | 'tasks' | 'decisions'
 
 export interface TeamNavigationSnapshot {
   mode: TeamMode
@@ -33,6 +33,12 @@ export interface TeamNavigationSnapshot {
   inbox?: boolean
   /** Durable position of the Human Tasks page; same face discipline as `inbox`. */
   tasks?: boolean
+  /**
+   * Durable position of the Human decision queue: every Thread that still waits
+   * on the reader, whether it asks a question or awaits acceptance. Same face
+   * discipline as `inbox` and `tasks`.
+   */
+  decisions?: boolean
   /**
    * Durable position of one Member's session-history review page: the Human's
    * audit target survives a reload because the lineage read takes only the
@@ -58,10 +64,11 @@ function readSnapshot(): TeamNavigationSnapshot {
       ...(typeof parsed.channelRef === 'string' ? { channelRef: parsed.channelRef as AgentTeamChannelRef } : {}),
       ...(parsed.inbox === true ? { inbox: true } : {}),
       ...(parsed.tasks === true ? { tasks: true } : {}),
+      ...(parsed.decisions === true ? { decisions: true } : {}),
       ...(typeof parsed.sessionHistory === 'string' ? { sessionHistory: parsed.sessionHistory as AgentTeamMemberId } : {}),
       ...(hasThread ? {
         threadRef: parsed.threadRef as AgentTeamThreadRef,
-        ...(parsed.threadOrigin === 'inbox' || parsed.threadOrigin === 'tasks' ? { threadOrigin: parsed.threadOrigin } : {}),
+        ...(parsed.threadOrigin === 'inbox' || parsed.threadOrigin === 'tasks' || parsed.threadOrigin === 'decisions' ? { threadOrigin: parsed.threadOrigin } : {}),
         ...(typeof parsed.taskRef === 'string' ? { taskRef: parsed.taskRef as AgentTeamTaskRef } : {}),
         ...(typeof parsed.taskNumber === 'number' && Number.isInteger(parsed.taskNumber) && parsed.taskNumber > 0 ? { taskNumber: parsed.taskNumber } : {}),
       } : {}),
@@ -74,13 +81,14 @@ function readSnapshot(): TeamNavigationSnapshot {
 function persistSnapshot(snapshot: TeamNavigationSnapshot): void {
   if (typeof localStorage === 'undefined') return
   try {
-    const { mode, workspaceId, channelRef, taskRef, threadRef, taskNumber, threadOrigin, inbox, tasks, sessionHistory } = snapshot
+    const { mode, workspaceId, channelRef, taskRef, threadRef, taskNumber, threadOrigin, inbox, tasks, decisions, sessionHistory } = snapshot
     localStorage.setItem(STORAGE_KEY, JSON.stringify({
       mode,
       ...(workspaceId === undefined ? {} : { workspaceId }),
       ...(channelRef === undefined ? {} : { channelRef }),
       ...(inbox === true ? { inbox: true } : {}),
       ...(tasks === true ? { tasks: true } : {}),
+      ...(decisions === true ? { decisions: true } : {}),
       ...(sessionHistory === undefined ? {} : { sessionHistory }),
       ...(taskRef === undefined ? {} : { taskRef }),
       ...(threadRef === undefined ? {} : { threadRef }),
@@ -102,6 +110,8 @@ export interface TeamNavigationActions {
   selectInbox: () => void
   /** Open the Human Tasks page; clears the Channel/Thread faces. */
   selectTasks: () => void
+  /** Open the Human decision queue; clears the Channel/Thread faces. */
+  selectDecisions: () => void
   /** Open one Member's session-history review page; clears the other Team faces. */
   selectSessionHistory: (memberId: AgentTeamMemberId) => void
   /** Leave the session-history page; the Workspace face underneath takes the seat back. */
@@ -145,6 +155,7 @@ export class TeamNavigation {
       selectThread: (threadRef, channelRef, taskRef, taskNumber, origin) => { this.clearMemberSession(); this.setThread(threadRef, channelRef, taskRef, taskNumber, origin) },
       selectInbox: () => { this.clearMemberSession(); this.setInbox() },
       selectTasks: () => { this.clearMemberSession(); this.setTasks() },
+      selectDecisions: () => { this.clearMemberSession(); this.setDecisions() },
       selectSessionHistory: memberId => { this.clearMemberSession(); this.setSessionHistory(memberId) },
       exitSessionHistory: () => { this.clearSessionHistory() },
       backFromThread: () => { this.clearMemberSession(); this.leaveThread() },
@@ -186,15 +197,15 @@ export class TeamNavigation {
   }
 
   private setWorkspace(workspaceId: WorkspaceId): void {
-    if (this.snapshot.workspaceId === workspaceId && this.snapshot.inbox !== true && this.snapshot.tasks !== true && this.snapshot.sessionHistory === undefined) return
-    const { channelRef: _channelRef, taskRef: _taskRef, threadRef: _threadRef, taskNumber: _taskNumber, threadOrigin: _threadOrigin, inbox: _inbox, tasks: _tasks, sessionHistory: _sessionHistory, ...base } = this.snapshot
+    if (this.snapshot.workspaceId === workspaceId && this.snapshot.inbox !== true && this.snapshot.tasks !== true && this.snapshot.decisions !== true && this.snapshot.sessionHistory === undefined) return
+    const { channelRef: _channelRef, taskRef: _taskRef, threadRef: _threadRef, taskNumber: _taskNumber, threadOrigin: _threadOrigin, inbox: _inbox, tasks: _tasks, decisions: _decisions, sessionHistory: _sessionHistory, ...base } = this.snapshot
     this.snapshot = { ...base, workspaceId }
     this.commit()
   }
 
   private setChannel(channelRef: AgentTeamChannelRef): void {
-    if (this.snapshot.channelRef === channelRef && this.snapshot.threadRef === undefined && this.snapshot.inbox !== true && this.snapshot.tasks !== true && this.snapshot.sessionHistory === undefined) return
-    const { taskRef: _taskRef, threadRef: _threadRef, taskNumber: _taskNumber, threadOrigin: _threadOrigin, inbox: _inbox, tasks: _tasks, sessionHistory: _sessionHistory, ...base } = this.snapshot
+    if (this.snapshot.channelRef === channelRef && this.snapshot.threadRef === undefined && this.snapshot.inbox !== true && this.snapshot.tasks !== true && this.snapshot.decisions !== true && this.snapshot.sessionHistory === undefined) return
+    const { taskRef: _taskRef, threadRef: _threadRef, taskNumber: _taskNumber, threadOrigin: _threadOrigin, inbox: _inbox, tasks: _tasks, decisions: _decisions, sessionHistory: _sessionHistory, ...base } = this.snapshot
     this.snapshot = { ...base, channelRef }
     this.commit()
   }
@@ -202,7 +213,7 @@ export class TeamNavigation {
   /** The Inbox is a face, not workspace content: selecting a Workspace leaves it. */
   private setInbox(): void {
     if (this.snapshot.inbox === true && this.snapshot.channelRef === undefined && this.snapshot.threadRef === undefined && this.snapshot.sessionHistory === undefined) return
-    const { channelRef: _channelRef, taskRef: _taskRef, threadRef: _threadRef, taskNumber: _taskNumber, threadOrigin: _threadOrigin, tasks: _tasks, sessionHistory: _sessionHistory, ...base } = this.snapshot
+    const { channelRef: _channelRef, taskRef: _taskRef, threadRef: _threadRef, taskNumber: _taskNumber, threadOrigin: _threadOrigin, tasks: _tasks, decisions: _decisions, sessionHistory: _sessionHistory, ...base } = this.snapshot
     this.snapshot = { ...base, inbox: true }
     this.commit()
   }
@@ -210,15 +221,23 @@ export class TeamNavigation {
   /** Same face discipline as the Inbox: the Tasks page owns the seat while its flag stands. */
   private setTasks(): void {
     if (this.snapshot.tasks === true && this.snapshot.channelRef === undefined && this.snapshot.threadRef === undefined && this.snapshot.sessionHistory === undefined) return
-    const { channelRef: _channelRef, taskRef: _taskRef, threadRef: _threadRef, taskNumber: _taskNumber, threadOrigin: _threadOrigin, inbox: _inbox, sessionHistory: _sessionHistory, ...base } = this.snapshot
+    const { channelRef: _channelRef, taskRef: _taskRef, threadRef: _threadRef, taskNumber: _taskNumber, threadOrigin: _threadOrigin, inbox: _inbox, decisions: _decisions, sessionHistory: _sessionHistory, ...base } = this.snapshot
     this.snapshot = { ...base, tasks: true }
+    this.commit()
+  }
+
+  /** Same face discipline as the Inbox: the decision queue owns the seat while its flag stands. */
+  private setDecisions(): void {
+    if (this.snapshot.decisions === true && this.snapshot.channelRef === undefined && this.snapshot.threadRef === undefined && this.snapshot.sessionHistory === undefined) return
+    const { channelRef: _channelRef, taskRef: _taskRef, threadRef: _threadRef, taskNumber: _taskNumber, threadOrigin: _threadOrigin, inbox: _inbox, tasks: _tasks, sessionHistory: _sessionHistory, ...base } = this.snapshot
+    this.snapshot = { ...base, decisions: true }
     this.commit()
   }
 
   /** Same face discipline as the Inbox: one Member's history page owns the seat while its flag stands. */
   private setSessionHistory(memberId: AgentTeamMemberId): void {
     if (this.snapshot.sessionHistory === memberId && this.snapshot.channelRef === undefined && this.snapshot.threadRef === undefined) return
-    const { channelRef: _channelRef, taskRef: _taskRef, threadRef: _threadRef, taskNumber: _taskNumber, threadOrigin: _threadOrigin, inbox: _inbox, tasks: _tasks, ...base } = this.snapshot
+    const { channelRef: _channelRef, taskRef: _taskRef, threadRef: _threadRef, taskNumber: _taskNumber, threadOrigin: _threadOrigin, inbox: _inbox, tasks: _tasks, decisions: _decisions, ...base } = this.snapshot
     this.snapshot = { ...base, sessionHistory: memberId }
     this.commit()
   }
@@ -238,12 +257,12 @@ export class TeamNavigation {
   }
 
   private setThread(threadRef: AgentTeamThreadRef | undefined, channelRef?: AgentTeamChannelRef, taskRef?: AgentTeamTaskRef, taskNumber?: number, origin?: TeamThreadOrigin): void {
-    if (this.snapshot.threadRef === threadRef && this.snapshot.taskRef === taskRef && this.snapshot.channelRef === channelRef && this.snapshot.taskNumber === taskNumber && this.snapshot.threadOrigin === origin && this.snapshot.inbox !== true && this.snapshot.tasks !== true && this.snapshot.sessionHistory === undefined) return
+    if (this.snapshot.threadRef === threadRef && this.snapshot.taskRef === taskRef && this.snapshot.channelRef === channelRef && this.snapshot.taskNumber === taskNumber && this.snapshot.threadOrigin === origin && this.snapshot.inbox !== true && this.snapshot.tasks !== true && this.snapshot.decisions !== true && this.snapshot.sessionHistory === undefined) return
     if (threadRef === undefined) {
       const { taskRef: _taskRef, threadRef: _threadRef, taskNumber: _taskNumber, threadOrigin: _threadOrigin, sessionHistory: _sessionHistory, ...base } = this.snapshot
       this.snapshot = base
     } else {
-      const { channelRef: _channelRef, taskRef: _taskRef, threadRef: _threadRef, taskNumber: _taskNumber, threadOrigin: _threadOrigin, inbox: _inbox, tasks: _tasks, sessionHistory: _sessionHistory, ...base } = this.snapshot
+      const { channelRef: _channelRef, taskRef: _taskRef, threadRef: _threadRef, taskNumber: _taskNumber, threadOrigin: _threadOrigin, inbox: _inbox, tasks: _tasks, decisions: _decisions, sessionHistory: _sessionHistory, ...base } = this.snapshot
       this.snapshot = {
         ...base,
         threadRef,
@@ -261,6 +280,7 @@ export class TeamNavigation {
     const origin = this.snapshot.threadOrigin
     if (origin === 'inbox') { this.setInbox(); return }
     if (origin === 'tasks') { this.setTasks(); return }
+    if (origin === 'decisions') { this.setDecisions(); return }
     this.setThread(undefined)
   }
 

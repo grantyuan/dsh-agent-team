@@ -36,7 +36,7 @@ Agent 卡片会话视图：Agent 行的头像与文案整体是选择按钮（`�
 
 Member 经 `context_rollover` 换新上下文时，Agents 面板观察该 Member 的旧→新 Session 绑定，仅在嵌入页正是被观察的旧 live Session id 时恰好跟随一次，归档视图不跳转。
 
-窄屏 rail 四个图标按钮自上而下：收件箱（`IconQueueOutline14`，16px）→ 任务（`IconChecklistOutlineRegular`）→ 频道（`IconListPenOutline16`）→ Agents（`IconAgentPresetOutline16`）；不复用 checklist（任务）或 user（成员）图标。收件箱图标是目的地：点击打开 Inbox 页并请求展开侧栏；任务图标以同样方式打开 Tasks 页；频道/Agents 图标点击请求展开侧栏并聚焦对应分区头部。
+窄屏 rail 五个图标按钮自上而下：收件箱（`IconQueueOutline14`，16px）→ 决策（`IconQuestionOutlineRegular`）→ 任务（`IconChecklistOutlineRegular`）→ 频道（`IconListPenOutline16`）→ Agents（`IconAgentPresetOutline16`）；不复用 checklist（任务）或 user（成员）图标。收件箱图标是目的地：点击打开 Inbox 页并请求展开侧栏；决策图标以同样方式打开决策队列；任务图标打开 Tasks 页；频道/Agents 图标点击请求展开侧栏并聚焦对应分区头部。
 
 Agent 创建流程没有频道选择页，Agent 编辑器没有成员区块——频道成员只在频道侧管理（创建对话框初始成员、频道编辑器成员行、成员管理对话框）；未入频道的 Member 仍可经 DM 触达。
 
@@ -56,17 +56,19 @@ slot 选举摘不掉别的插件注册的列表行、入口文案又是本地化
 
 「收件箱」入口：宽栏是工作区选择器**之上**的一张卡片——它的合计取自每个可见 Workspace，是选择器所命名的那个范围之外、唯一跨范围的目的地，所以由它领起侧栏，而不是站在那个范围里面；窄轨没有选择器可领起，它就是 rail 第一枚图标。
 
-两者用同一套方式标记未读——图标**左上角一个点**，数值取各可见 Workspace 的整片未读 Inbox 合计（mention 只是其中一类），为 0 时不渲染：没有未读就是没有这个记号，而不是画一个空点。点是 8px 的 `--dsw-alias-state-business-primary`——队列给「点名了这位读者」的 Thread 用的同一种实心墨，于是同一个颜色走到哪里都还是「这需要你」——外加 2px 所在表面的描边（`--team-mark-ring`：凡是自己上底色的表面都把当下这层底色交出来——卡片在悬停与当前页时、rail 按钮在悬停、聚焦与当前页时）。
+决策队列的入口紧接着它，是宽栏的第二张卡片、窄轨的第二枚图标：「需要你决定」，统计每个可见 Workspace 里仍在等这位读者的 Thread。它的合计取自**同一个** Client 级投影——也就是新到提示音取音的那一个：唯一一处同时回答「还有多少在等」和「有没有新来的」的地方，因此这个入口自己不起轮询，它的记号也不可能和它打开的队列页对不上。
+
+两个入口用同一套方式标记各自的事实——图标**左上角一个点**，数值取各可见 Workspace 的切片合计（mention 只在 Inbox 合计里计数），为 0 时不渲染：没有在等的东西就是没有这个记号，而不是画一个空点。点是 8px 的 `--dsw-alias-state-business-primary`——队列给「点名了这位读者」的 Thread 用的同一种实心墨，于是同一个颜色走到哪里都还是「这需要你」——外加 2px 所在表面的描边（`--team-mark-ring`：凡是自己上底色的表面都把当下这层底色交出来——卡片在悬停与当前页时、rail 按钮在悬停、聚焦与当前页时）。
 
 这层底色是半透明的，所以环画两层，上=这层底色、下=该表面**不透明**的底色，叠加结果正好等于控件此刻的真实表面；只画上面那层，等于在已经加深过一次的底上再加深一次，读者看到的是一圈晕而不是描边。叠放胶囊守同一条规则（`avatar-stack.module.css`），两边各自报上自己所在的表面：侧栏的点是 `--dsw-specific-sidebar-fill`（与 Agent 角标同色），Inbox 页行与 Channel feed 入口行的胶囊是页面底色 `--dsw-alias-bg-base`；没有底色可交时两层同色，等于什么都没画。因此它读起来是压在图标笔画上的一个记号，而不是与笔画糊在一起——卡片有底色时也一样。
 
 点挂在图标自己的包裹层（`.inboxMark`：`position: relative`、`flex: 0 0 16px`）上、两轴各 `-2px`，因此无论那枚图标坐在 34px 卡片里还是 36px rail 按钮里，点都落在同一个字形的同一个角上；在窄轨上它也始终留在 rail 区域会裁剪到的那个 36px 控件盒内部。
 
-数字住在宽窄两处的可访问名（`收件箱，6 条未读`）与窄轨悬停提示里——一次 hover 即得，侧栏本体永远不印数字。
+数字住在宽窄两处的可访问名（`收件箱，6 条未读`、`需要你决定，2 件事在等你`）与窄轨悬停提示里——一次 hover 即得，侧栏本体永远不印数字。
 
 Inbox 页作为屏上面孔时卡片/图标携带 `aria-current='page'`，窄轨那枚图标还带上卡片同款当前页底色——rail 没有文字，底色是它唯一能说「你在这」的东西；被嵌入的成员会话覆盖期间它只是被记住的位置，不携带高亮。
 
-`TeamConversation` 第五个面：Thread | Channel | Inbox | Tasks | welcome。选 Inbox 或 Tasks 清掉 Channel/Thread 面并互斥；选 Workspace、Channel 或 Thread 清掉两者。从 Inbox 或 Tasks 行进入的 Thread 记住来处：Back 读作「返回收件箱列表」或「返回任务列表」并回到那张列表，从 Channel 进入的 Thread 则保持 Back 落在频道时间线。来处是持久的，刷新后 Back 仍指向正确目标。
+`TeamConversation` 由同一个 owner 渲染同一组面：Thread | Channel | Inbox | Tasks | 决策 | welcome。选 Inbox、Tasks 或决策清掉 Channel/Thread 面并三者互斥；选 Workspace、Channel 或 Thread 清掉三个。从 Inbox、Tasks 或决策行进入的 Thread 记住来处：Back 读作「返回收件箱列表」「返回任务列表」或「返回待决定列表」并回到那张列表，从 Channel 进入的 Thread 则保持 Back 落在频道时间线。来处是持久的，刷新后 Back 仍指向正确目标。
 
 Tasks 页保持与 Inbox 相同的全局位置纪律：持久的导航 face、跨 Workspace 合并、无 scope 订阅；行点击经与 Inbox 行相同的 select-Thread 路径落到该 Task 的 Thread。
 
@@ -78,13 +80,21 @@ Tasks 页保持与 Inbox 相同的全局位置纪律：持久的导航 face、�
 
 页头带右缘只有一个 `排序` 控件：带 label 的原生 select，提供 最新回复（默认）、创建时间、未读数量、提及数量。两片都按所选键重排，Host 自己的行序做破平；选择写进本浏览器 `localStorage`（`dsh.agent-team.inbox-sort`），是呈现偏好、不是 Team fact。
 
+它旁边是整页唯一的整队动作 全部已读：把队列里每一条还挂着未读的 Thread 逐条读干，每条只做一次 durable 读取，读者自己的未读因此一次清掉整页，而不是一条条点过去。它只作用于队列——「最近活跃」本就没有未读可清——队列里没有未读时它不可用。
+
+被它读过的 Thread 不会因此被答复：行只是离开队列，之后落到哪里由 Host 的准入规则说了算、而不是按钮的承诺——尾片是这位读者写过话的 Thread，所以写过话的落回「最近活跃」，只是关注过或被点名的则离开这一页。侧栏入口自己的未读点也跟着那几次读完成而落下。清扫进行时按钮读作 已读中…；任何一次被拒都会中止它并在页面横线上印出 没能清除未读，请重试。
+
 「最近活跃」的五条上限先按 Host 顺序切出、再按读者的键重排，所以换排序只是给同样五条返回工作现场的路换个次序，不会换掉在屏上的 Thread。
 
-### 两片与合并顺序
+### 两片，以及各自内部的分区
 
-对每个可见 Workspace 发一次 Inbox 调用，合并成 **Host 自己的行序**——先提及、再最新、Thread ref 破平——合并不能另起一套顺序：靠提及挤进截断线的行，合进来之后不能沉到更新、但没被提及的行下面（各 Workspace 切片本来就是这个顺序发到的）。
+对每个可见 Workspace 发一次 Inbox 调用，回来的行**按 Workspace、再按 Channel 分区**，而不是把各 Workspace 压成一张平表：一级标题是 Workspace，二级标题是嵌在它下面的 Channel。这样同一条 Thread 每次都会落在同样两个名字下面，读者也不必再从行身上去读它从哪来。
 
-页面按 Host 的两片渲染：上段「需要我」＝未读队列（页头那段计数只数它），下段「最近活跃」＝读者写过 Message 的 Thread，按最新活跃降序、跨 Workspace 合计上限 5、与上段不重复——两段共用同一个行组件，下段的行没有未读计数（零＝不渲染胶囊，而不是渲染一枚写着 0 的胶囊），但**保留每一行都有的那条领起簇**。打开页不确认任何内容（见 [Thread Attention 与 Inbox](../team-collaboration/)）：只有点开行的 durable Thread read 清 marker 与徽标。
+各 Workspace 切片到手时是 **Host 自己的行序**——先提及、再最新、Thread ref 破平——页面把它留作 Channel 分组内部的**稳定破平键**：读者的排序键只在分组内部重排，分组顺序本身固定，所以换排序既不会挪动分组，也不会换掉在屏上的行。
+
+页面按 Host 的两片渲染：上段「需要我」＝未读队列（页头那段计数只数它），下段「最近活跃」＝读者写过 Message 的 Thread，按最新活跃降序、跨 Workspace 合计上限 5、与上段不重复——两段共用同一个行组件，下段的行没有未读计数（零＝不渲染胶囊，而不是渲染一枚写着 0 的胶囊），但**保留每一行都有的那条领起簇**。
+
+两片分区方式一致，各自带自己的 Workspace 与 Channel 标题。打开页不确认任何内容（见 [Thread Attention 与 Inbox](../team-collaboration/)）：只有点开行的 durable Thread read 清 marker 与徽标。
 
 ### 行结构
 
@@ -100,7 +110,7 @@ Tasks 页保持与 Inbox 相同的全局位置纪律：持久的导航 face、�
 
 (0) 每行以**「谁在这条 Thread 上」**领起——Task 有活跃 Claim 所有者时画那套叠放，用 Channel feed 的原话（`claimers`）和同一条判定（见上文 Thread 入口行：未 released 的 Claim、Task 处于 in_progress/in_review、按 Claim 顺序去重）；没有活跃所有者时回落到这一行时刻背后的人（`newestActor`），因为那是关于这条 Thread 唯一已知的事。两者都由 Host 解析好，行不必自己拿 Member 名册，且同一 Thread 在两段里画的是同一个簇。
 
-(1) 身份行——频道用 13px/20 primary 600 领起，只有当屏幕上的行跨了不止一个 Workspace 时前面才加 `workspace / `，taskful 时后面接同一枚发丝线 chip `Task #N`。这一行**保持为一个文本节点串**，分隔符本身就是独立文本节点，因为拆成多个样式化子项会丢掉控件可访问名里的空格；同时它用省略号压成一行：窄座位缩短溯源，而不是把一行折成三行，`overflow: hidden` 则保证比座位还宽的频道名不会把滚动条推进共享 timeline。
+(1) 身份行——队列自己的溯源，taskful 时由同一枚发丝线 chip `Task #N` 领起。行住在哪个 Workspace、哪个 Channel 由它上方的标题说一次，于是这一行把自己的位置留给真正逐行变化的记号，而不是把两个常量一路印下去。它**保持为一个文本节点串**，用省略号压成一行：窄座位缩短溯源，而不是把一行折成三行，`overflow: hidden` 则保证过长的 marker 不会把滚动条推进共享 timeline。
 
 身份是队列读者扫读的对象，所以由它承担整行的墨色；在改前，摘要拿着最重的墨、身份反而最轻，一页读下来是十段黑字而不是十个条目。
 
@@ -120,7 +130,7 @@ Tasks 页保持与 Inbox 相同的全局位置纪律：持久的导航 face、�
 
 ### 段计数与行激活
 
-每个段标题自带本段的条数——队列的条数，以及被截到五条的「最近活跃」实际在屏上的条数——同样内缩到那条 34px 的列上。点击行选择该行 Workspace 并打开 Thread。
+每个段标题自带本段的条数——队列的条数，以及被截到五条的「最近活跃」实际在屏上的条数——同样内缩到那条 34px 的列上；段内的 Workspace 标题用同一内缩，嵌在它下面的 Channel 标题再进一档、墨色再轻一档，两级不会读成同级。点击行选择该行 Workspace 并打开 Thread。
 
 ### 状态与订阅
 

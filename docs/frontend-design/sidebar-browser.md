@@ -30,9 +30,11 @@ Every row additionally carries 历史会话: it takes over the conversation seat
 
 Every row also carries 已暂停任务: a dialog over the Member's durable pending-interrupt stack through `memberInterrupts` — newest-first entries with the Host's restorable verdict (an anchor the lineage walk cannot prove today reads as unverified, never as optimistically returnable) and a 释放 control per entry through `resolveMemberInterrupt`. The stack reads for every lifecycle state because it is a ledger read; `resumed` closes stay the Host's own and are never offered here.
 
-The narrow rail's four icon buttons read top-down Inbox (`IconQueueOutline14` at 16px) → Tasks (`IconChecklistOutlineRegular`) → Channels (`IconListPenOutline16`) → Agents (`IconAgentPresetOutline16`); none reuse the checklist (Task) or member icons.
+The narrow rail's five icon buttons read top-down Inbox (`IconQueueOutline14` at 16px) → Decisions (`IconQuestionOutlineRegular`) → Tasks (`IconChecklistOutlineRegular`) → Channels (`IconListPenOutline16`) → Agents (`IconAgentPresetOutline16`); none reuse the checklist (Task) or member icons.
 
-The Inbox icon is a destination: clicking it opens the Inbox page and expands the sidebar; the Tasks icon opens the Tasks page the same way; the Channels/Agents icons expand the sidebar and focus their section header. Agent creation carries no Channel page and the Agent editor carries no membership section: Channel membership is managed from the Channel side (create-dialog initial members, Channel editor member rows, and the member-management dialog); a Channel-less Member stays reachable through its DM view.
+The Inbox icon is a destination: clicking it opens the Inbox page and expands the sidebar; the Decisions icon opens the decision queue and expands it the same way; the Tasks icon opens the Tasks page; the Channels/Agents icons expand the sidebar and focus their section header.
+
+Agent creation carries no Channel page and the Agent editor carries no membership section: Channel membership is managed from the Channel side (create-dialog initial members, Channel editor member rows, and the member-management dialog); a Channel-less Member stays reachable through its DM view.
 
 The create dialog is also the one import entry: a single disclosure button toggles between creating a new Member and bringing an existing one in from another Workspace. The import view reuses the shared `TeamMemberRow` roster and offers only Members that exist globally and do not yet participate here (suspended Members included — joining does not depend on availability); confirming routes the durable `joinWorkspace` and the row appears through the workspace refetch, with retry reusing the exact failed request.
 
@@ -49,7 +51,9 @@ SlotCore cannot withdraw another plugin's list row and the entry's label is loca
 ## Inbox (收件箱)
 The Inbox entry is one card on the wide rail above the Workspace selector — its total sums the unread of every visible Workspace, so it is the one destination that outlives the scope the selector names, and it leads the sidebar instead of standing inside that scope — and the rail's first icon on the narrow rail, where no selector exists to lead.
 
-Both mark unread the same way — a dot on the icon's top-left corner, standing for the sum of each visible Workspace's whole-unread Inbox total with mentions counted inside it rather than alone, and rendering nothing at zero: no unread is the absence of the mark, not an empty dot.
+The decision queue's entry sits directly under it, the second card on the wide rail and the second icon on the narrow one: 需要你决定, counting the Threads that still wait on the reader across every visible Workspace. Its total comes from the same Client-wide projection the arrival cue is raised from — the one place that answers both "how much waits" and "did something new arrive" — so the entry starts no poll of its own and its mark can never disagree with the queue page it opens.
+
+Both entries mark their own fact the same way — a dot on the icon's top-left corner, standing for the sum of each visible Workspace's slice with mentions counted inside the Inbox total rather than alone, and rendering nothing at zero: nothing waiting is the absence of the mark, not an empty dot.
 
 The dot is 8px of `--dsw-alias-state-business-primary` — the solid ink the queue gives a Thread that named this reader, so one colour still means "this needs you" wherever it appears — ringed by 2px of whatever surface carries it — `--team-mark-ring`, which every surface that fills hands the fill it is actually on (the card on hover and as the current page, the rail button on hover, focus, and as the current page).
 
@@ -59,11 +63,11 @@ The avatar stack keeps the same rule (`avatar-stack.module.css`), and each side 
 
 It hangs off the icon's own wrapper (`.inboxMark`: `position: relative`, `flex: 0 0 16px`) at `-2px` on both axes, which is what puts the same dot on the same corner of the same glyph whether that icon sits in the 34px card or in the 36px rail button; on the narrow rail the mark thus stays inside the control box that the rail region clips its overflow to.
 
-The number lives in the control's accessible name on both rails (`收件箱，6 条未读`) and the rail's hover hint — one hover away, never printed in the sidebar.
+The number lives in the control's accessible name on both rails (`收件箱，6 条未读`, `需要你决定，2 件事在等你`) and the rail's hover hint — one hover away, never printed in the sidebar.
 
 While the Inbox page stands, the card/icon carries `aria-current="page"` — and the rail icon wears the card's own current-page fill, because the icon-only rail has no label and the fill is the only thing that can say where the reader is.
 
-`TeamConversation` renders a fifth face: Thread | Channel | Inbox | Tasks | welcome. Selecting Inbox or Tasks clears the Channel/Thread faces and each other; selecting a Workspace, Channel, or Thread clears both. A Thread opened from an Inbox or Tasks row remembers that list as its origin: Back reads 返回收件箱列表 or 返回任务列表 and returns there, while a Thread entered from its Channel keeps Back on the Channel timeline. The origin is durable, so a reload keeps the right Back target.
+`TeamConversation` renders the same faces under one owner: Thread | Channel | Inbox | Tasks | Decisions | welcome. Selecting Inbox, Tasks, or Decisions clears the Channel/Thread faces and each other; selecting a Workspace, Channel, or Thread clears all three. A Thread opened from an Inbox, Tasks, or Decisions row remembers that list as its origin: Back reads 返回收件箱列表, 返回任务列表, or 返回待决定列表 and returns there, while a Thread entered from its Channel keeps Back on the Channel timeline. The origin is durable, so a reload keeps the right Back target.
 
 The Tasks page keeps the same global-position discipline as the Inbox: a durable navigation face, merged across Workspaces, with a scope-less subscription; a row click lands on that Task's Thread through the same select-Thread path the Inbox row uses.
 
@@ -75,13 +79,21 @@ Spacing alone separates the segments, so a squeezed seat can wrap this line with
 
 The band's right edge carries one 排序 control: a labelled native select offering 最新回复 (the default), 创建时间, 未读数量, and 提及数量. Both slices re-lay under the chosen key with the Host's own order as the tiebreaker, and the choice rides `localStorage` (`dsh.agent-team.inbox-sort`) as a per-browser taste, never a Team fact.
 
+Beside it stands the page's one whole-queue action, 全部已读: it reads every Thread the queue still holds unread through, one durable read each, so the reader's own mark clears across the page instead of Thread by Thread. It acts on the queue alone — 「最近活跃」 holds no unread to clear — and it is unavailable while the queue holds none.
+
+A Thread it reads is never answered by it: the row leaves the queue, and where it lands afterwards is the Host's admission rule rather than the button's promise — the tail is the Threads this reader wrote in, so one they wrote in falls back into 「最近活跃」 while one they merely followed or were named in leaves the page. The entry's own dot follows the completed reads down. The button reads 已读中… while the sweep runs, and one refusal stops it and prints 没能清除未读，请重试 on the page's line.
+
 The 「最近活跃」 five-row cap is cut in the Host's order before the reader's key re-lays the rows, so changing the sort re-orders the same five ways back into work instead of swapping which Threads are on screen.
 
-### The two slices and the merge order
+### The two slices, and the partition inside each
 
-It merges one Inbox call per visible Workspace into one list in the Host's own order — mentions first, then newest, the Thread ref breaking ties — because the merge must keep the Host's truncation order rather than invent a second one: a row that survived the cut on mentions must not sink below a merely newer row after the merge (a Workspace slice arrives in that same order).
+It reads one Inbox call per visible Workspace and partitions what comes back rather than merging the Workspaces flat: a Workspace heading, a Channel heading nested under it. A Thread then lands under the same two names every time, and the reader never has to read where a row came from off the row itself.
+
+Each Workspace slice arrives in the Host's own order — mentions first, then newest, the Thread ref breaking ties — which the page keeps as the stable tiebreaker inside a Channel group: the reader's own sort key re-lays only the rows inside a group, and group order stays fixed, so re-sorting never moves a group or changes which rows exist.
 
 The page renders the Host's two slices: 「需要我」, the unread queue the header totals above describe, and 「最近活跃」, the Threads this reader has written a Message in — newest activity first, at most five across every Workspace, never one the queue already holds — drawn by the same row component with its count capsule absent — zero is the absence of a badge rather than a badge reading zero, and such a row keeps the leading cluster every counted row opens on.
+
+Both slices are partitioned the same way, each carrying its own Workspace and Channel headings.
 
 It never acknowledges anything: opening the page is not a read; only a durable Thread read clears its marker and the badge (see [Thread Attention and Inbox](../team-collaboration/)).
 
@@ -103,9 +115,9 @@ The row carries the Human-fixed information order.
 
 The Host resolves both, so the row needs no Member roster of its own, and the same Thread draws the same cluster in either section.
 
-(1) The identity line — the Channel in 13px/20 primary 600, preceded by `workspace / ` only while the rows on screen span more than one Workspace, and followed by `Task #N` as the same hairline chip when taskful.
+(1) The identity line — the queue's own provenance, led by `Task #N` as a hairline chip when the Thread is taskful. Which Workspace and which Channel the row lives in is stated once by the headings above it, so the line keeps its position for what actually varies between rows instead of repeating two constants down the page.
 
-The line stays one run with its separator as a text node of its own, because splitting it into styled runs costs the spaces in the control's accessible name, and it clamps to one line with an ellipsis: a squeezed seat shortens the provenance instead of folding one row into three lines, while `overflow: hidden` stops a Channel name wider than the whole seat from pushing a scrollbar into the shared timeline.
+It stays one run and clamps to one line with an ellipsis, because a squeezed seat shortens the provenance rather than folding one row into three lines, while `overflow: hidden` stops a long marker from pushing a scrollbar into the shared timeline.
 
 The identity is what a queue reader scans for, so it carries the row's ink; while the gist held the heaviest ink and the identity the lightest, ten rows read as ten paragraphs rather than ten entries.
 
@@ -127,7 +139,7 @@ Absence and yielding draw the zero the way the row already does: a Thread nobody
 
 ### Section counts and row activation
 
-Each section heading carries its own slice's count — the queue's, and the tail's as the five it was capped to — inset to that same 34px column. Clicking a row selects the row's Workspace and opens its Thread.
+Each section heading carries its own slice's count — the queue's, and the tail's as the five it was capped to — inset to that same 34px column, and the Workspace heading inside it takes that same inset while its nested Channel heading sits one step further in and one step quieter, so the two levels never read as siblings. Clicking a row selects the row's Workspace and opens its Thread.
 
 ### States and subscriptions
 

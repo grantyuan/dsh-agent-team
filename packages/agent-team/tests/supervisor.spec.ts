@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
   MemberSupervisor,
   nextReplacementHandle,
-  supervisionHandoffText,
+  supervisionRetirementNotice,
   SUPERVISION_FAILURE_WINDOW_MS,
   SUPERVISION_INTERVAL_MS,
   SUPERVISION_MAX_CONSECUTIVE_FAILURES,
@@ -11,7 +11,7 @@ import {
   type MemberSupervisionState,
   type SupervisionTrigger,
 } from '../src/supervisor.ts'
-import type { AgentTeamMemberId } from '../src/types.ts'
+import type { AgentTeamCompletedWork, AgentTeamMemberId, AgentTeamTaskRef } from '../src/types.ts'
 
 const builder = 'member:builder' as AgentTeamMemberId
 const helper = 'member:helper' as AgentTeamMemberId
@@ -252,57 +252,6 @@ describe('MemberSupervisor failure streaks', () => {
   })
 })
 
-describe('MemberSupervisor blocked stops', () => {
-  it('starts the coercion chain on the spot instead of spending bring-ups on nudges', () => {
-    const { supervisor, restarts, replacements } = harness({ states: { [builder]: 'stopped' } })
-    supervisor.onBlockedStop(builder)
-    expect(restarts).toEqual([])
-    expect(replacements).toEqual([{ memberId: builder, trigger: 'context-oversize', restartAttempts: 0 }])
-  })
-
-  it('counts the bring-ups a Member already spent into its blocked-stop record', async () => {
-    const { supervisor, replacements } = harness({ states: { [builder]: 'stopped' } })
-    await supervisor.runPass()
-    supervisor.onBlockedStop(builder)
-    expect(replacements).toEqual([{ memberId: builder, trigger: 'context-oversize', restartAttempts: 1 }])
-  })
-
-  it('ignores blocked stops from Members nobody is watching', () => {
-    const { supervisor, replacements } = harness({ candidates: [] })
-    supervisor.onBlockedStop(builder)
-    expect(replacements).toEqual([])
-  })
-
-  it('escalates a repeated context refusal before the failure streak is spent', () => {
-    const { supervisor, replacements } = harness()
-    supervisor.onError(builder, 'context ~105899 tokens exceeds the model window 112500 (model=Qwen3.8-27B)')
-    supervisor.onError(builder, '502: {"code":"preflight_compress_failed","message":"context ~127173 tokens exceeds the model window 112500"}')
-    expect(replacements).toEqual([{ memberId: builder, trigger: 'context-oversize', restartAttempts: 0 }])
-  })
-
-  it('counts the policy\'s own request block in the same run', () => {
-    const { supervisor, replacements } = harness()
-    supervisor.onError(builder, 'context hard limit reached and the forced-compaction budget for this recovery chain is already spent; the request was blocked')
-    supervisor.onError(builder, 'context pressure policy: the handoff-budget order was not honored and the forced reduction threw: engine failure')
-    expect(replacements).toEqual([{ memberId: builder, trigger: 'context-oversize', restartAttempts: 0 }])
-  })
-
-  it('a clean turn ends the context-refusal run', () => {
-    const { supervisor, replacements } = harness()
-    supervisor.onError(builder, 'context ~105899 tokens exceeds the model window 112500')
-    supervisor.onCleanTurn(builder)
-    supervisor.onError(builder, 'context ~107899 tokens exceeds the model window 112500')
-    expect(replacements).toEqual([])
-  })
-
-  it('an unrelated failure does not feed the context-refusal run', () => {
-    const { supervisor, replacements } = harness()
-    supervisor.onError(builder, 'context ~105899 tokens exceeds the model window 112500')
-    supervisor.onError(builder, 'fetch failed')
-    expect(replacements).toEqual([])
-  })
-})
-
 describe('MemberSupervisor tick', () => {
   it('advances the Host chain before any bring-up budget is spent', async () => {
     const { supervisor, advances, restarts } = harness({ states: { [builder]: 'stopped' } })
@@ -369,54 +318,91 @@ describe('MemberSupervisor lifecycle', () => {
   })
 })
 
-describe('handover notice', () => {
-  it('asks the admin in Channel to reassign each released Claim', () => {
-    const body = supervisionHandoffText({
+describe('retirement notice', () => {
+  const taskRef = 'task:11111111-1111-1111-1111-111111111111' as AgentTeamTaskRef
+  const work: AgentTeamCompletedWork = {
+    finishedDirections: [{ direction: 'implements the parser', taskRef, taskNumber: 7, subject: 'Parse the input' }],
+    completedTasks: [{ taskRef, taskNumber: 7, subject: 'Parse the input', resolution: 'accepted' }],
+    participatedThreadCount: 4,
+  }
+  const noWork: AgentTeamCompletedWork = { finishedDirections: [], completedTasks: [], participatedThreadCount: 0 }
+
+  it('heads the notice with the cause, lists the completed work, and asks the addressed handle to reassign each released Claim', () => {
+    const body = supervisionRetirementNotice({
       failedHandle: 'builder',
       replacementHandle: 'builder-2',
+      addressedHandle: 'human',
       trigger: 'abnormal-stop',
       restartAttempts: SUPERVISION_MAX_RESTART_ATTEMPTS,
       maxRestartAttempts: SUPERVISION_MAX_RESTART_ATTEMPTS,
       maxConsecutiveFailures: SUPERVISION_MAX_CONSECUTIVE_FAILURES,
       maxWindowFailures: SUPERVISION_WINDOW_FAILURES,
       maxFailureWindowMs: SUPERVISION_FAILURE_WINDOW_MS,
-      releasedClaims: [{ direction: 'implements the parser', taskRef: 'task:11111111-1111-1111-1111-111111111111' }],
+      completedWork: work,
+      releasedClaims: [{ direction: 'implements the parser', taskNumber: 9 }],
     })
-    expect(body).toContain('@human')
-    expect(body).toContain('`builder` stopped abnormally and stayed stopped after 3/3 bring-up attempts')
-    expect(body).toContain("`builder-2`, `builder`'s same-role replacement — same preset, same pinned settings, inherited private memory, and the same Channel reach")
-    expect(body).toContain('- implements the parser (task:11111111-1111-1111-1111-111111111111)')
+    expect(body).toContain('Supervision retirement — builder')
+    expect(body).toContain('builder stopped abnormally and stayed stopped after 3/3 bring-up attempts and was archived.')
+    expect(body).toContain('Completed work in service:')
+    expect(body).toContain('- implements the parser (task #7)')
+    expect(body).toContain('Completed tasks: 1')
+    expect(body).toContain('Participated Threads: 4')
+    expect(body).toContain('- implements the parser (task #9)')
+    expect(body).toContain('@human please reassign the items above to builder-2.')
+    expect(body).toContain("Succession: builder-2 is builder's same-role replacement: same preset, same pinned settings, inherited private memory, and the same Channel reach.")
+  })
+
+  it('addresses the reassignment ask to the designated leader when the notice is delivered to them', () => {
+    const body = supervisionRetirementNotice({
+      failedHandle: 'builder',
+      replacementHandle: 'builder-2',
+      addressedHandle: 'chief',
+      trigger: 'abnormal-stop',
+      restartAttempts: SUPERVISION_MAX_RESTART_ATTEMPTS,
+      maxRestartAttempts: SUPERVISION_MAX_RESTART_ATTEMPTS,
+      maxConsecutiveFailures: SUPERVISION_MAX_CONSECUTIVE_FAILURES,
+      maxWindowFailures: SUPERVISION_WINDOW_FAILURES,
+      maxFailureWindowMs: SUPERVISION_FAILURE_WINDOW_MS,
+      completedWork: noWork,
+      releasedClaims: [{ direction: 'implements the parser', taskNumber: 7 }],
+    })
+    expect(body).toContain('@chief please reassign the items above to builder-2.')
+    expect(body).not.toContain('@human')
   })
 
   it('names the failure streak as the cause when that is what replaced the Member', () => {
-    const body = supervisionHandoffText({
+    const body = supervisionRetirementNotice({
       failedHandle: 'builder',
       replacementHandle: 'builder-2',
+      addressedHandle: 'human',
       trigger: 'consecutive-failures',
       restartAttempts: 0,
       maxRestartAttempts: SUPERVISION_MAX_RESTART_ATTEMPTS,
       maxConsecutiveFailures: SUPERVISION_MAX_CONSECUTIVE_FAILURES,
       maxWindowFailures: SUPERVISION_WINDOW_FAILURES,
       maxFailureWindowMs: SUPERVISION_FAILURE_WINDOW_MS,
+      completedWork: noWork,
       releasedClaims: [],
     })
-    expect(body).toContain('failed 3 turns in a row without finishing any of them')
+    expect(body).toContain('failed 3 turns in a row without finishing any of them and was archived.')
+    expect(body).toContain('- none recorded')
     expect(body).toContain('- none (its Claims were already released)')
   })
 
-  it('names the oversized context as the cause when that is what replaced the Member', () => {
-    const body = supervisionHandoffText({
+  it('names the failure rate as the cause when that is what replaced the Member', () => {
+    const body = supervisionRetirementNotice({
       failedHandle: 'builder',
       replacementHandle: 'builder-2',
-      trigger: 'context-oversize',
+      addressedHandle: 'human',
+      trigger: 'failure-rate',
       restartAttempts: 0,
       maxRestartAttempts: SUPERVISION_MAX_RESTART_ATTEMPTS,
       maxConsecutiveFailures: SUPERVISION_MAX_CONSECUTIVE_FAILURES,
       maxWindowFailures: SUPERVISION_WINDOW_FAILURES,
       maxFailureWindowMs: SUPERVISION_FAILURE_WINDOW_MS,
+      completedWork: noWork,
       releasedClaims: [],
     })
-    expect(body).toContain('`builder` could not fit its work into its context any more')
-    expect(body).toContain('by its own context policy or by the provider itself')
+    expect(body).toContain('builder failed 3 times within 20 minutes and was archived.')
   })
 })

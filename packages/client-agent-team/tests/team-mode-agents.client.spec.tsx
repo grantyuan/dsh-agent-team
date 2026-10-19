@@ -758,6 +758,35 @@ describe('Team archival surfaces', () => {
     await b.runtime.dispose()
   })
 
+  it('labels a generation inherited across a succession edge with its retired predecessor', async () => {
+    const b = await runtimeWithTeam({ initialChannels: true })
+    // A supervision succession: the successor's own live generation plus the
+    // Session carried over from the retired predecessor, which the Host marks
+    // with the predecessor's handle.
+    b.memberSessions.mockImplementation(async () => ({
+      ok: true as const,
+      value: [
+        { sessionId: 'session-current', isCurrent: true, createdAt: 1_729_999_000_000, eventCount: 30 },
+        { sessionId: 'session-predecessor', isCurrent: false, createdAt: 1_729_000_000_000, eventCount: 120, predecessorHandle: 'builder' },
+      ],
+    }))
+    fireEvent.click(b.view.getByRole('button', { name: '团队' }))
+    await b.view.findByText('builder')
+    fireEvent.click(b.view.getByRole('button', { name: 'builder 的操作' }))
+    fireEvent.click(await within(document.body).findByRole('menuitem', { name: '历史会话' }))
+    await b.view.findByText('历史会话：builder')
+    const page = b.view.container.querySelector('[data-team-session-history]') as HTMLElement
+    // The inherited row is labeled by its retired owner's handle, not as an
+    // anonymous "#2" generation, and its transcript opens on demand.
+    const inheritedRow = await within(page).findByRole('button', { name: /继承自 builder/ })
+    expect(inheritedRow.textContent).toContain('120 条事件')
+    expect(within(page).queryByRole('button', { name: /会话 #2/ })).toBeNull()
+    fireEvent.click(inheritedRow)
+    await within(page).findByText('transcript tail of session-predecessor')
+    await waitFor(() => expect(b.memberSessionTranscript).toHaveBeenCalledWith({ memberId: 'member:builder', sessionId: 'session-predecessor' }))
+    await b.runtime.dispose()
+  })
+
   it('states honestly when no session generation is readable yet', async () => {
     const b = await runtimeWithTeam({ initialChannels: true })
     b.memberSessions.mockImplementation(async () => ({

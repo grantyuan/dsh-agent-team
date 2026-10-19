@@ -63,10 +63,14 @@ function textOf(message: unknown): string {
  * surfaces render from. `system` is the rendered system prompt, `team` a
  * Member-to-Member relay, and `notice` a Host-injected Team notice or
  * context envelope — the three kinds the Human reviewer asked to tell apart
- * from ordinary Human input.
+ * from ordinary Human input. `error` and `warning` are outcomes the stored
+ * log carries outside the message surface (a failed turn, a tool that
+ * refused, a model attempt that never committed) and only the Human review
+ * fold emits: the audit page must show the whole process, not just the
+ * messages that survived.
  */
 export interface TranscriptEntry {
-  readonly role: 'system' | 'notice' | 'team' | 'user' | 'assistant' | 'tool-call' | 'tool-result'
+  readonly role: 'system' | 'notice' | 'team' | 'user' | 'assistant' | 'tool-call' | 'tool-result' | 'error' | 'warning'
   readonly text: string
 }
 
@@ -110,10 +114,13 @@ export function transcriptEntryOf(event: TranscriptEvent, options: { readonly mu
 }
 
 /**
- * One user-role message's lane: Team relays are peer exchanges, every other
- * injected form (notice, context snapshot envelope) reads as a Host notice,
- * and an ordinary source is Human input. Shared by the `user/message` event
- * and the messages an `agent/inbox/spliced` batch carried onto the surface.
+ * One user-role message's lane: only the Human's own input carries the `user`
+ * source kind; Team relays are peer exchanges, and every injected form —
+ * a Team notice or context envelope, or another producer's synthetic context
+ * (file-change notices, scheduled wakes, goal continuations) — reads as a
+ * Host notice, never as something the Human typed. Shared by the
+ * `user/message` event and the messages an `agent/inbox/spliced` batch
+ * carried onto the surface.
  */
 function userLaneEntryOf(data: Record<string, unknown> | undefined, bound: (text: string, limit?: number) => string): TranscriptEntry | undefined {
   const source = data?.source as { readonly kind?: unknown; readonly form?: unknown } | undefined
@@ -122,6 +129,7 @@ function userLaneEntryOf(data: Record<string, unknown> | undefined, bound: (text
   if (typeof source?.kind === 'string' && isAgentTeamSourceKind(source.kind)) {
     return { role: source.form === 'relay' ? 'team' : 'notice', text }
   }
+  if (typeof source?.kind === 'string' && source.kind !== 'user') return { role: 'notice', text }
   return { role: 'user', text }
 }
 
@@ -130,9 +138,14 @@ function userLaneEntryOf(data: Record<string, unknown> | undefined, bound: (text
  * zero, one, or several entries. An `agent/inbox/spliced` batch is where the
  * agent loop carried a Member's wake input onto the model-visible surface —
  * Team relays and notices included — so the page reads each inserted message
- * on its own lane instead of dropping the batch. The doctor's single-line fold
- * deliberately keeps ignoring splices: its budget and ordering are the
- * tail-evidence contract that surfaces failures to the model.
+ * on its own lane instead of dropping the batch. The fold also renders the
+ * outcomes that never reach the message surface — a turn that failed, was
+ * cancelled or blocked, a model attempt that committed no reply, a tool's
+ * structured failure, a context compaction — because the audit page owes the
+ * Human the whole real process, not just the messages that survived. The
+ * doctor's single-line fold deliberately keeps ignoring splices and these
+ * outcome events: its budget and ordering are the tail-evidence contract
+ * that surfaces failures to the model.
  */
 export function humanTranscriptEntriesOf(event: TranscriptEvent): readonly TranscriptEntry[] {
   if (event.type === 'agent/inbox/spliced') {
@@ -145,8 +158,132 @@ export function humanTranscriptEntriesOf(event: TranscriptEvent): readonly Trans
     }
     return entries
   }
+  if (event.type === 'turn/end') {
+    const entry = turnEndEntryOf(event)
+    return entry === undefined ? [] : [entry]
+  }
+  if (event.type === 'assistant/attempt') {
+    const entry = assistantAttemptEntryOf(event)
+    return entry === undefined ? [] : [entry]
+  }
+  if (event.type === 'developer/message') {
+    const entry = developerEntryOf(event)
+    return entry === undefined ? [] : [entry]
+  }
+  if (event.type === 'compaction/summary') {
+    const entry = compactionEntryOf(event)
+    return entry === undefined ? [] : [entry]
+  }
   const entry = transcriptEntryOf(event, { multiline: true })
-  return entry === undefined ? [] : [entry]
+  if (entry === undefined) return []
+  if (event.type === 'tool/result') {
+    const failure = (event.data as { readonly error?: { name?: unknown; code?: unknown; reason?: unknown } } | undefined)?.error
+    if (failure !== undefined) {
+      const detail = [
+        typeof failure.code === 'string' && failure.code !== '' ? failure.code : undefined,
+        typeof failure.reason === 'string' && failure.reason !== '' ? boundSynthetic(failure.reason) : undefined,
+      ].filter(part => part !== undefined).join(': ')
+      const name = typeof failure.name === 'string' && failure.name !== '' ? failure.name : 'The tool call'
+      return [entry, { role: 'error', text: detail === '' ? `${name} failed.` : `${name} failed (${detail}).` }]
+    }
+  }
+  return [entry]
+}
+
+/** Bounded one-line detail for a review-only synthetic row. */
+function boundSynthetic(text: string): string {
+  return clamp(text, 500)
+}
+
+/** `Turn 3` when the turn number survived the fold, `A turn` otherwise. */
+function turnSubject(event: TranscriptEvent): string {
+  const turn = (event.data as { readonly turn?: unknown } | undefined)?.turn
+  return typeof turn === 'number' ? `Turn ${turn}` : 'A turn'
+}
+
+/**
+ * `turn/end` is where the log records how a turn actually ended. `completed`
+ * is the ordinary flow and folds to nothing; every other outcome — and an
+ * unknown kind a later plugin adds — reaches the audit page, because a turn
+ * that failed silently is exactly what the reviewer needs to see.
+ */
+function turnEndEntryOf(event: TranscriptEvent): TranscriptEntry | undefined {
+  const reason = (event.data as { readonly reason?: { readonly kind?: unknown } & Record<string, unknown> } | undefined)?.reason
+  const kind = typeof reason?.kind === 'string' ? reason.kind : undefined
+  if (kind === undefined || kind === 'completed') return undefined
+  const who = turnSubject(event)
+  switch (kind) {
+    case 'error': {
+      const failure = reason?.error as { message?: unknown; code?: unknown } | undefined
+      const message = typeof failure?.message === 'string' && failure.message !== '' ? boundSynthetic(failure.message) : undefined
+      const code = typeof failure?.code === 'string' && failure.code !== '' ? failure.code : undefined
+      const detail = [message, code].filter(part => part !== undefined).join(' · ')
+      return { role: 'error', text: detail === undefined ? `${who} failed.` : `${who} failed: ${detail}.` }
+    }
+    case 'aborted': {
+      const cause = reason?.reason
+      const causeText = cause === undefined ? '' : boundSynthetic(typeof cause === 'string' ? cause : JSON.stringify(cause))
+      return { role: 'warning', text: causeText === '' ? `${who} was cancelled.` : `${who} was cancelled (${causeText}).` }
+    }
+    case 'blocked':
+      return { role: 'warning', text: `${who} stopped on a blocked step and did not finish.` }
+    case 'max-tokens':
+      return { role: 'warning', text: `${who} reached the model's output-length limit.` }
+    case 'interrupted':
+      return { role: 'warning', text: `${who} was still open when the program stopped; it was closed after the restart.` }
+    case 'forked':
+      return { role: 'notice', text: `${who} was closed because the session continued from this point into a new one.` }
+    default:
+      return { role: 'warning', text: `${who} ended with an unusual outcome (${kind}).` }
+  }
+}
+
+/**
+ * One model attempt that committed no reply: a failed, retried, cancelled,
+ * or stream-errored call whose only trace is its raw stream. The review fold
+ * reports it as a warning with the recorded finish reason when the stream
+ * carries one, so a Member that retried five times reads as five attempts,
+ * not silence.
+ */
+function assistantAttemptEntryOf(event: TranscriptEvent): TranscriptEntry | undefined {
+  const data = event.data as { readonly turn?: unknown; readonly step?: unknown; readonly stream?: unknown } | undefined
+  const stream = Array.isArray(data?.stream) ? data.stream : []
+  let finish: Record<string, unknown> | undefined
+  for (const record of stream) {
+    const chunk = (record as { readonly chunk?: unknown } | undefined)?.chunk
+    if (chunk !== null && typeof chunk === 'object' && (chunk as { type?: unknown }).type === 'finish') finish = chunk as Record<string, unknown>
+  }
+  const rawReason = finish?.reason
+  const reasonText = typeof rawReason === 'string' ? rawReason
+    : rawReason !== null && typeof rawReason === 'object'
+      ? clamp(JSON.stringify(rawReason), 200)
+      : undefined
+  const who = turnSubject(event)
+  const step = typeof data?.step === 'number' ? `, step ${data.step}` : ''
+  return { role: 'warning', text: reasonText === undefined ? `${who}${step} made a model attempt that produced no reply.` : `${who}${step} made a model attempt that produced no reply (${reasonText}).` }
+}
+
+/**
+ * `developer/message` carries session changes made mid-conversation (tool
+ * additions and removals, plus any text the change names). Text renders on
+ * the notice lane; a contentless change still names itself so the audit
+ * trail never loses a surface edit silently.
+ */
+function developerEntryOf(event: TranscriptEvent): TranscriptEntry | undefined {
+  const text = keepMultiline(textOf((event.data as { readonly message?: unknown } | undefined)?.message))
+  return { role: 'notice', text: text === '' ? 'A session change was applied (tool set updated).' : text }
+}
+
+/**
+ * A context compaction folded the earlier turns into a summary at this
+ * point; the replacement summary message follows on its own lane, so this
+ * row only states where the fold happened.
+ */
+function compactionEntryOf(event: TranscriptEvent): TranscriptEntry | undefined {
+  const data = event.data as { readonly shadowedSeqs?: unknown; readonly model?: unknown } | undefined
+  const count = Array.isArray(data?.shadowedSeqs) ? data.shadowedSeqs.length : undefined
+  const model = typeof data?.model === 'string' && data.model !== '' ? ` by ${data.model}` : ''
+  return { role: 'notice', text: count === undefined ? `The earlier conversation was compacted into a summary${model}.` : `${count} earlier entries were compacted into a summary${model}.` }
 }
 
 /** Render one event line, or undefined for events the transcript does not show. */

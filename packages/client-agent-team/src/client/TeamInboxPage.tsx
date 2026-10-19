@@ -4,9 +4,10 @@ import type { WorkspaceId } from '@deepseek-ai/dsh-api-workspace-controller/clie
 import { Button } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { TeamKey } from './locales.ts'
 import type { TeamConversationProps } from './slots.ts'
-import { claimersLabel, formatAbsoluteTime, formatInboxTime } from './team-formatters.ts'
+import { claimersLabel, formatAbsoluteTime, formatInboxTime, groupThreadRows, type TeamThreadWorkspaceGroup } from './team-formatters.ts'
 import { namedAvatarOwners, TeamAvatarStack, type TeamAvatarHuman } from './TeamAvatarStack.tsx'
 import { TeamCountBadge } from './TeamCountBadge.tsx'
+import { drainThreadUnread } from './requests.ts'
 import css from './conversation.module.css'
 import inboxCss from './inbox.module.css'
 
@@ -21,6 +22,8 @@ interface TeamInboxPageProps {
   readonly loadInbox: TeamConversationProps['loadInbox']
   /** Wake source while the page is open: one scope-less subscription, shared with the badge poll. */
   readonly subscribeChanges: TeamConversationProps['subscribeChanges']
+  /** The durable read the page-wide drain runs; opening a row still acknowledges through its Thread. */
+  readonly readThread: TeamConversationProps['readThread']
   readonly selectWorkspace: TeamConversationProps['selectWorkspace']
   readonly selectThread: TeamConversationProps['selectThread']
   /** The Human's display name, from the Client's one identity projection. */
@@ -100,19 +103,26 @@ function sortInboxRows(rows: readonly TeamInboxRow[], key: InboxSortKey): readon
   return [...rows].sort((left, right) => inboxSortValue(right, key) - inboxSortValue(left, key) || compareInboxRows(left, right))
 }
 
+/** The two names a row is filed under; module scope, so grouping needs no
+ * dependency of its own. */
+function inboxRowKeys(row: TeamInboxRow): { readonly workspaceId: WorkspaceId; readonly workspaceTitle: string; readonly channelRef: string; readonly channelName: string } {
+  return { workspaceId: row.workspaceId, workspaceTitle: row.workspaceTitle, channelRef: row.item.channelRef, channelName: row.item.channelName ?? '' }
+}
+
 /**
  * The Human Inbox: one Inbox call per visible Workspace, rendering the Host's
  * two slices — the unread queue (「需要我」, mentions counted inside it rather
  * than alone) and the 「最近活跃」 tail of Threads the reader took part in.
- * Both merge across every Workspace into one list in the Host's own order,
- * mentions first and then newest, rather than by Workspace.
+ * Both slices take rows from every visible Workspace, and each is partitioned
+ * the same way the decision queue is: a Workspace heading, then a Channel
+ * heading, with the reader's own sort re-laying only the rows inside a group.
  * Opening the page never acknowledges anything — only a durable Thread read
  * advances the watermark and consumes a mention marker, so rows and the badge
  * drop after the Thread is opened through the existing auto-ack path. A Thread
  * holding unread is only ever in the queue: the Host already excludes it from
  * the tail, and this page never re-derives that judgement.
  */
-export function TeamInboxPage({ useWorkspaces, loadInbox, subscribeChanges, selectWorkspace, selectThread, humanName, humanAvatarUrl, t }: TeamInboxPageProps) {
+export function TeamInboxPage({ useWorkspaces, loadInbox, subscribeChanges, readThread, selectWorkspace, selectThread, humanName, humanAvatarUrl, t }: TeamInboxPageProps) {
   const workspaces = useWorkspaces(state => state.items)
   const [rows, setRows] = useState<readonly TeamInboxRow[]>()
   const [recentRows, setRecentRows] = useState<readonly TeamInboxRow[]>([])
@@ -125,6 +135,11 @@ export function TeamInboxPage({ useWorkspaces, loadInbox, subscribeChanges, sele
   // The reader's own ordering, persisted per browser: the page defaults to
   // newest-reply first and keeps whatever taste the reader picked.
   const [sortKey, setSortKey] = useState<InboxSortKey>(() => loadInboxSortKey())
+  // The page-wide drain runs over every row that still holds unread in turn:
+  // the button reports that work while it lasts, and one refusal stops the
+  // sweep with one message rather than one error per row.
+  const [markingAll, setMarkingAll] = useState(false)
+  const [markAllError, setMarkAllError] = useState<string>()
   // Only the first refresh owns the loading surface; later wakes refresh the
   // rendered rows in place instead of flashing them back to skeleton.
   const loadedRef = useRef(false)
@@ -177,25 +192,34 @@ export function TeamInboxPage({ useWorkspaces, loadInbox, subscribeChanges, sele
   // Thread, so switching surfaces does not shift the content column.
   const totalUnread = rows?.reduce((sum, row) => sum + row.item.unreadCount, 0) ?? 0
   const totalMentions = rows?.reduce((sum, row) => sum + row.item.directCount, 0) ?? 0
-  // A row names its Workspace only while the rows on screen span more than one.
-  // With a single Workspace in the list the segment is a constant printed down
-  // every row, which spends the row's most readable position on something that
-  // never varies; the moment a second Workspace reaches the list it comes back,
-  // because two rows then have to be tellable apart. This reads the rows rather
-  // than the open Workspaces: a Workspace holding nothing to show here is not a
-  // reason to keep printing the name of the one that is.
-  const shownWorkspaces = new Set<string>()
-  for (const row of rows ?? []) shownWorkspaces.add(row.workspaceTitle)
-  for (const row of recentRows) shownWorkspaces.add(row.workspaceTitle)
-  const showWorkspace = shownWorkspaces.size > 1
-  // The reader's sort re-lays both slices; the 「最近活跃」 five-row cap was
-  // already cut in the Host's own order during refresh, so sorting here never
-  // changes which rows exist, only which row leads.
-  const queueRows = useMemo(() => sortInboxRows(rows ?? [], sortKey), [rows, sortKey])
-  const tailRows = useMemo(() => sortInboxRows(recentRows, sortKey), [recentRows, sortKey])
-  // One identity for every row on the page: the Host tells the rows which
-  // actor is the reader, the Client's identity projection says what that actor
-  // looks like. Either half missing leaves the stack on its initials fallback.
+  // Group order is the visible Workspace roster's own order; only the rows
+  // inside each Channel group follow the reader's key, so re-sorting never
+  // moves a group or changes which rows exist. The 「最近活跃」 five-row cap was
+  // already cut in the Host's own order during refresh.
+  const workspaceOrder = useMemo(() => workspaces.map(workspace => workspace.workspaceId), [workspaces])
+  const queueGroups = useMemo(() => groupThreadRows(sortInboxRows(rows ?? [], sortKey), inboxRowKeys, workspaceOrder), [rows, sortKey, workspaceOrder])
+  const tailGroups = useMemo(() => groupThreadRows(sortInboxRows(recentRows, sortKey), inboxRowKeys, workspaceOrder), [recentRows, sortKey, workspaceOrder])
+  // What the page's own action can act on: the queue rows still holding unread.
+  // The 「最近活跃」 tail never holds one — the Host keeps a Thread with unread in
+  // the queue alone — so the drain is the queue's own backlog and nothing else.
+  const rowsWithUnread = (rows ?? []).filter(row => row.item.unreadCount > 0)
+  const markAllRead = async (): Promise<void> => {
+    if (markingAll || rowsWithUnread.length === 0) return
+    setMarkingAll(true)
+    setMarkAllError(undefined)
+    try {
+      for (const row of rowsWithUnread) {
+        const taskRef = row.item.task?.taskRef
+        const drain = await drainThreadUnread(readThread, { workspaceId: row.workspaceId, threadRef: row.item.thread.threadRef, ...(taskRef === undefined ? {} : { taskRef }) })
+        if (drain.kind === 'refused') { setMarkAllError(t('inboxMarkAllReadFailed')); break }
+      }
+    } catch {
+      setMarkAllError(t('inboxMarkAllReadFailed'))
+    } finally {
+      setMarkingAll(false)
+      void refresh()
+    }
+  }
   const human = humanMemberId === undefined
     ? undefined
     : { memberId: humanMemberId, name: humanName, ...(humanAvatarUrl === undefined ? {} : { avatarUrl: humanAvatarUrl }) } satisfies TeamAvatarHuman
@@ -215,21 +239,26 @@ export function TeamInboxPage({ useWorkspaces, loadInbox, subscribeChanges, sele
         {/* The queue's axis belongs to the reader, not the Host: newest reply
             leads by default, and whatever other order they pick rides this
             browser's storage. It is kept even on an empty queue — the taste is
-            the page's control, not a filter over rows. */}
-        <div className={inboxCss.sortControl}>
-          <label className={inboxCss.sortLabel} htmlFor="team-inbox-sort">{t('inboxSortLabel')}</label>
-          <select
-            id="team-inbox-sort"
-            className={inboxCss.sortSelect}
-            value={sortKey}
-            onChange={event => {
-              const next = INBOX_SORT_KEYS.find(key => key === event.target.value) ?? 'latestReply'
-              setSortKey(next)
-              saveInboxSortKey(next)
-            }}
-          >
-            {INBOX_SORT_KEYS.map(key => <option key={key} value={key}>{t(INBOX_SORT_LABEL_KEYS[key])}</option>)}
-          </select>
+            the page's control, not a filter over rows. The page-wide
+            「全部已读」 leads it: clearing the whole backlog is about the queue the
+            axis orders, while opening one row stays the reader's own way in. */}
+        <div className={css.headerActions}>
+          <Button size="sm" variant="outline" disabled={markingAll || rowsWithUnread.length === 0} onClick={() => { void markAllRead() }}>{markingAll ? t('inboxMarkAllReadBusy') : t('inboxMarkAllRead')}</Button>
+          <div className={css.sortControl}>
+            <label className={css.sortLabel} htmlFor="team-inbox-sort">{t('inboxSortLabel')}</label>
+            <select
+              id="team-inbox-sort"
+              className={css.sortSelect}
+              value={sortKey}
+              onChange={event => {
+                const next = INBOX_SORT_KEYS.find(key => key === event.target.value) ?? 'latestReply'
+                setSortKey(next)
+                saveInboxSortKey(next)
+              }}
+            >
+              {INBOX_SORT_KEYS.map(key => <option key={key} value={key}>{t(INBOX_SORT_LABEL_KEYS[key])}</option>)}
+            </select>
+          </div>
         </div>
       </header>
     </div>
@@ -245,23 +274,46 @@ export function TeamInboxPage({ useWorkspaces, loadInbox, subscribeChanges, sele
               </div>
             </div>
           : <>
-              {rows.length > 0 && <section className={inboxCss.section}>
+              {queueGroups.length > 0 && <section className={inboxCss.section}>
                 <h2 className={inboxCss.sectionTitle}>{t('inboxSectionNeedsMe')}<span className={inboxCss.sectionCount}>{rows.length}</span></h2>
-                <div className={inboxCss.list}>
-                  {queueRows.map(row => <InboxQueueRow key={`${row.workspaceId} ${row.item.thread.threadRef}`} row={row} t={t} showWorkspace={showWorkspace} human={human} onOpen={() => { open(row) }} />)}
-                </div>
+                <InboxThreadGroups groups={queueGroups} t={t} human={human} onOpen={open} />
               </section>}
-              {recentRows.length > 0 && <section className={inboxCss.section}>
+              {tailGroups.length > 0 && <section className={inboxCss.section}>
                 <h2 className={inboxCss.sectionTitle}>{t('inboxSectionRecent')}<span className={inboxCss.sectionCount}>{recentRows.length}</span></h2>
-                <div className={inboxCss.list}>
-                  {tailRows.map(row => <InboxQueueRow key={`${row.workspaceId} ${row.item.thread.threadRef}`} row={row} t={t} showWorkspace={showWorkspace} human={human} onOpen={() => { open(row) }} />)}
-                </div>
+                <InboxThreadGroups groups={tailGroups} t={t} human={human} onOpen={open} />
               </section>}
             </>)}
         {rows !== undefined && error !== undefined && <p className={css.error} role="alert">{error}</p>}
+        {markAllError !== undefined && <p className={css.error} role="alert">{markAllError}</p>}
       </div>
     </div>
   </main>
+}
+
+/**
+ * One slice's rows, partitioned by Workspace and then by Channel. The two
+ * headings are what replaced the per-row 「Workspace / #Channel」 crumb: the
+ * reader learns where a Thread lives once, at the group it sits under, instead
+ * of reading it off every row. The counts close each heading so the reader never
+ * counts rows to find out how much a group holds.
+ */
+function InboxThreadGroups({ groups, t, human, onOpen }: {
+  readonly groups: readonly TeamThreadWorkspaceGroup<TeamInboxRow>[]
+  readonly t: TeamConversationProps['t']
+  readonly human: TeamAvatarHuman | undefined
+  readonly onOpen: (row: TeamInboxRow) => void
+}) {
+  return <>
+    {groups.map(group => <div key={group.workspaceId} className={css.group} data-team-inbox-group>
+      <h3 className={css.groupTitle}>{group.workspaceTitle}<span className={css.groupCount}>{group.channels.reduce((sum, channel) => sum + channel.rows.length, 0)}</span></h3>
+      {group.channels.map(channel => <div key={channel.channelRef} className={css.channelGroup}>
+        <h4 className={css.channelTitle}>#{channel.channelName}<span className={css.groupCount}>{channel.rows.length}</span></h4>
+        <div className={inboxCss.list}>
+          {channel.rows.map(row => <InboxQueueRow key={`${row.workspaceId} ${row.item.thread.threadRef}`} row={row} t={t} human={human} onOpen={() => { onOpen(row) }} />)}
+        </div>
+      </div>)}
+    </div>)}
+  </>
 }
 
 /**
@@ -286,10 +338,9 @@ export function TeamInboxPage({ useWorkspaces, loadInbox, subscribeChanges, sele
  * because a second visible count beside the first would cost the row the one
  * thing it needs to stay scannable.
  */
-function InboxQueueRow({ row, t, showWorkspace, human, onOpen }: {
+function InboxQueueRow({ row, t, human, onOpen }: {
   readonly row: TeamInboxRow
   readonly t: TeamConversationProps['t']
-  readonly showWorkspace: boolean
   readonly human: TeamAvatarHuman | undefined
   readonly onOpen: () => void
 }) {
@@ -328,11 +379,10 @@ function InboxQueueRow({ row, t, showWorkspace, human, onOpen }: {
         : <TeamAvatarStack owners={[namedActor]} label={t('inboxRowActor', { name: `@${namedActor.name}` })} human={human} />}
     </span>
     <span className={inboxCss.rowLine}>
+      {/* Which Workspace and which Channel this Thread lives in is stated by the
+          group headings above the row, so the identity line carries only the
+          Task marker and the queue's own marks. */}
       <span className={inboxCss.rowCrumb}>
-        {showWorkspace && <span className={inboxCss.rowWorkspace}>{row.workspaceTitle}</span>}
-        {showWorkspace && ' / '}
-        <span className={inboxCss.rowChannel}>#{item.channelName}</span>
-        {' '}
         {item.taskNumber !== undefined && <span className={inboxCss.rowTask}>{t('taskLabel', { number: item.taskNumber })}</span>}
       </span>
       {/* One capsule per row, closing the identity line beside the instant it

@@ -42,16 +42,23 @@ async function openThread(b: Awaited<ReturnType<typeof runtimeWithTeam>>, thread
   // the accessible name grows with it.
   const card = await b.view.findByRole('button', { name: /^收件箱/ })
   fireEvent.click(card)
-  // The row is looked up inside the Inbox page itself: the sidebar's Channel
-  // row names the same #engineering and would answer first from outside it.
+  // The row is looked up inside the Inbox page itself and by the Thread's own
+  // gist, which is what the row is named by now that its Workspace and Channel
+  // are the headings above it rather than a crumb on the row.
   const inboxPage = await waitFor(() => {
     const surface = b.view.container.querySelector('[data-team-inbox]')
     expect(surface).toBeTruthy()
     return surface as HTMLElement
   })
-  const row = await within(inboxPage).findByRole('button', { name: /#engineering/ })
+  const row = await within(inboxPage).findByRole('button', { name: /评估发布方案/ })
   fireEvent.click(row)
   return await b.view.findByRole('region', { name: '速览' })
+}
+
+/** Ask for the recap the way the reader does: the panel never spends a model
+ * call until this button is pressed. */
+function askForDigest(panel: HTMLElement): void {
+  fireEvent.click(within(panel).getByRole('button', { name: '生成速览' }))
 }
 
 /** Leave the open Thread through its own Back control, so the next
@@ -63,10 +70,15 @@ async function backFromThread(b: Awaited<ReturnType<typeof runtimeWithTeam>>): P
 }
 
 describe('Team Thread digest', () => {
-  it('asks the Host for one recap when the Thread opens, and leads the column with it', async () => {
+  it('waits for the reader to ask before spending a model call, then leads the column with the recap', async () => {
     const b = await runtimeWithTeam({ mode: 'team', workspaceId: 'w1', initialChannels: true, seedThreadRef: 'thread:d-read', seededMessages: [{ body: '评估发布方案', occurredAt: '2026-10-01T02:00:00.000Z' }], remainingUnreadCounts: [0] })
     const panel = await openThread(b, 'thread:d-read')
-    expect(panel.textContent).toContain('测试速览')
+    // Opening a Thread is free: the seat says what the button does and spends
+    // nothing on spec, so reading the timeline never bills a model call.
+    expect(within(panel).getByText(/点「生成速览」后/)).toBeTruthy()
+    expect(b.summarizeThread).not.toHaveBeenCalled()
+    askForDigest(panel)
+    expect(await within(panel).findByText('测试速览')).toBeTruthy()
     await waitFor(() => expect(b.summarizeThread).toHaveBeenCalledWith(expect.objectContaining({ workspaceId: 'w1', threadRef: 'thread:d-read' }), expect.any(AbortSignal)))
     // A recap that waits on nobody draws no decision band at all.
     expect(within(panel).queryByRole('radio')).toBeNull()
@@ -77,7 +89,8 @@ describe('Team Thread digest', () => {
     const b = await runtimeWithTeam({ mode: 'team', workspaceId: 'w1', initialChannels: true, seedThreadRef: 'thread:d-choice', seededMessages: [{ body: '评估发布方案', occurredAt: '2026-10-01T02:00:00.000Z' }], remainingUnreadCounts: [0] })
     b.seedDigest({ summary: '发布方案讨论待你拍板', needsHumanDecision: true, decisionQuestion: '走哪个方案？', options: ['方案A：直接发布', '方案B：灰度发布'] })
     const panel = await openThread(b, 'thread:d-choice')
-    expect(within(panel).getByText('走哪个方案？')).toBeTruthy()
+    askForDigest(panel)
+    expect(await within(panel).findByText('走哪个方案？')).toBeTruthy()
     expect(within(panel).getByText('发布方案讨论待你拍板')).toBeTruthy()
     const radiogroup = within(panel).getByRole('radiogroup', { name: '需要你决策' })
     expect(within(radiogroup).getAllByRole('radio')).toHaveLength(2)
@@ -98,19 +111,20 @@ describe('Team Thread digest', () => {
     const b = await runtimeWithTeam({ mode: 'team', workspaceId: 'w1', initialChannels: true, seedThreadRef: 'thread:d-multi', seededMessages: [{ body: '评估发布方案', occurredAt: '2026-10-01T02:00:00.000Z' }], remainingUnreadCounts: [0] })
     b.seedDigest({ summary: '改进项等你勾选', needsHumanDecision: true, decisionQuestion: '先做哪些？', options: ['加超时重试', '补发布回滚', '收紧日志'], optionSelection: 'multiple' })
     const panel = await openThread(b, 'thread:d-multi')
+    askForDigest(panel)
     // The hint tells the reader this ask takes more than one pick, and the
     // band offers checkboxes where a single-choice ask offered radios.
-    expect(within(panel).getByText('可勾选多个方案一并发送，或写下你的意见')).toBeTruthy()
+    expect(await within(panel).findByText('可勾选多个方案一并发送，或写下你的意见')).toBeTruthy()
     const group = within(panel).getByRole('group', { name: '需要你决策' })
     const boxes = within(group).getAllByRole('checkbox')
     expect(boxes).toHaveLength(3)
     // Tick order must not reorder the answer: options land in the digest's own order.
-    fireEvent.click(boxes[1])
-    fireEvent.click(boxes[0])
-    expect(boxes[1].getAttribute('aria-checked')).toBe('true')
-    fireEvent.click(boxes[1])
-    expect(boxes[1].getAttribute('aria-checked')).toBe('false')
-    fireEvent.click(boxes[2])
+    fireEvent.click(boxes[1]!)
+    fireEvent.click(boxes[0]!)
+    expect(boxes[1]!.getAttribute('aria-checked')).toBe('true')
+    fireEvent.click(boxes[1]!)
+    expect(boxes[1]!.getAttribute('aria-checked')).toBe('false')
+    fireEvent.click(boxes[2]!)
     fireEvent.click(within(panel).getByRole('button', { name: '发送所选方案' }))
     await waitFor(() => expect(b.reply).toHaveBeenCalledWith(expect.objectContaining({
       workspaceId: 'w1', threadRef: 'thread:d-multi', body: '我的决定：加超时重试；收紧日志', recipients: [], baseRevision: 2,
@@ -122,7 +136,8 @@ describe('Team Thread digest', () => {
     const b = await runtimeWithTeam({ mode: 'team', workspaceId: 'w1', initialChannels: true, seedThreadRef: 'thread:d-opinion', seededMessages: [{ body: '评估发布方案', occurredAt: '2026-10-01T02:00:00.000Z' }], remainingUnreadCounts: [0] })
     b.seedDigest({ summary: '发布方案讨论待你拍板', needsHumanDecision: true, decisionQuestion: '走哪个方案？', options: ['方案A：直接发布', '方案B：灰度发布'] })
     const panel = await openThread(b, 'thread:d-opinion')
-    const radiogroup = within(panel).getByRole('radiogroup', { name: '需要你决策' })
+    askForDigest(panel)
+    const radiogroup = await waitFor(() => within(panel).getByRole('radiogroup', { name: '需要你决策' }))
     fireEvent.click(within(radiogroup).getByRole('radio', { name: '方案A：直接发布' }))
     fireEvent.change(within(panel).getByLabelText('其它意见'), { target: { value: '两个都不行，先冻结发布' } })
     // Written words outrank the pressed option, and the button says so.
@@ -138,43 +153,59 @@ describe('Team Thread digest', () => {
     const b = await runtimeWithTeam({ mode: 'team', workspaceId: 'w1', initialChannels: true, seedThreadRef: 'thread:d-stored', seededMessages: [{ body: '评估发布方案', occurredAt: '2026-10-01T02:00:00.000Z' }], remainingUnreadCounts: [0] })
     const panel = await openThread(b, 'thread:d-stored')
     // The recap a previous visit left in the browser lands whole — the refresh
-    // never loses it — and the model seam is not paid again for the same revision.
+    // never loses it, the idle prompt is skipped, and the model seam is not paid
+    // again for the same revision.
     expect(within(panel).getByText('存好的速览')).toBeTruthy()
+    expect(within(panel).queryByRole('button', { name: '生成速览' })).toBeNull()
     expect(b.summarizeThread).not.toHaveBeenCalled()
     await b.runtime.dispose()
   })
 
-  it('keeps the recap across remounts, and an entry from an older revision never answers', async () => {
+  it('keeps a requested recap across remounts, and an entry from an older revision never answers', async () => {
     const b = await runtimeWithTeam({ mode: 'team', workspaceId: 'w1', initialChannels: true, seedThreadRef: 'thread:d-keep', seededMessages: [{ body: '评估发布方案', occurredAt: '2026-10-01T02:00:00.000Z' }], remainingUnreadCounts: [0] })
     const first = await openThread(b, 'thread:d-keep-a')
+    expect(b.summarizeThread).not.toHaveBeenCalled()
+    askForDigest(first)
     expect(await within(first).findByText('测试速览')).toBeTruthy()
-    await backFromThread(b)
-    const second = await openThread(b, 'thread:d-keep-b')
-    expect(await within(second).findByText('测试速览')).toBeTruthy()
-    await waitFor(() => expect(b.summarizeThread).toHaveBeenCalledTimes(2))
-    // Back to the first Thread: its seat remounts, the stored recap answers,
-    // and no third call is paid for facts that have not moved.
+    await waitFor(() => expect(b.summarizeThread).toHaveBeenCalledTimes(1))
+    // Back to the same Thread state: its seat remounts, the stored recap answers
+    // without the idle prompt, and no second call is paid for facts that have
+    // not moved.
     await backFromThread(b)
     const again = await openThread(b, 'thread:d-keep-a')
     expect(within(again).getByText('测试速览')).toBeTruthy()
+    expect(within(again).queryByRole('button', { name: '生成速览' })).toBeNull()
     await new Promise(resolve => { setTimeout(resolve, 50) })
-    expect(b.summarizeThread).toHaveBeenCalledTimes(2)
+    expect(b.summarizeThread).toHaveBeenCalledTimes(1)
+    // A different Thread carries no stored recap: opening it still spends
+    // nothing, and the reader's own click is what pays for the call.
+    await backFromThread(b)
+    const fresh = await openThread(b, 'thread:d-keep-b')
+    expect(within(fresh).getByRole('button', { name: '生成速览' })).toBeTruthy()
+    expect(b.summarizeThread).toHaveBeenCalledTimes(1)
+    askForDigest(fresh)
+    expect(await within(fresh).findByText('测试速览')).toBeTruthy()
+    await waitFor(() => expect(b.summarizeThread).toHaveBeenCalledTimes(2))
     // An entry kept from revision 1 must not speak for a Thread at revision 2.
     await backFromThread(b)
     localStorage.setItem('dsh.agent-team.thread-digest', JSON.stringify({
       'thread:d-old:1': { summary: '过期的速览', keyPoints: [], needsHumanDecision: false },
     }))
     const stale = await openThread(b, 'thread:d-old')
-    expect(await within(stale).findByText('测试速览')).toBeTruthy()
     expect(within(stale).queryByText('过期的速览')).toBeNull()
+    expect(within(stale).getByRole('button', { name: '生成速览' })).toBeTruthy()
+    askForDigest(stale)
+    expect(await within(stale).findByText('测试速览')).toBeTruthy()
     await waitFor(() => expect(b.summarizeThread).toHaveBeenCalledTimes(3))
     await b.runtime.dispose()
   })
 
-  it('degrades the panel to a retry surface when the digest call fails, and recovers on the next answer', async () => {
+  it('degrades the panel to a retry surface when the digest call fails, and recovers on the next ask', async () => {
     const b = await runtimeWithTeam({ mode: 'team', workspaceId: 'w1', initialChannels: true, seedThreadRef: 'thread:d-fail', seededMessages: [{ body: '评估发布方案', occurredAt: '2026-10-01T02:00:00.000Z' }], remainingUnreadCounts: [0] })
     b.failDigest()
     const panel = await openThread(b, 'thread:d-fail')
+    askForDigest(panel)
+    expect(await within(panel).findByRole('alert')).toBeTruthy()
     expect(within(panel).getByRole('alert').textContent).toContain('速览暂时无法生成')
     // The timeline is the Thread's own truth and never waits on the recap.
     expect(b.view.getAllByText('评估发布方案').length).toBeGreaterThan(0)

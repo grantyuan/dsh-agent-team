@@ -10,6 +10,8 @@ Sections can also be dropped per Member. The ledger profile's `droppedSections` 
 
 The listener keys on the assembly's turn signal: the agent loop is the only caller that assembles with one, so signal-less read-side assemblies such as `memberPromptView`'s still see the full list — dropped sections stay visible and recoverable in the dialog instead of masquerading as stale.
 
+The whole prompt profile is per-Member ledger state, so it travels with the Member through ordinary lifecycle operations — including a supervision handover, where the successor carries the predecessor's profile, `leader` flag, and context policy verbatim instead of reverting to defaults (see Host authority).
+
 The protected set is defined once in `member-runtime.ts` (`isProtectedPromptSection`): the paragraph section itself, the deployment persona slots, and the Team tools' `tool:<name>` guidance sections — a drop request for a protected name is refused at consumption, rendering the row inert with the protected mark. The nine Team tools ship their guidance in tool descriptions rather than registered sections, so the `tool:*` entries are defensive: no live section carries those names, so they never render as dialog rows. Names that no live section provides are stored but inert — the dialog marks them stale.
 
 `sectionToolMapping` is the shared primitive behind the dialog's "no automatic signal" mark: it scans each section's text for whole-word matches of the Member scope's tool schema names, so a section no current tool name maps to is prose-only.
@@ -52,6 +54,8 @@ Carried-input replay after a restart is bounded: a current generation that alrea
 
 Whether a Member Session has durable persisted content is decided through session-persistence inspection (which awaits in-flight retirement drains), never a bare metadata listing that races a suspend's final flush.
 
-Context pressure is a second Host-owned coordinator (`pressure-policy.ts`) riding the same pre-step seam: budget thresholds derive from the live route's context window (200K handoff / 256K hard caps with a safety reserve); at the handoff budget one structured notice per generation advises a rollover (re-armed after one); at the hard limit the coordinator forces an in-place compaction and fails closed when it cannot prove progress; a provider context-overflow failure gets one bounded compact-and-retry sequence.
+Context pressure is a second Host-owned coordinator (`pressure-policy.ts`), and the Host does not police context size: the coordinator's only lane is the provider-overflow rescue — a request the provider refuses because the context no longer fits its route earns one bounded compact-and-retry per open failure chain, re-armed only by a successful request, and a lane whose routed proxy owns compression (the `dsh_compaction_refused` rejection) never attempts it.
+
+The budget thresholds the Member reads on demand (acceptance advice, `context_timeline`, the checkpoint-return guard) derive from the live route's own model information. A Member manages its context itself through `context_rollover` and `context_checkpoint`, and an overflow that surfaces anyway feeds the supervision failure streak.
 
 In-place hard compaction never cancels the owner, so it stays exempt from the rollover job guard that rejects switches over running or unreported-terminal jobs.

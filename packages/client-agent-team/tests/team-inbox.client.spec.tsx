@@ -94,12 +94,12 @@ describe('Team Inbox surfaces', () => {
     b.seedInbox([inboxRow('w2', 'thread:w2')])
     await waitForEntryUnread(card, 1)
     fireEvent.click(card)
-    // The rows replace the empty state: one merged row for the seeded Workspace.
-    // The row addresses the reader by Channel, not by Workspace: with a single
-    // Workspace on screen that name is the same on every row, so the identity
-    // line spends its first position on what actually varies.
-    const row = await b.view.findByRole('button', { name: /#engineering/ })
-    expect(row.textContent).not.toContain('Beta')
+    // The row replaces the empty state, and where it lives is stated above it:
+    // the Workspace is one heading, the Channel a nested one, so no row repeats
+    // either name and the identity line keeps its first position for what varies.
+    expect(await b.view.findByRole('heading', { name: /^Beta/ })).toBeTruthy()
+    expect(b.view.getByRole('heading', { name: /#engineering/ })).toBeTruthy()
+    const row = await b.view.findByRole('button', { name: /Decision needed on the rollout/ })
     expect(row.textContent).toContain('Task #1')
     expect(row.textContent).toContain('Decision needed on the rollout')
     // Every row leads with the person its instant came from, and the row that
@@ -149,7 +149,7 @@ describe('Team Inbox surfaces', () => {
     b.seedInbox(rows)
     await waitForEntryUnread(card, 1)
     fireEvent.click(card)
-    const row = await b.view.findByRole('button', { name: /#engineering/ })
+    const row = await b.view.findByRole('button', { name: /Decision needed on the rollout/ })
     const actor = actorOf(row)!
     expect(actor.getAttribute('aria-label')).toBe('最新来自 @Ada')
     const image = await waitFor(() => {
@@ -177,9 +177,9 @@ describe('Team Inbox surfaces', () => {
     b.seedInbox(rows)
     await waitFor(() => expect(card.getAttribute('aria-label')).toBe('收件箱，155 条未读'))
     fireEvent.click(card)
-    const named = await b.view.findByRole('button', { name: /#engineering/ })
-    const ambient = await b.view.findByRole('button', { name: /#delivery/ })
-    const capped = await b.view.findByRole('button', { name: /#general/ })
+    const named = await b.view.findByRole('button', { name: /named row/ })
+    const ambient = await b.view.findByRole('button', { name: /ambient row/ })
+    const capped = await b.view.findByRole('button', { name: /capped row/ })
     // The ink is the whole difference: the row that names the reader wears the
     // solid fill the sidebar's unread dot and the Channel entry's count both
     // speak, and the row that merely moved keeps a hairline in the same geometry.
@@ -266,7 +266,7 @@ describe('Team Inbox surfaces', () => {
     // much of itself is on screen.
     expect(b.view.getByText('需要我').textContent).toBe('需要我1')
     expect(b.view.getByText('最近活跃').textContent).toBe('最近活跃1')
-    const open = b.view.getByRole('button', { name: /#engineering/ })
+    const open = b.view.getByRole('button', { name: /still waiting/ })
     expect(capsuleOf(open)?.textContent).toBe('1')
     // Zero is the absence of a badge, not a badge reading zero — the rule the
     // Channel feed's own Thread entry already follows. The row still names who
@@ -300,30 +300,66 @@ describe('Team Inbox surfaces', () => {
     await b.runtime.dispose()
   })
 
-  it('names the Workspace on a row only while the rows on screen span more than one', async () => {
+  it('partitions the queue by Workspace and then by Channel, never merging the rows flat', async () => {
     const b = await runtimeWithTeam({ mode: 'team', workspaceId: 'w1' })
     const card = await b.view.findByRole('button', { name: '收件箱' })
-    const one = [inboxRow('w1', 'thread:only', { previewText: 'only workspace' })]
-    b.seedInbox(one)
-    b.seedInbox(one)
-    await waitForEntryUnread(card, 1)
+    const rows = [
+      inboxRow('w1', 'thread:a', { previewText: 'alpha engineering' }),
+      inboxRow('w1', 'thread:b', { channelRef: 'channel:delivery', channelName: 'delivery', previewText: 'alpha delivery' }),
+      inboxRow('w2', 'thread:c', { previewText: 'beta engineering' }),
+      inboxRow('w2', 'thread:d', { channelRef: 'channel:delivery', channelName: 'delivery', previewText: 'beta delivery' }),
+    ]
+    b.seedInbox(rows)
+    b.seedInbox(rows)
+    await waitForEntryUnread(card, 4)
     fireEvent.click(card)
-    const single = await b.view.findByRole('button', { name: /only workspace/ })
-    // One Workspace in the list: the segment would be a constant printed down
-    // every row, so the identity line leads with the Channel instead.
-    expect(single.textContent).not.toContain('Alpha')
-    expect(single.textContent).toContain('#engineering')
-    // A second Workspace reaching the list brings it back — two rows now have to
-    // be tellable apart — and the separator keeps its spaces in the accessible
-    // name, which is why the crumb stays one run with a text node between its
-    // styled parts.
-    const both = [inboxRow('w1', 'thread:only', { previewText: 'only workspace' }),
-      inboxRow('w2', 'thread:other', { previewText: 'other workspace' })]
-    b.seedInbox(both)
-    b.seedInbox(both)
-    const alpha = await b.view.findByRole('button', { name: /Alpha \/ #engineering/ })
-    expect(alpha.textContent).toContain('only workspace')
-    expect(b.view.getByRole('button', { name: /Beta \/ #engineering/ })).toBeTruthy()
+    const page = await waitFor(() => {
+      const surface = b.view.container.querySelector('[data-team-inbox]')
+      expect(surface).toBeTruthy()
+      return surface as HTMLElement
+    })
+    const groups = [...page.querySelectorAll<HTMLElement>('[data-team-inbox-group]')]
+    // One group per Workspace, in the visible roster's own order, each naming the
+    // Workspace once and its Channels under it — so a Thread always lands under
+    // the same two names instead of the reader reading them off the row.
+    expect(groups.map(group => group.querySelector('h3')!.textContent)).toEqual(['Alpha2', 'Beta2'])
+    expect([...groups[0]!.querySelectorAll('h4')].map(heading => heading.textContent)).toEqual(['#delivery1', '#engineering1'])
+    expect([...groups[1]!.querySelectorAll('h4')].map(heading => heading.textContent)).toEqual(['#delivery1', '#engineering1'])
+    // Every row stays inside its own group: the previews read in group order, and
+    // a Beta row is never interleaved among Alpha's.
+    expect([...page.querySelectorAll('[class*="rowPreview"]')].map(node => node.textContent))
+      .toEqual(['alpha delivery', 'alpha engineering', 'beta delivery', 'beta engineering'])
+    await b.runtime.dispose()
+  })
+
+  it('clears the queue with 「全部已读」, reading each row that holds unread through once', async () => {
+    // The seed gives the bench a Thread for every read to land on: a read whose
+    // Thread the bench cannot resolve is refused, and the sweep would stop on it.
+    const b = await runtimeWithTeam({ mode: 'team', workspaceId: 'w1', seededMessages: [{ body: 'Thread opener', occurredAt: '2026-09-13T04:00:00.000Z' }] })
+    const card = await b.view.findByRole('button', { name: '收件箱' })
+    b.seedInbox([inboxRow('w1', 'thread:a', { previewText: 'alpha' }), inboxRow('w1', 'thread:b', { previewText: 'beta' })])
+    b.seedInbox([inboxRow('w1', 'thread:a', { previewText: 'alpha' }), inboxRow('w1', 'thread:b', { previewText: 'beta' })])
+    await waitForEntryUnread(card, 2)
+    fireEvent.click(card)
+    const page = await waitFor(() => {
+      const surface = b.view.container.querySelector('[data-team-inbox]')
+      expect(surface).toBeTruthy()
+      return surface as HTMLElement
+    })
+    const markAll = within(page).getByRole('button', { name: '全部已读' }) as HTMLButtonElement
+    // The page-wide action reads the same fact the rows do, so a queue holding
+    // unread can be cleared in one go instead of Thread by Thread.
+    expect(markAll.disabled).toBe(false)
+    fireEvent.click(markAll)
+    await waitFor(() => expect(b.readThread).toHaveBeenCalledTimes(2))
+    expect(b.readThread).toHaveBeenCalledWith(expect.objectContaining({ workspaceId: 'w1', threadRef: 'thread:a' }))
+    expect(b.readThread).toHaveBeenCalledWith(expect.objectContaining({ workspaceId: 'w1', threadRef: 'thread:b' }))
+    // A queue is what holds unread, so the drain empties it: the entry's own
+    // count follows the completed reads down, and the page, which now holds no
+    // unread row, has nothing left for the action to do.
+    await waitForEntryUnread(card, 0)
+    await waitFor(() => expect((within(page).getByRole('button', { name: '全部已读' }) as HTMLButtonElement).disabled).toBe(true))
+    expect(page.textContent).toContain('收件箱是空的')
     await b.runtime.dispose()
   })
 
@@ -342,7 +378,7 @@ describe('Team Inbox surfaces', () => {
     b.seedInbox([inboxRow('w2', 'thread:w2')])
     await waitForEntryUnread(card, 1)
     fireEvent.click(card)
-    const row = await b.view.findByRole('button', { name: /#engineering/ })
+    const row = await b.view.findByRole('button', { name: /Decision needed on the rollout/ })
     fireEvent.click(row)
     // The row's own Workspace is selected first, then the Thread: the durable
     // read consumes the mention, and the persisted location keeps the Thread
@@ -363,7 +399,7 @@ describe('Team Inbox surfaces', () => {
     await b.runtime.dispose()
   })
 
-  it('orders the narrow rail Inbox → Channels → Agents with the unread dot on the Inbox icon', async () => {
+  it('orders the narrow rail Inbox → Decisions → Tasks → Channels → Agents with the unread dot on the Inbox icon', async () => {
     const b = await runtimeWithTeam({ mode: 'team', workspaceId: 'w1' })
     // Collapse the fixture sidebar to the narrow rail.
     fireEvent.click(b.view.container.querySelector('[data-test-control]')!)
@@ -373,7 +409,7 @@ describe('Team Inbox surfaces', () => {
       return nav as HTMLElement
     })
     const labels = [...rail.querySelectorAll('button')].map(button => button.getAttribute('aria-label'))
-    expect(labels).toEqual(['收件箱', '任务', '频道', 'Agents'])
+    expect(labels).toEqual(['收件箱', '需要你决定', '任务', '频道', 'Agents'])
     b.seedInbox([inboxRow('w1', 'thread:w1')])
     b.seedInbox([inboxRow('w1', 'thread:w1')])
     const inboxButton = within(rail).getByRole('button', { name: '收件箱' })
@@ -392,7 +428,7 @@ describe('Team Inbox surfaces', () => {
     b.seedInbox([inboxRow('w1', 'thread:w1')])
     await waitForEntryUnread(card, 1)
     fireEvent.click(card)
-    await waitFor(() => expect(b.view.getByRole('button', { name: /#engineering/ })).toBeTruthy())
+    await waitFor(() => expect(b.view.getByRole('button', { name: /Decision needed on the rollout/ })).toBeTruthy())
     // The Host projects one unread slice now; a caller that still narrowed the
     // call to mentions would fail here, and so would the dot, which counts
     // every unread fact the slice reports.
@@ -404,27 +440,25 @@ describe('Team Inbox surfaces', () => {
     await b.runtime.dispose()
   })
 
-  it('merges the Workspace slices in the Host order, mentions before merely newer rows', async () => {
+  it("keeps the Host's own admission order inside a group while each Workspace stays its own group", async () => {
     const b = await runtimeWithTeam({ mode: 'team', workspaceId: 'w1' })
     const card = await b.view.findByRole('button', { name: '收件箱' })
-    // The mentioned row is the oldest of the three, so a recency merge would
-    // sink it to the bottom; it also sits in w1 with another row, so a
-    // Workspace-order merge would keep both above Beta. This order is neither.
-    b.seedInbox([
-      inboxRow('w1', 'thread:w1-old', { previewText: 'mentioned', directCount: 2, newestSequence: 3, newestOccurredAt: '2026-09-01T02:00:00.000Z' }),
-      inboxRow('w2', 'thread:w2-new', { previewText: 'newest', directCount: 0, newestSequence: 40, newestOccurredAt: '2026-09-13T02:00:00.000Z' }),
-      inboxRow('w1', 'thread:w1-mid', { previewText: 'middle', directCount: 0, newestSequence: 9, newestOccurredAt: '2026-09-10T02:00:00.000Z' }),
-    ])
-    b.seedInbox([
-      inboxRow('w1', 'thread:w1-old', { previewText: 'mentioned', directCount: 2, newestSequence: 3, newestOccurredAt: '2026-09-01T02:00:00.000Z' }),
-      inboxRow('w2', 'thread:w2-new', { previewText: 'newest', directCount: 0, newestSequence: 40, newestOccurredAt: '2026-09-13T02:00:00.000Z' }),
-      inboxRow('w1', 'thread:w1-mid', { previewText: 'middle', directCount: 0, newestSequence: 9, newestOccurredAt: '2026-09-10T02:00:00.000Z' }),
-    ])
+    // Every row carries the same clocks, so the reader's own key ties and the
+    // Host's keys decide: the mentioned row leads the merely newer one, and the
+    // two Workspaces stay separate groups rather than one merged list.
+    const rows = [
+      inboxRow('w1', 'thread:w1-old', { previewText: 'mentioned', directCount: 2, newestSequence: 3 }),
+      inboxRow('w1', 'thread:w1-mid', { previewText: 'middle', directCount: 0, newestSequence: 9 }),
+      inboxRow('w2', 'thread:w2-new', { previewText: 'newest', directCount: 0, newestSequence: 40 }),
+    ]
+    b.seedInbox(rows)
+    b.seedInbox(rows)
     await waitForEntryUnread(card, 3)
     fireEvent.click(card)
     await waitFor(() => expect(b.view.container.querySelectorAll('[data-team-inbox] button[class*="row"]').length).toBe(3))
     const previews = [...b.view.container.querySelectorAll('[data-team-inbox] button[class*="row"] [class*="rowPreview"]')].map(node => node.textContent)
-    expect(previews).toEqual(['mentioned', 'newest', 'middle'])
+    // Group order leads: Alpha's two rows in the Host's own order, then Beta's.
+    expect(previews).toEqual(['mentioned', 'middle', 'newest'])
     await b.runtime.dispose()
   })
 

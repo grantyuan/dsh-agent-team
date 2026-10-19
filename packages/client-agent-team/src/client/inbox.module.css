@@ -113,10 +113,9 @@
 }
 
 /* Provenance is the row's identity, so it carries the row's ink: the Channel is
-   what varies from row to row and what the reader scans for, and it leads in
-   primary 600 while the Workspace stays a quiet prefix. Styled runs are safe
-   here because the separator is a text node of its own — the control's
-   accessible name keeps its spaces. The one-line clamp is what stops a squeezed
+   what varies from row to row and what the reader scans for. The Channel is
+   named by the row's own group heading now, so this line carries only the Task
+   marker and leads nowhere else. The one-line clamp is what stops a squeezed
    seat from crushing the run into a column of two characters. */
 .rowCrumb {
   flex: 1 1 auto;
@@ -126,18 +125,6 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-/* The Workspace is drawn only while the rows on screen span more than one: a
-   name repeated down every row spends the row's best position on a constant.
-   It returns by itself as soon as a second Workspace reaches the list, because
-   two rows must still be tellable apart. */
-.rowWorkspace {
-  color: var(--dsw-alias-label-tertiary);
-  font-size: 12px;
-}
-.rowChannel {
-  color: var(--dsw-alias-label-primary);
-  font-weight: 600;
 }
 /* The Task marker rides the provenance line as a hairline chip — the same one
    the neutral count uses, so the row carries exactly one kind of quiet chip.
@@ -256,35 +243,6 @@
   line-height: 15px;
   padding: 0 5px;
   white-space: nowrap;
-}
-
-/* The queue's ordering is the reader's taste, and it lives in the header band
-   beside the totals the same order reads — a labeled native select, the
-   control rhythm the shipped surfaces already keep. */
-.sortControl {
-  align-items: center;
-  display: flex;
-  flex: none;
-  gap: 6px;
-}
-.sortLabel {
-  color: var(--dsw-alias-label-tertiary);
-  font-size: 12px;
-  white-space: nowrap;
-}
-.sortSelect {
-  background: transparent;
-  border: 1px solid var(--dsw-alias-border-l2);
-  border-radius: var(--dsw-radius-sm, 6px);
-  color: var(--dsw-alias-label-primary);
-  cursor: pointer;
-  font: inherit;
-  font-size: 12px;
-  padding: 2px 6px;
-}
-.sortSelect:focus-visible {
-  outline: var(--dsw-focus-ring-width, 2px) solid var(--dsw-focus-ring-color, var(--dsw-alias-state-business-primary));
-  outline-offset: -1px;
 }
 
 /* The page's two slices — 「需要我」 is the queue, 「最近活跃」 the way back into

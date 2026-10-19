@@ -10,6 +10,8 @@ Section 也可以按 Member 移除。ledger 画像的 `droppedSections` 记录 H
 
 listener 以 assembly 的 turn signal 为门：agent loop 是唯一带着 signal 装配的调用方，因此 `memberPromptView` 这类无 signal 的 read-side 装配仍看到完整清单——被 drop 的 section 在对话框中保持可见、可恢复，而不会伪装成 stale。
 
+整份 prompt 画像都是 per-Member 的 ledger 状态，因此随 Member 经由普通 lifecycle operation 流转——包括 supervision 换代：继任者逐字携带前任的画像、`leader` 标记与 context 策略，而不会回退到默认值（见 Host authority）。
+
 protected 集合在 `member-runtime.ts` 一处定义（`isProtectedPromptSection`）：段落 section 自身、deployment persona 槽位、以及 Team tools 的 `tool:<name>` guidance sections——对受保护名字的 drop 请求在消费端拒绝，对话框将该行渲染为带受保护标记的不可操作状态。九个 Team tools 目前把 guidance 放在 tool description 而非注册的 prompt section 里，所以 `tool:*` 条目今天是前瞻防御：没有任何 live section 携带这些名字，它们不会渲染为对话框的 live 或 stale 行。没有任何 live section 提供的名字照常存储但不起作用——对话框标记为已失效。
 
 `sectionToolMapping` 是对话框「无自动信号」标记背后的共享 primitive：它扫描每个 section 的文本，对 Member scope 工具 schema 名做整词匹配，不匹配任何当前工具名的 section 即为纯散文。
@@ -46,7 +48,9 @@ unit 自带 fork cut，seed 子代的继承前缀折叠回同一引用。换窗�
 
 恢复由日志派生：重启重放 pending 意图并完成换窗；落在 rollover 的 durable commit 与新 Session 激活之间的重启，会从 ledger 记录的上一 Session 重建 handoff——即使新 Session 在崩溃前从未落盘——且重建幂等（自身日志已含 handoff 的一代不再收到第二条）。重启后的 carried-input 重放是有界的：当前代一旦已开始自身 turn 即跳过重放（其携带输入已在运行中被投递或取代）；上一代 Session 不可读时，属日志损坏类（`corrupt session log`，Host 会修复 torn tail）或确定性格式拒绝类（`SessionFormatUnsupportedError`，重试无法改变结果）的以 warn 放行，缺失/IO 及未知原因仍 fail-closed——当前代一旦运行过，其激活不再受退役代可读性阻塞。Member Session 是否有 durable 持久内容，通过 session-persistence inspection 判定（会等待进行中的 retirement drain），绝不使用会与 suspend 终末 flush 竞争的裸元数据列表。
 
-上下文压力是第二个 Host 持有的 coordinator（`pressure-policy.ts`），挂在同一 pre-step 接缝上：预算阈值从当前 route 的 context window 派生（handoff 200K / 硬上限 256K cap 加安全 reserve）；handoff 预算处每 generation 一条结构化通知建议 rollover（一次后重新武装）；硬上限处强制原地 compaction，无法证明进展即 fail closed；provider context-overflow 失败获得一条有界 compact-and-retry 序列。原地硬 compaction 绝不取消 owner，因此豁免于拒绝持有 running 或未上报 terminal jobs 的 rollover job guard。
+上下文压力是第二个 Host 持有的 coordinator（`pressure-policy.ts`），且 Host 不盯上下文大小：该 coordinator 只剩 provider 溢出自救一条车道——provider 因上下文装不下而拒绝的请求，每次开放故障链获得一条有界 compact-and-retry，只有成功请求才重新武装；被路由 proxy 接管压缩的车道（`dsh_compaction_refused` 拒绝）从不尝试。
+
+Member 按需读到的预算阈值（验收建议、`context_timeline`、checkpoint 回返守卫）从当前 route 自身的模型信息派生。Member 通过 `context_rollover` 与 `context_checkpoint` 自管上下文，仍然上浮的溢出交给 supervision 的故障计数。原地 compaction 绝不取消 owner，因此豁免于拒绝持有 running 或未上报 terminal jobs 的 rollover job guard。
 
 Web Client 是唯一的 Human control surface。它通过 typed Remote 把每个 mutation 委托给 `ctx.agentTeam`，不绕过 Host authorization 或 ledger commits。不要重新加入 slash-command adapter 作为第二界面。
 

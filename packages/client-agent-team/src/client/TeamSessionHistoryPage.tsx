@@ -165,7 +165,11 @@ export function TeamSessionHistoryPage({ memberId, loadMembers, loadMemberSessio
                     onClick={() => { setSelected(generation.sessionId) }}
                   >
                     <span className={css.generationTitle}>
-                      {generation.isCurrent ? t('sessionHistoryCurrent') : t('sessionHistoryGeneration', { index: index + 1 })}
+                      {generation.isCurrent
+                        ? t('sessionHistoryCurrent')
+                        : generation.predecessorHandle !== undefined
+                          ? t('sessionHistoryInherited', { name: generation.predecessorHandle })
+                          : t('sessionHistoryGeneration', { index: index + 1 })}
                     </span>
                     <span className={css.generationMeta}>
                       {readable
@@ -243,4 +247,6 @@ const ROLE_LABEL_KEYS: Record<AgentTeamMemberSessionTranscriptEntry['role'], Tea
   assistant: 'historyRoleAssistant',
   'tool-call': 'historyRoleToolCall',
   'tool-result': 'historyRoleToolResult',
+  error: 'historyRoleError',
+  warning: 'historyRoleWarning',
 }

@@ -94,6 +94,9 @@ const memberPromptProfileSchema = z.object({
 const memberSchema = z.object({
   memberId: memberIdSchema,
   sessionId: sessionIdSchema,
+  // Ledgers written before supervised succession existed omit the field; it
+  // names the Member a replacement succeeded and is absent on originals.
+  predecessorMemberId: memberIdSchema.optional(),
   workspaceId: workspaceIdSchema,
   handle: z.string().min(1),
   description: z.string(),

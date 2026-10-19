@@ -26,11 +26,13 @@ import { SessionFormatUnsupportedError } from '@deepseek-ai/dsh-session-persiste
 import SessionTitle from '@deepseek-ai/dsh-session-title'
 import SessionProjectionRegistry from '@deepseek-ai/dsh-session-projection'
 import Storage from '@deepseek-ai/dsh-storage'
-import { DomainFacility } from '@deepseek-ai/dsh-storage-domain'
+import { DomainFacility, type KvTable } from '@deepseek-ai/dsh-storage-domain'
 import SystemPrompt from '@deepseek-ai/dsh-system-prompt'
 import ToolRuntime from '@deepseek-ai/dsh-tools'
 import { WorkspaceId } from '@deepseek-ai/dsh-workspace'
-import AgentTeam, { AGENT_TEAM_HUMAN_MEMBER_ID, AGENT_TEAM_TOOL_NAMES, isTsxDevMode, markAgentTeamPreset, teamPresetScopeMismatchMessage } from '../src/index.ts'
+import AgentTeam, { AGENT_TEAM_HUMAN_MEMBER_ID, AGENT_TEAM_TOOL_NAMES, isTsxDevMode, markAgentTeamPreset, retirementRecapDigestMessages, teamPresetScopeMismatchMessage } from '../src/index.ts'
+import type { TranscriptEntry } from '../src/failure-transcript.ts'
+import { DIGEST_SYSTEM_PREFIX } from '../src/thread-digest.ts'
 import { checkpointRefFor, foldTeamContextProjection } from '../src/context-projection.ts'
 import { AGENT_TEAM_PLUGIN_ID, continuationCheckpointRefOf, handoffOf, isCheckpointContinuationMessage, isHandoffMessage } from '../src/context-source.ts'
 import { RECOVERY_DELAY_MS } from '../src/recovery.ts'
@@ -38,12 +40,17 @@ import { RELEVANCE_JUDGE_SYSTEM_PREFIX } from '../src/context-relevance.ts'
 import { COMPLETION_MARKER } from '../src/response-guard.ts'
 import { CONTINUATION_NUDGE_MARKER, continuationNudgeText } from '../src/continuation-watcher.ts'
 import { LIAISON_REPORT_GRACE_MS } from '../src/completion-liaison.ts'
-import type { AgentTeamChannelRef, AgentTeamClaimRef, AgentTeamMemberId, AgentTeamRequestId } from '../src/types.ts'
+import type { AgentTeamChannelRef, AgentTeamClaimRef, AgentTeamMemberId, AgentTeamOperation, AgentTeamOperationId, AgentTeamRequestId } from '../src/types.ts'
+import { AgentTeamLedger } from '../src/ledger.ts'
 import { MemoryStorageBackend } from './helpers/memory-backend.ts'
 
 const cleanups: Array<() => Promise<void>> = []
 const originalDshHome = process.env.DSH_HOME
 const requestId = (value: string): AgentTeamRequestId => value as AgentTeamRequestId
+/** A cold ledger over the same table: sequential-replay validation must accept the stored records. */
+function replayLedger(facility: DomainFacility): AgentTeamLedger {
+  return new AgentTeamLedger(facility.get('agent_team')!.table('operations') as unknown as KvTable<AgentTeamOperationId, AgentTeamOperation>)
+}
 /** The ENOENT shape the JSONL backend raises when a walk hits a win32 staging directory mid-rename. */
 const persistenceRaceError = (): Error =>
   Object.assign(new Error("scandir ENOENT: transient win32 staging directory raced the walk (test seam)"), { code: 'ENOENT' })
@@ -72,9 +79,12 @@ class ScriptedAdapter extends EmptyAdapter {
   private readonly responses: StreamChunk[][] = []
   /** Context window per model name; the pressure route probe drives this. */
   resolveModelWindow: (model: string) => number = () => 320_000
+  /** Default per-request output cap per model; the pressure budget reserve reads this. */
+  resolveMaxTokens: (model: string) => number | undefined = () => undefined
 
   override resolveModel(provider: string, model: string) {
-    return Promise.resolve({ provider, id: model, name: model, context: { contextWindow: this.resolveModelWindow(model) } })
+    const defaultMaxTokens = this.resolveMaxTokens(model)
+    return Promise.resolve({ provider, id: model, name: model, ...(defaultMaxTokens === undefined ? {} : { defaultMaxTokens }), context: { contextWindow: this.resolveModelWindow(model) } })
   }
 
   enqueue(response: StreamChunk[]): void {
@@ -116,6 +126,38 @@ class JudgingAdapter extends ScriptedAdapter {
     this.judgements.push(system)
     const verdict = this.verdicts.shift() ?? textResponse('{"relevance": 0}')
     for (const chunk of verdict) yield chunk
+  }
+}
+
+/**
+ * Answers the retirement recap digest from its own queue keyed on the digest
+ * system line, so recap tests never budget the Member's own turns: every other
+ * call stays the empty harness's healthy `Done.` round. The digest reply is the
+ * bounded JSON the parser expects.
+ */
+class DigestAdapter extends EmptyAdapter {
+  /** The digest prompt's rendered transcript, one entry per recap call. */
+  readonly recapInputs: string[] = []
+  private readonly recapReplies: Array<'reply' | 'fault' | 'hang'> = []
+
+  /** Queue a usable recap for the next digest call. */
+  recapReply(): void { this.recapReplies.push('reply') }
+  /** Queue a provider fault for the next digest call. */
+  recapFault(): void { this.recapReplies.push('fault') }
+  /** Queue a never-resolving digest call for the next one. */
+  recapHang(): void { this.recapReplies.push('hang') }
+
+  override async * stream(options: GenerateOptions): AsyncIterable<StreamChunk> {
+    const system = typeof options.system === 'string' ? options.system : ''
+    if (!system.includes(DIGEST_SYSTEM_PREFIX)) {
+      yield* super.stream(options)
+      return
+    }
+    this.recapInputs.push((options.messages[0]!.content[0] as { readonly text: string }).text)
+    const reply = this.recapReplies.shift() ?? 'reply'
+    if (reply === 'fault') throw new Error('digest provider exploded')
+    if (reply === 'hang') await new Promise<void>(() => {})
+    for (const chunk of textResponse('{"summary":"Final recap from the test provider","keyPoints":["shipped the builder","left a note"]}')) yield chunk
   }
 }
 
@@ -2732,80 +2774,6 @@ describe('Agent Team checkpoint lineage (ticket 02 ancestors)', () => {
 })
 
 describe('Agent Team pressure policy integration (ticket 03)', () => {
-  it('steers the one-shot pressure notice into a running Member turn at the handoff budget', async () => {
-    const adapter = new ScriptedAdapter()
-    const { ctx, workspaceId, pressureState } = await realHarness(adapter)
-    const channel = await ctx.agentTeam.createChannel({ requestId: requestId('press-channel'), workspaceId, name: 'engineering', description: 'Engineering work' })
-    const added = await ctx.agentTeam.addMember({ requestId: requestId('press-add'), workspaceId, handle: 'builder', description: 'Builds the implementation', presetId: 'team-member', channelRefs: [channel.channel.channelRef] })
-    const sessionId = added.status.member.sessionId
-    const live = ctx.agents.get(sessionId)!
-
-    // Below the handoff budget: no notice at all.
-    pressureState.usageTokens = 150_000
-    adapter.enqueue(textResponse('ordinary work.'))
-    live.followup(createUserMessage({ content: [{ type: 'text', text: 'ordinary turn' }], source: { kind: 'user' } }))
-    await live.whenIdle()
-    expect(live.session.ownEvents().some(event => event.type === 'user/message'
-      && (event.data as { source?: { summary?: string } }).source?.summary === 'Context pressure: prepare a handoff')).toBe(false)
-
-    // At the handoff budget: exactly one structured notice rides the next
-    // turn, and further turns in the same generation do not repeat it.
-    pressureState.usageTokens = 200_000
-    adapter.enqueue(textResponse('under pressure.'))
-    live.followup(createUserMessage({ content: [{ type: 'text', text: 'another turn' }], source: { kind: 'user' } }))
-    await live.whenIdle()
-    const notices = () => live.session.ownEvents().filter(event => event.type === 'user/message'
-      && (event.data as { source?: { summary?: string } }).source?.summary === 'Context pressure: prepare a handoff')
-    expect(notices()).toHaveLength(1)
-    const notice = notices()[0]!
-    expect((notice.data as { content: ReadonlyArray<{ type: string; text?: string }> }).content[0]?.text).toContain('context_rollover')
-
-    adapter.enqueue(textResponse('still under pressure.'))
-    live.followup(createUserMessage({ content: [{ type: 'text', text: 'third turn' }], source: { kind: 'user' } }))
-    await live.whenIdle()
-    expect(notices()).toHaveLength(1)
-    // The Member stays available throughout: a notice is not a failure.
-    const status = ctx.agentTeam.members().find(entry => entry.member.memberId === added.status.member.memberId)!
-    expect(status.availability).toBe('active')
-  })
-
-  it('a fresh rollover re-arms the pressure notice for the new generation', async () => {
-    const adapter = new ScriptedAdapter()
-    const { ctx, workspaceId, pressureState } = await realHarness(adapter)
-    const channel = await ctx.agentTeam.createChannel({ requestId: requestId('rearm-channel'), workspaceId, name: 'engineering', description: 'Engineering work' })
-    const added = await ctx.agentTeam.addMember({ requestId: requestId('rearm-add'), workspaceId, handle: 'builder', description: 'Builds the implementation', presetId: 'team-member', channelRefs: [channel.channel.channelRef] })
-    const memberId = added.status.member.memberId
-    const previousSessionId = added.status.member.sessionId
-
-    pressureState.usageTokens = 200_000
-    adapter.enqueue(textResponse('pressured turn.'))
-    const live = ctx.agents.get(previousSessionId)!
-    live.followup(createUserMessage({ content: [{ type: 'text', text: 'turn one' }], source: { kind: 'user' } }))
-    await live.whenIdle()
-    const noticesIn = (agent: ReturnType<typeof ctx.agents.get>) => agent!.session.ownEvents().filter(event => event.type === 'user/message'
-      && (event.data as { source?: { summary?: string } }).source?.summary === 'Context pressure: prepare a handoff')
-    expect(noticesIn(live)).toHaveLength(1)
-
-    // Fresh rollover: the new generation gets its own notice budget.
-    pressureState.usageTokens = 200_000
-    adapter.enqueue(toolCallResponse('call-rearm-nc', 'context_rollover', { handoff: 'rearm handoff' }))
-    adapter.enqueue(textResponse('new generation.'))
-    live.followup(createUserMessage({ content: [{ type: 'text', text: 'hand off' }], source: { kind: 'user' } }))
-    const renewed = await waitFor(() => {
-      const current = ctx.agentTeam.members().find(status => status.member.memberId === memberId)
-      return current !== undefined && current.member.sessionId !== previousSessionId ? current : undefined
-    })
-    const next = await waitFor(() => ctx.agents.get(renewed.member.sessionId)!)
-    await waitFor(() => next.session.ownEvents().some(event => event.type === 'user/message') ? true : undefined)
-    await next.whenIdle()
-    // The new generation observes the budget again on its next turn.
-    pressureState.usageTokens = 200_000
-    adapter.enqueue(textResponse('next generation turn.'))
-    next.followup(createUserMessage({ content: [{ type: 'text', text: 'continue' }], source: { kind: 'user' } }))
-    await next.whenIdle()
-    expect(noticesIn(next)).toHaveLength(1)
-  })
-
   it('task acceptance no longer schedules standalone auto compaction', async () => {
     const adapter = new ScriptedAdapter()
     const { ctx, workspaceId, pressureState } = await realHarness(adapter)
@@ -2852,11 +2820,12 @@ describe('Agent Team pressure policy integration (ticket 03)', () => {
     const accepted = await ctx.agentTeam.changeTask({ requestId: requestId('advice-accept'), workspaceId, taskRef: started.task!.taskRef, action: 'accept', baseRevision: humanRead.thread.revision })
     if (accepted.kind !== 'committed') throw new Error(`expected committed accept, received ${accepted.kind}`)
 
-    // Tier boundary: 127,999 (just below the 128K task-boundary threshold on
-    // a 320K window route) keeps the context.
-    pressureState.usageTokens = 127_999
+    // Tier boundary: 186,367 (just below the task-boundary threshold — 64%
+    // of the 291,200 handoff budget priced by this 320K window route) keeps
+    // the context.
+    pressureState.usageTokens = 186_367
     const keep = await ctx.agentTeam.readThreadForAgent(live, { requestId: requestId('advice-read-keep'), workspaceId, taskRef: started.task!.taskRef })
-    expect(keep.contextAdvice).toMatchObject({ action: 'keep', usageTokens: 127_999, taskBoundaryThreshold: 128_000, handoffAt: 200_000 })
+    expect(keep.contextAdvice).toMatchObject({ action: 'keep', usageTokens: 186_367, taskBoundaryThreshold: 186_368, handoffAt: 291_200 })
     expect(keep.contextAdvice?.guidance).toContain('do not create a redundant checkpoint')
 
     // A repeat read after the unread batch was consumed carries no advice:
@@ -2864,10 +2833,10 @@ describe('Agent Team pressure policy integration (ticket 03)', () => {
     const repeat = await ctx.agentTeam.readThreadForAgent(live, { requestId: requestId('advice-read-repeat'), workspaceId, taskRef: started.task!.taskRef })
     expect(repeat.contextAdvice).toBeUndefined()
 
-    // 128,000 exactly: advise a fresh rollover after closeout. Each tier is
+    // 186,368 exactly: advise a fresh rollover after closeout. Each tier is
     // priced through its own acceptance: the Task is reopened and accepted
     // again so the acknowledging read re-establishes the trigger.
-    pressureState.usageTokens = 128_000
+    pressureState.usageTokens = 186_368
     const reopenedForRollover = await ctx.agentTeam.changeTask({ requestId: requestId('advice-reopen-rollover'), workspaceId, taskRef: started.task!.taskRef, action: 'reopen', baseRevision: repeat.thread.revision })
     if (reopenedForRollover.kind !== 'committed') throw new Error(`expected committed reopen, received ${reopenedForRollover.kind}`)
     const memberReadRollover = await ctx.agentTeam.readThreadForAgent(live, { requestId: requestId('advice-member-read-rollover'), workspaceId, taskRef: started.task!.taskRef })
@@ -2884,7 +2853,7 @@ describe('Agent Team pressure policy integration (ticket 03)', () => {
     expect(rollover.contextAdvice?.guidance).toContain('context_rollover')
 
     // At the handoff budget the tier escalates to handoff-now.
-    pressureState.usageTokens = 200_000
+    pressureState.usageTokens = 291_200
     const rolloverRepeat = await ctx.agentTeam.readThreadForAgent(live, { requestId: requestId('advice-read-rollover-repeat'), workspaceId, taskRef: started.task!.taskRef })
     expect(rolloverRepeat.contextAdvice).toBeUndefined()
     const reopened = await ctx.agentTeam.changeTask({ requestId: requestId('advice-reopen'), workspaceId, taskRef: started.task!.taskRef, action: 'reopen', baseRevision: rolloverRepeat.thread.revision })
@@ -2934,13 +2903,14 @@ describe('Agent Team pressure policy integration (ticket 03)', () => {
     const accepted = await ctx.agentTeam.changeTask({ requestId: requestId('narrow-advice-accept'), workspaceId, taskRef: started.task!.taskRef, action: 'accept', baseRevision: humanRead.thread.revision })
     if (accepted.kind !== 'committed') throw new Error(`expected committed accept, received ${accepted.kind}`)
 
-    // Narrow route (112K window → 88K handoff): the threshold is
-    // min(128K, 88K) = 88K — 87,999 keeps, the fixed 128K number would be
-    // too late for this route.
-    pressureState.usageTokens = 87_999
+    // Narrow route (112K window → 96K hard limit → 88K handoff, since the
+    // 4% reserve 4,480 floors to the 8K minimum): the task-boundary is 64% of
+    // that handoff budget = 56,320 — 56,319 keeps, and a fixed 128K would be
+    // unreachable on this route entirely.
+    pressureState.usageTokens = 56_319
     const keep = await ctx.agentTeam.readThreadForAgent(live, { requestId: requestId('narrow-advice-read-keep'), workspaceId, taskRef: started.task!.taskRef })
-    expect(keep.contextAdvice).toMatchObject({ action: 'keep', taskBoundaryThreshold: 88_000 })
-    expect(keep.contextAdvice?.usageTokens).toBe(87_999)
+    expect(keep.contextAdvice).toMatchObject({ action: 'keep', taskBoundaryThreshold: 56_320 })
+    expect(keep.contextAdvice?.usageTokens).toBe(56_319)
 
     // Meter failure degrades to an explicit unavailable advice, never a
     // fabricated threshold verdict and never a failed read.
@@ -3101,87 +3071,41 @@ describe('Agent Team pressure policy integration (ticket 03)', () => {
     expect(() => ctx.agentTeam.validateLedger()).not.toThrow()
   })
 
-  it('derives the pressure budgets from the Member\'s current pinned route, honoring route changes', async () => {
+  it('derives the context budgets from the Member\'s current pinned route, honoring route changes', async () => {
     const adapter = new ScriptedAdapter()
-    const { ctx, workspaceId, pressureState } = await realHarness(adapter)
+    const { ctx, workspaceId } = await realHarness(adapter)
     const channel = await ctx.agentTeam.createChannel({ requestId: requestId('route-channel'), workspaceId, name: 'engineering', description: 'Engineering work' })
-    // A Member pinned to a narrow-window model: the mock adapter reports one
-    // context window, the pinned-model resolution must reflect the pinned
-    // route rather than whatever the last request happened to use.
     const added = await ctx.agentTeam.addMember({ requestId: requestId('route-add'), workspaceId, handle: 'builder', description: 'Builds the implementation', presetId: 'team-member', channelRefs: [channel.channel.channelRef] })
     const memberId = added.status.member.memberId
-    const sessionId = added.status.member.sessionId
-    const live = ctx.agents.get(sessionId)!
-    pressureState.usageTokens = 0
-    adapter.enqueue(textResponse('first turn on the default route.'))
-    live.followup(createUserMessage({ content: [{ type: 'text', text: 'warm up' }], source: { kind: 'user' } }))
-    await live.whenIdle()
+    const live = ctx.agents.get(added.status.member.sessionId)!
 
-    // Pin a different route with a much smaller context window; the budgets
-    // must follow the pinned selection at the next pre-step even though the
-    // last persisted request/context still names the old default route.
+    // Pin a narrow-window route: the budgets follow the pinned selection at
+    // the next pricing even though nothing has been requested through it yet
+    // (112K window → 96K hard limit, 88K handoff — the 4% reserve floors to
+    // 8K here), not the default route's 304K/291.2K.
     await ctx.agentTeam.updateMember({ requestId: requestId('route-edit'), memberId, handle: 'builder', description: 'Builds the implementation', model: { provider: 'mock', model: 'narrow' } })
     adapter.resolveModelWindow = (model: string) => model === 'narrow' ? 112_000 : 320_000
-    // 90K usage: below the wide-route handoff budget (200K) but above the
-    // narrow route's effective budgets (112K window → 96K hard, 88K handoff).
-    // The notice must fire for the NARROW budgets because the pinned route
-    // changed — and quote them, not the default route's.
-    pressureState.usageTokens = 90_000
-    adapter.enqueue(textResponse('under the narrow budget now.'))
-    live.followup(createUserMessage({ content: [{ type: 'text', text: 'check the narrow budget' }], source: { kind: 'user' } }))
-    await live.whenIdle()
-    const notices = live.session.ownEvents().filter(event => event.type === 'user/message'
-      && (event.data as { source?: { summary?: string } }).source?.summary === 'Context pressure: prepare a handoff')
-    expect(notices).toHaveLength(1)
-    const notice = notices[0] as { type: 'user/message'; data: { content: ReadonlyArray<{ type: string; text?: string }> } }
-    const noticeText = notice.data.content[0]?.text ?? ''
-    // The notice quotes the NARROW route's budgets, not the default's.
-    expect(noticeText).toContain('the handoff budget is 88000')
-    expect(noticeText).toContain('the hard limit is 96000')
+    const timeline = await ctx.agentTeam.contextTimelineForAgent(live, { memberId })
+    expect(timeline.hardLimit).toBe(96_000)
+    expect(timeline.handoffAt).toBe(88_000)
     expect(() => ctx.agentTeam.validateLedger()).not.toThrow()
   })
 
-  it('does not repeat the pressure notice after a Host restart within the same generation', async () => {
+  it('reserves the route-disclosed default output cap when pricing the context budget', async () => {
     const adapter = new ScriptedAdapter()
-    const { ctx, workspaceId, pressureState, teamFiber: initialFiber } = await realHarness(adapter)
-    const channel = await ctx.agentTeam.createChannel({ requestId: requestId('prestart-channel'), workspaceId, name: 'engineering', description: 'Engineering work' })
-    const added = await ctx.agentTeam.addMember({ requestId: requestId('prestart-add'), workspaceId, handle: 'builder', description: 'Builds the implementation', presetId: 'team-member', channelRefs: [channel.channel.channelRef] })
-    const memberId = added.status.member.memberId
-    const sessionId = added.status.member.sessionId
-    const live = ctx.agents.get(sessionId)!
-
-    // At the handoff budget, exactly one notice lands in this generation.
-    pressureState.usageTokens = 200_000
-    adapter.enqueue(textResponse('working under pressure.'))
-    live.followup(createUserMessage({ content: [{ type: 'text', text: 'under pressure' }], source: { kind: 'user' } }))
-    await live.whenIdle()
-    const noticeCount = () => live.session.ownEvents().filter(event => event.type === 'user/message'
-      && (event.data as { source?: { summary?: string } }).source?.summary === 'Context pressure: prepare a handoff').length
-    expect(noticeCount()).toBe(1)
-
-    // Host restart on the same Session: the durable notice (delivered or
-    // still spliced into the inbox) latches — no second notice in the same
-    // generation, and the Member stays available.
-    adapter.enqueue(textResponse('still going after the restart.'))
-    await ctx.agentTeam.suspendMember({ requestId: requestId('prestart-suspend'), memberId })
-    await initialFiber.dispose()
-    await new Promise(resolve => setImmediate(resolve))
-    await ctx.plugin(AgentTeam)
-    await ctx.agentTeam.resumeMember({ requestId: requestId('prestart-resume'), memberId })
-    const resumed = await waitFor(() => {
-      const agent = ctx.agents.get(sessionId)
-      return agent !== undefined && agent.status === 'idle' ? agent : undefined
-    })
-    pressureState.usageTokens = 210_000
-    adapter.enqueue(textResponse('one more turn after the restart.'))
-    resumed.followup(createUserMessage({ content: [{ type: 'text', text: 'keep working' }], source: { kind: 'user' } }))
-    await resumed.whenIdle()
-    await new Promise(resolve => setTimeout(resolve, 100))
-    const after = resumed.session.ownEvents().filter(event => event.type === 'user/message'
-      && (event.data as { source?: { summary?: string } }).source?.summary === 'Context pressure: prepare a handoff').length
-    expect(after).toBe(1)
-    const status = ctx.agentTeam.members().find(entry => entry.member.memberId === memberId)!
-    expect(status.availability).toBe('active')
+    const { ctx, workspaceId } = await realHarness(adapter)
+    // The same 320K route now discloses a 64K default per-request output cap:
+    // the budget prices 256,000 hard / 243,200 handoff (window − 64K − 12.8K),
+    // not the undisclosed 304,000 / 291,200 — a request that may spend 64K on
+    // the answer cannot also fill the window with context.
+    adapter.resolveMaxTokens = () => 64_000
+    const channel = await ctx.agentTeam.createChannel({ requestId: requestId('maxtok-channel'), workspaceId, name: 'engineering', description: 'Engineering work' })
+    const added = await ctx.agentTeam.addMember({ requestId: requestId('maxtok-add'), workspaceId, handle: 'builder', description: 'Builds the implementation', presetId: 'team-member', channelRefs: [channel.channel.channelRef] })
+    const live = ctx.agents.get(added.status.member.sessionId)!
+    const timeline = await ctx.agentTeam.contextTimelineForAgent(live, { memberId: added.status.member.memberId })
+    expect(timeline.hardLimit).toBe(256_000)
+    expect(timeline.handoffAt).toBe(243_200)
+    expect(() => ctx.agentTeam.validateLedger()).not.toThrow()
   })
 })
 
@@ -4295,8 +4219,10 @@ describe('Agent Team recovery hardening (ticket 04)', () => {
     await next.whenIdle()
     // The ancestor grew large by the time it is REPLAYED — no live
     // generation sees the big number; only the source-replayed pricing
-    // (timeline and return guard) reads it.
-    pressureState.bySession.set(firstSessionId, 500_000)
+    // (timeline and return guard) reads it. Scaled to the anchor's retained
+    // share, one million still prices far above the 320K route's 291,200
+    // handoff budget.
+    pressureState.bySession.set(firstSessionId, 1_000_000)
 
     // The timeline prices the ancestor anchor against the ANCESTOR's own
     // measurement (replayed through the meter): the retained estimate stays
@@ -4706,6 +4632,24 @@ describe('Agent Team change version domains', () => {
   })
 })
 
+describe('Retirement recap digest fold', () => {
+  it('keeps only the newest twenty entries and labels each lane by its author', () => {
+    const roles: readonly TranscriptEntry['role'][] = ['system', 'notice', 'team', 'user', 'assistant', 'tool-call', 'tool-result']
+    const entries: readonly TranscriptEntry[] = Array.from({ length: 25 }, (_, index) => ({ role: roles[index % roles.length]!, text: `line-${index}` }))
+    const folded = retirementRecapDigestMessages('builder', entries)
+    // The digest reads only the final-Session tail: the oldest five fall away.
+    expect(folded.map(message => message.text)).toEqual(Array.from({ length: 20 }, (_, index) => `line-${index + 5}`))
+    const authorOf = (text: string): string => folded.find(message => message.text === text)!.author
+    // The Member's own turns carry its handle; every other lane keeps its label.
+    expect(authorOf('line-11')).toBe('builder')
+    expect(authorOf('line-10')).toBe('human')
+    expect(authorOf('line-9')).toBe('teammate')
+    expect(authorOf('line-7')).toBe('notice')
+    expect(authorOf('line-5')).toBe('tool')
+    expect(folded.every(message => message.mentions.length === 0)).toBe(true)
+  })
+})
+
 describe('Member supervision handover', () => {
   /** The shared supervision input: one Channel Member holding an active Claim. */
   async function setupClaimedMember(ctx: Context, workspaceId: WorkspaceId, prefix: string) {
@@ -4778,12 +4722,139 @@ describe('Member supervision handover', () => {
     // The replacement carries its predecessor's private memory and Channel,
     // and asked the Human in Channel for the work.
     await expect(readFile(join(replacement!.member.privateMemoryPath, 'notes', 'design.md'), 'utf8')).resolves.toBe('inherited note')
-    const notice = view.items.map(item => item.message).filter(message => message.body.includes('Supervision handover'))
+    const notice = view.items.map(item => item.message).filter(message => message.body.includes('Supervision retirement'))
     expect(notice).toHaveLength(1)
     expect(notice[0]!.sender).toBe(replacement!.member.memberId)
+    expect(notice[0]!.body).toContain('Supervision retirement — builder')
     expect(notice[0]!.body).toContain('@human')
-    expect(notice[0]!.body).toContain('`builder` stopped abnormally and stayed stopped after 3/3 bring-up attempts')
-    expect(notice[0]!.body).toContain('- implements the feature')
+    expect(notice[0]!.body).toContain('builder stopped abnormally and stayed stopped after 3/3 bring-up attempts')
+    expect(notice[0]!.body).toContain('- implements the feature (task #1)')
+    expect(() => ctx.agentTeam.validateLedger()).not.toThrow()
+  })
+
+  /**
+   * Spend the bring-up budget on an unreachable Member, run the give-up pass
+   * (where the recap call starts) and the handover pass, running a checkpoint
+   * between them once the recap call has been observed.
+   */
+  async function driveRetirement(ctx: Context, presets: TestablePresets, memberSessionId: SessionId, between?: () => Promise<void>): Promise<void> {
+    const agent = ctx.agents.get(memberSessionId)!
+    presets.orphaned.add(agent.ctx)
+    presets.failingMount = true
+    for (let pass = 0; pass < 3; pass += 1) {
+      await ctx.agentTeam.runSupervisionPass()
+      const rebuilt = ctx.agents.get(memberSessionId)
+      if (rebuilt !== undefined) await waitForIdle(ctx, rebuilt)
+    }
+    await ctx.agentTeam.runSupervisionPass()
+    if (between !== undefined) await between()
+    presets.failingMount = false
+    await ctx.agentTeam.runSupervisionPass()
+  }
+
+  /** The one Channel notice carrying the retirement公示, or undefined. */
+  function retirementNoticeBody(ctx: Context, workspaceId: WorkspaceId): string | undefined {
+    return ctx.agentTeam.view({ workspaceId }).items.map(item => item.message).find(message => message.body.includes('Supervision retirement'))?.body
+  }
+
+  it('appends the final-Session recap to the retirement notice when the digest model answers', async () => {
+    const adapter = new DigestAdapter()
+    adapter.recapReply()
+    const { ctx, workspaceId, presets } = await realHarness(adapter)
+    const { added } = await setupClaimedMember(ctx, workspaceId, 'supervise-recap')
+    await driveRetirement(ctx, presets, added.status.member.sessionId, async () => {
+      // The recap call is issued at the give-up pass; wait for it to land, then
+      // let its tail (parse + slot settle) run before the handover reads it.
+      await vi.waitFor(() => expect(adapter.recapInputs).toHaveLength(1))
+      await new Promise(resolve => setTimeout(resolve, 0))
+    })
+
+    const body = retirementNoticeBody(ctx, workspaceId)!
+    expect(body).toContain('Final Session recap:')
+    expect(body).toContain('Final recap from the test provider')
+    expect(body).toContain('- shipped the builder')
+    // The digest read only the retired Member's own final Session.
+    expect(adapter.recapInputs[0]).toContain('[Thread messages, oldest first]')
+    expect(() => ctx.agentTeam.validateLedger()).not.toThrow()
+  })
+
+  it('ships the retirement notice without a recap when the digest provider faults', async () => {
+    const adapter = new DigestAdapter()
+    adapter.recapFault()
+    const { ctx, workspaceId, presets } = await realHarness(adapter)
+    const { added } = await setupClaimedMember(ctx, workspaceId, 'supervise-recap-fault')
+    await driveRetirement(ctx, presets, added.status.member.sessionId, async () => {
+      await vi.waitFor(() => expect(adapter.recapInputs).toHaveLength(1))
+      await new Promise(resolve => setTimeout(resolve, 0))
+    })
+
+    const body = retirementNoticeBody(ctx, workspaceId)!
+    expect(body).toContain('Supervision retirement — builder')
+    expect(body).not.toContain('Final Session recap')
+    expect(() => ctx.agentTeam.validateLedger()).not.toThrow()
+  })
+
+  it('never blocks the handover on a hanging digest call', async () => {
+    const adapter = new DigestAdapter()
+    adapter.recapHang()
+    const { ctx, workspaceId, presets } = await realHarness(adapter)
+    const { added } = await setupClaimedMember(ctx, workspaceId, 'supervise-recap-hang')
+    // The digest is observed as issued yet never settles: the handover must not
+    // wait on it, and the notice therefore ships with no recap section.
+    await driveRetirement(ctx, presets, added.status.member.sessionId, async () => {
+      await vi.waitFor(() => expect(adapter.recapInputs).toHaveLength(1))
+    })
+
+    expect(ctx.agentTeam.members().find(status => status.member.handle === 'builder-2')).toMatchObject({ availability: 'active' })
+    const body = retirementNoticeBody(ctx, workspaceId)!
+    expect(body).toContain('Supervision retirement — builder')
+    expect(body).not.toContain('Final Session recap')
+    expect(() => ctx.agentTeam.validateLedger()).not.toThrow()
+  })
+
+  it('carries a succession edge so the successor lists and reads the retired predecessor\'s Sessions', async () => {
+    const { ctx, workspaceId, presets } = await realHarness()
+    const { added, memberId } = await setupClaimedMember(ctx, workspaceId, 'supervise-lineage')
+
+    // Spend the bring-up budget on a Member no bring-up can repair, then run the
+    // give-up pass (private reset, still broken) and the handover pass — the
+    // same coercion chain the single-Channel handover test walks.
+    const agent = ctx.agents.get(added.status.member.sessionId)!
+    presets.orphaned.add(agent.ctx)
+    presets.failingMount = true
+    for (let pass = 0; pass < 3; pass += 1) {
+      await ctx.agentTeam.runSupervisionPass()
+      const rebuilt = ctx.agents.get(added.status.member.sessionId)
+      if (rebuilt !== undefined) await waitForIdle(ctx, rebuilt)
+    }
+    await ctx.agentTeam.runSupervisionPass()
+    presets.failingMount = false
+    await ctx.agentTeam.runSupervisionPass()
+
+    const replacement = ctx.agentTeam.members().find(status => status.member.handle === 'builder-2')
+    expect(replacement, JSON.stringify(ctx.agentTeam.members().map(status => status.member.handle))).toMatchObject({ availability: 'active' })
+    // The succession edge lands in the ledger: the successor names its retired
+    // predecessor, and the predecessor keeps no edge of its own.
+    expect(replacement!.member.predecessorMemberId).toBe(memberId)
+    expect(ctx.agentTeam.members().find(status => status.member.memberId === memberId)!.member.predecessorMemberId).toBeUndefined()
+
+    // The successor's lineage crosses the edge: its own current generation
+    // leads, the retired predecessor's Session follows — the predecessor's log
+    // stays where the Harness stored it, copied or moved nowhere.
+    const predecessorSession = added.status.member.sessionId
+    const sessions = await ctx.agentTeam.memberSessions({ memberId: replacement!.member.memberId })
+    expect(sessions.map(entry => entry.sessionId)).toEqual([replacement!.member.sessionId, predecessorSession])
+    expect(sessions[0]!.isCurrent).toBe(true)
+    expect(sessions[1]!.isCurrent).toBe(false)
+    // The list labels inherited history by its owner's handle: the successor's
+    // own generation carries no label, the predecessor's generation carries the
+    // retired Member's handle.
+    expect(sessions[0]!.predecessorHandle).toBeUndefined()
+    expect(sessions[1]!.predecessorHandle).toBe('builder')
+
+    // The predecessor's Session is readable THROUGH the successor entry.
+    const page = await ctx.agentTeam.memberSessionTranscript({ memberId: replacement!.member.memberId, sessionId: predecessorSession })
+    expect(JSON.stringify(page.entries)).toContain('Build the feature')
     expect(() => ctx.agentTeam.validateLedger()).not.toThrow()
   })
 
@@ -4816,51 +4887,21 @@ describe('Member supervision handover', () => {
     expect(() => ctx.agentTeam.validateLedger()).not.toThrow()
   })
 
-  it('escalates a pressure-blocked Member straight to the context reset instead of nudging it', async () => {
-    const { ctx, workspaceId } = await realHarness()
-    const { added, memberId, agent, taskRef } = await setupClaimedMember(ctx, workspaceId, 'supervise-blocked')
-
-    // The generation is wedged the way a refused hard-limit compaction wedges
-    // it: the pressure policy recorded a fail-closed request block and every
-    // turn ends as a pre-step reject — a blocked turn emits no `agent/error`
-    // of its own, so no streak counter ever sees it and the recorded
-    // diagnostic is all supervision has to read.
-    ctx.emit('agent/error', { agent, turn: 1, step: 1, error: new Error('context hard limit compaction failed: 403: {"type":"server_error","code":"dsh_compaction_refused","message":"dsh native compaction call refused by billion-context","retryable":false}; the request was blocked') })
-    const previousSessionId = added.status.member.sessionId
-
-    // The very first pass escalates instead of nudging: no continuation prompt
-    // is steered into the wedged generation — that nudge would wake the Member
-    // straight into the same block — and the Host privately resets the context
-    // (fresh Session, same handle, same Claims), which heals the Member.
-    await ctx.agentTeam.runSupervisionPass()
-    await vi.waitFor(() => {
-      const status = ctx.agentTeam.members().find(status => status.member.memberId === memberId)
-      expect(status!.member.sessionId).not.toBe(previousSessionId)
-      expect(status).toMatchObject({ availability: 'active' })
-    })
-
-    // The reset healed it: no handover broadcast, the roster is unchanged, and
-    // the claimed Task stays with the same Member.
-    expect(ctx.agentTeam.view({ workspaceId }).items.map(item => item.message).filter(message => message.body.includes('Supervision'))).toHaveLength(0)
-    expect(ctx.agentTeam.members().map(status => status.member.handle)).toEqual(['builder'])
-    expect(ctx.agentTeam.view({ workspaceId }).tasks.find(task => task.taskRef === taskRef)).toMatchObject({ status: 'in_progress' })
-    expect(() => ctx.agentTeam.validateLedger()).not.toThrow()
-  })
-
-  it('resets a Member whose provider keeps refusing an oversized context, instead of nudging it on', async () => {
+  it('resets a Member that fails three turns in a row instead of nudging it on', async () => {
     const { ctx, workspaceId } = await realHarness()
     const { added, memberId, agent, taskRef } = await setupClaimedMember(ctx, workspaceId, 'supervise-oversize')
 
-    // The dev-judy shape: the route's own preflight compression cannot bring the
-    // context back under the model window, so every turn ends with the same
-    // refusal and no Team-side budget ever sees it. One such failure may still be
-    // cleared by a route change, so it keeps its gentle bring-up; the second,
-    // with no clean turn in between, proves the nudge only re-pays for the same
-    // rejected request — and the Host replaces the context instead of asking
-    // the Member to try that oversized context again.
+    // The dev-judy shape, under the failure-streak policy: the route's own
+    // preflight compression cannot bring the context under the model window,
+    // so every turn ends with the same refusal. Supervision never reads the
+    // diagnostic — only the plain failure count matters — and three
+    // consecutive failed turns with no clean one in between spend the streak:
+    // the Host replaces the context instead of nudging the Member back into
+    // the same wall.
     ctx.emit('agent/error', { agent, turn: 1, step: 1, error: new Error('context ~105899 tokens exceeds the model window 112500 (model=Qwen3.8-27B), with 0 compressible range(s) still visible') })
-    const previousSessionId = added.status.member.sessionId
     ctx.emit('agent/error', { agent, turn: 2, step: 1, error: new Error('502: {"type":"server_error","code":"preflight_compress_failed","message":"context ~127173 tokens exceeds the model window 112500; raise the model context window or restart the session"}') })
+    const previousSessionId = added.status.member.sessionId
+    ctx.emit('agent/error', { agent, turn: 3, step: 1, error: new Error('context ~128001 tokens exceeds the model window 112500 (model=Qwen3.8-27B), with 0 compressible range(s) still visible') })
 
     await vi.waitFor(() => {
       const status = ctx.agentTeam.members().find(status => status.member.memberId === memberId)
@@ -4875,11 +4916,12 @@ describe('Member supervision handover', () => {
     expect(() => ctx.agentTeam.validateLedger()).not.toThrow()
   })
 
-  it('broadcasts the handover on every inherited Channel and mentions every live fellow Member', async () => {
+  it('broadcasts the retirement notice on every inherited Channel when no leader owns the workspace, mentioning every live fellow Member', async () => {
     const { ctx, workspaceId, presets } = await realHarness()
     const { channel, added, memberId } = await setupClaimedMember(ctx, workspaceId, 'supervise-wide')
     // A second Channel the replacement will inherit, plus a bystander Member
-    // in the first Channel who must hear the news as a direct mention.
+    // in the first Channel who must hear the news as a direct mention. With no
+    // designated leader in the workspace, the notice falls back to a broadcast.
     const second = await ctx.agentTeam.createChannel({ requestId: requestId('supervise-wide-ops'), workspaceId, name: 'ops', description: 'Ops work' })
     await ctx.agentTeam.joinChannel({ requestId: requestId('supervise-wide-join'), workspaceId, channelRef: second.channel.channelRef, memberId })
     const bystander = await ctx.agentTeam.addMember({ requestId: requestId('supervise-wide-watch'), workspaceId, handle: 'watcher', description: 'Works alongside', presetId: 'team-member', channelRefs: [channel.channel.channelRef] })
@@ -4906,7 +4948,7 @@ describe('Member supervision handover', () => {
     expect(replacement, JSON.stringify(ctx.agentTeam.members().map(status => status.member.handle))).toMatchObject({ availability: 'active' })
     // Both inherited Channels carry the handover notice, not just the first.
     const view = ctx.agentTeam.view({ workspaceId })
-    const notices = view.items.map(item => item.message).filter(message => message.body.includes('Supervision handover'))
+    const notices = view.items.map(item => item.message).filter(message => message.body.includes('Supervision retirement'))
     expect(notices).toHaveLength(2)
     expect(new Set(notices.map(message => message.channelRef))).toEqual(new Set([channel.channel.channelRef, second.channel.channelRef]))
     for (const notice of notices) expect(notice.sender).toBe(replacement!.member.memberId)
@@ -4917,6 +4959,142 @@ describe('Member supervision handover', () => {
     // the handover mention is the bystander's only direct.
     expect(ctx.agentTeam.inboxForAgent(bystanderAgent, { workspaceId }).totalDirectCount).toBe(1)
     expect(() => ctx.agentTeam.validateLedger()).not.toThrow()
+  })
+
+  it('delivers the retirement notice to the designated leader instead of broadcasting it', async () => {
+    const { ctx, workspaceId, presets } = await realHarness()
+    const { channel, added } = await setupClaimedMember(ctx, workspaceId, 'supervise-leader')
+    // A designated leader in the workspace (holding a second Channel of its
+    // own) plus a bystander in the first Channel. With a qualifying leader the
+    // notice is delivered to that leader alone: the bystander must not be
+    // mentioned and the second Channel must not carry a broadcast copy.
+    const second = await ctx.agentTeam.createChannel({ requestId: requestId('supervise-leader-ops'), workspaceId, name: 'ops', description: 'Ops work' })
+    const chief = await ctx.agentTeam.addMember({ requestId: requestId('supervise-leader-chief'), workspaceId, handle: 'chief', description: 'Leads the team', presetId: 'team-member', channelRefs: [second.channel.channelRef] })
+    const chiefId = chief.status.member.memberId
+    const chiefAgent = ctx.agents.get(chief.status.member.sessionId)!
+    await ctx.agentTeam.updateMember({ requestId: requestId('supervise-leader-designate'), memberId: chiefId, handle: 'chief', description: 'Leads the team', leader: true })
+    const bystander = await ctx.agentTeam.addMember({ requestId: requestId('supervise-leader-watch'), workspaceId, handle: 'watcher', description: 'Works alongside', presetId: 'team-member', channelRefs: [channel.channel.channelRef] })
+    const bystanderAgent = ctx.agents.get(bystander.status.member.sessionId)!
+
+    // Spend the bring-up budget, then run the give-up and handover passes — the
+    // same coercion chain the fallback test walks.
+    const agent = ctx.agents.get(added.status.member.sessionId)!
+    presets.orphaned.add(agent.ctx)
+    presets.failingMount = true
+    for (let pass = 0; pass < 3; pass += 1) {
+      await ctx.agentTeam.runSupervisionPass()
+      const rebuilt = ctx.agents.get(added.status.member.sessionId)
+      if (rebuilt !== undefined) await waitForIdle(ctx, rebuilt)
+    }
+    await ctx.agentTeam.runSupervisionPass()
+    presets.failingMount = false
+    await ctx.agentTeam.runSupervisionPass()
+
+    const replacement = ctx.agentTeam.members().find(status => status.member.handle === 'builder-2')
+    expect(replacement, JSON.stringify(ctx.agentTeam.members().map(status => status.member.handle))).toMatchObject({ availability: 'active' })
+    // Exactly one notice, in the leader's Channel, authored by the Human actor
+    // (not the replacement) and addressed to the leader by handle.
+    const view = ctx.agentTeam.view({ workspaceId })
+    const notices = view.items.map(item => item.message).filter(message => message.body.includes('Supervision retirement'))
+    expect(notices).toHaveLength(1)
+    expect(notices[0]!.channelRef).toBe(second.channel.channelRef)
+    expect(notices[0]!.sender).toBe(AGENT_TEAM_HUMAN_MEMBER_ID)
+    expect(notices[0]!.body).toContain('@chief please reassign the items above to builder-2.')
+    // Only the leader is a direct recipient: the leader's Inbox carries the
+    // mention, the bystander's stays untouched — no broadcast fallback ran.
+    expect(ctx.agentTeam.inboxForAgent(chiefAgent, { workspaceId }).totalDirectCount).toBe(1)
+    expect(ctx.agentTeam.inboxForAgent(bystanderAgent, { workspaceId }).totalDirectCount).toBe(0)
+    expect(() => ctx.agentTeam.validateLedger()).not.toThrow()
+  })
+
+  it('replaces an unrecoverable leader with a full-parity successor and exactly one surviving leader', async () => {
+    const { ctx, workspaceId, presets } = await realHarness()
+    const channel = await ctx.agentTeam.createChannel({ requestId: requestId('supervise-parity-channel'), workspaceId, name: 'engineering', description: 'Engineering work' })
+    const model = { provider: 'mock', model: 'pinned-model' } as const
+    const capabilities = { tools: { allow: ['ordinary_tool'] }, skills: { allow: ['deploy'] } } as const
+    const prompt = { droppedSections: ['skills'], customPrompt: 'Prefer the tersest workable diff.', autoPrune: true, autoExecutePrune: true } as const
+    const added = await ctx.agentTeam.addMember({
+      requestId: requestId('supervise-parity-add'), workspaceId, handle: 'builder', description: 'Builds the implementation',
+      presetId: 'team-member', channelRefs: [channel.channel.channelRef],
+      model, capabilities, prompt, contextStartPolicy: 'fresh', contextWindow: 100_000,
+    })
+    const memberId = added.status.member.memberId
+    const agent = ctx.agents.get(added.status.member.sessionId)!
+    // The leader designation is a separate edit, and its absent-clears contract
+    // means the echo must repeat every overlay or they would be silently
+    // dropped before the handover even runs.
+    const designated = await ctx.agentTeam.updateMember({
+      requestId: requestId('supervise-parity-leader'), memberId, handle: 'builder', description: 'Builds the implementation',
+      model, capabilities, prompt, contextStartPolicy: 'fresh', contextWindow: 100_000, leader: true,
+    })
+    expect(designated.status.member.leader).toBe(true)
+    expect(designated.status.member).toMatchObject({ model, capabilities, prompt, contextStartPolicy: 'fresh', contextWindow: 100_000 })
+
+    // A claimed Task keeps the whole handover path exercised, not just the
+    // roster replacement.
+    const started = await ctx.agentTeam.sendMessage({ asTask: true, requestId: requestId('supervise-parity-task'), workspaceId, channelRef: channel.channel.channelRef, body: 'Build the feature', recipients: [memberId] })
+    if (started.kind !== 'committed') throw new Error(`expected committed start, received ${started.kind}`)
+    await ctx.agentTeam.readThreadForAgent(agent, { requestId: requestId('supervise-parity-read'), workspaceId, taskRef: started.task!.taskRef })
+    const claimed = await ctx.agentTeam.changeClaimForAgent(agent, { requestId: requestId('supervise-parity-claim'), workspaceId, taskRef: started.task!.taskRef, action: 'claim', direction: 'implements the feature', baseRevision: started.thread.revision })
+    if (claimed.kind !== 'committed') throw new Error(`expected committed claim, received ${claimed.kind}`)
+    await waitForIdle(ctx, agent)
+
+    // The same coercion chain every handover test walks: spend the bring-up
+    // budget on a Member no re-mount can repair, then the give-up pass and the
+    // handover pass with the mount lifted.
+    presets.orphaned.add(agent.ctx)
+    presets.failingMount = true
+    for (let pass = 0; pass < 3; pass += 1) {
+      await ctx.agentTeam.runSupervisionPass()
+      const rebuilt = ctx.agents.get(added.status.member.sessionId)
+      if (rebuilt !== undefined) await waitForIdle(ctx, rebuilt)
+    }
+    await ctx.agentTeam.runSupervisionPass()
+    presets.failingMount = false
+    await ctx.agentTeam.runSupervisionPass()
+
+    const statuses = ctx.agentTeam.members()
+    const retired = statuses.find(status => status.member.memberId === memberId)!.member
+    const successorStatus = statuses.find(status => status.member.handle === 'builder-2')
+    expect(successorStatus, JSON.stringify(statuses.map(status => status.member.handle))).toMatchObject({ availability: 'active' })
+    const successor = successorStatus!.member
+    expect(retired.state).toBe('archived')
+
+    // Identity is the only thing that changes: ids, handle, and session move.
+    expect(successor.memberId).not.toBe(retired.memberId)
+    expect(successor.sessionId).not.toBe(retired.sessionId)
+    expect(successor.handle).toBe('builder-2')
+    expect(successor.predecessorMemberId).toBe(retired.memberId)
+    expect(successor.state).toBe('enabled')
+
+    // Deep parity on every inherited dimension: no setting is dropped, reset
+    // to a default, or left inconsistent between predecessor and successor.
+    expect(successor.workspaceId).toBe(retired.workspaceId)
+    expect(successor.description).toBe(retired.description)
+    expect(successor.presetId).toBe(retired.presetId)
+    expect(successor.model).toEqual(retired.model)
+    expect(successor.capabilities).toEqual(retired.capabilities)
+    expect(successor.prompt).toEqual(retired.prompt)
+    expect(successor.contextStartPolicy).toBe(retired.contextStartPolicy)
+    expect(successor.contextWindow).toBe(retired.contextWindow)
+    expect(successor.leader).toBe(retired.leader)
+
+    // The retired leader is archived, so the workspace ends with exactly one
+    // enabled leader — the successor, carrying no duplicate flag.
+    const leaders = statuses.filter(status => status.member.state === 'enabled' && status.member.leader === true)
+    expect(leaders.map(status => status.member.handle)).toEqual(['builder-2'])
+    expect(() => ctx.agentTeam.validateLedger()).not.toThrow()
+
+    // The ledger carried the overlay durably: a cold replay restores the
+    // successor's full configuration, not the defaults.
+    const replayed = replayLedger(ctx.storageDomain)
+    expect(() => replayed.validate()).not.toThrow()
+    const restored = replayed.getMember(successor.memberId)!
+    expect(restored).toMatchObject({ handle: 'builder-2', state: 'enabled', leader: true, contextStartPolicy: 'fresh', contextWindow: 100_000 })
+    expect(restored.model).toEqual(model)
+    expect(restored.capabilities).toEqual(capabilities)
+    expect(restored.prompt).toEqual(prompt)
+    expect(restored.privateMemoryPath).toBe(successor.privateMemoryPath)
   })
 })
 
@@ -5080,7 +5258,7 @@ describe('Agent Team member context control (ticket 01)', () => {
     // Usage at the task-boundary tier would advise a rollover for a continue
     // Member; a fresh Member instead keeps the live Session so the Human can
     // still read its completion summary — the next assignment is its reset.
-    pressureState.usageTokens = 128_000
+    pressureState.usageTokens = 190_000
     const advising = await ctx.agentTeam.readThreadForAgent(live2, { requestId: requestId('freshadvice-advice'), workspaceId, taskRef: started.task!.taskRef })
     expect(advising.contextAdvice?.action).toBe('keep')
     expect(advising.contextAdvice?.guidance).toContain('fresh-start Task policy')
@@ -5138,6 +5316,9 @@ describe('Agent Team member context control (ticket 01)', () => {
     expect(after[1]!.isCurrent).toBe(false)
     expect(typeof after[1]!.createdAt).toBe('number')
     expect(typeof after[1]!.eventCount).toBe('number')
+    // A Member with no succession edge labels nothing: every generation is its
+    // own, so no entry claims an inherited predecessor's handle.
+    expect(after.every(entry => entry.predecessorHandle === undefined)).toBe(true)
 
     // The archived generation serves its own transcript: the original Task
     // body is there, and the child generation's reset notice is not.
@@ -5209,32 +5390,27 @@ describe('Agent Team member context control (ticket 01)', () => {
     await expect(ctx.agentTeam.memberSessionTranscript({ memberId, sessionId: bound.member.sessionId })).rejects.toThrow(/could not be read/)
   })
 
-  it('clamps the pressure budget to a Member window override without ever raising the route window', async () => {
+  it('clamps the context budget to a Member window override without ever raising the route window', async () => {
     const adapter = new ScriptedAdapter()
-    const { ctx, workspaceId, pressureState } = await realHarness(adapter)
+    const { ctx, workspaceId } = await realHarness(adapter)
     const channel = await ctx.agentTeam.createChannel({ requestId: requestId('clamp-channel'), workspaceId, name: 'engineering', description: 'Engineering work' })
     const lower = await ctx.agentTeam.addMember({ requestId: requestId('clamp-lower'), workspaceId, handle: 'smol', description: 'Small window', presetId: 'team-member', channelRefs: [channel.channel.channelRef], contextWindow: 100_000 })
     const raised = await ctx.agentTeam.addMember({ requestId: requestId('clamp-raise'), workspaceId, handle: 'greedy', description: 'Big window', presetId: 'team-member', channelRefs: [channel.channel.channelRef], contextWindow: 400_000 })
-    for (let turn = 0; turn < 4; turn += 1) adapter.enqueue(textResponse('Ordinary work.'))
 
-    const noticesIn = (sessionId: SessionId) => ctx.agents.get(sessionId)!.session.ownEvents().filter(event => event.type === 'user/message'
-      && (event.data as { source?: { summary?: string } }).source?.summary === 'Context pressure: prepare a handoff')
+    // The 100k override caps the 320k route: the budgets price against 100k
+    // (84k hard limit, 76k handoff — the 4% reserve floors to 8k here), not
+    // the bare route's 304k/291.2k.
+    const smol = ctx.agents.get(lower.status.member.sessionId)!
+    const smolTimeline = await ctx.agentTeam.contextTimelineForAgent(smol, { memberId: lower.status.member.memberId })
+    expect(smolTimeline.hardLimit).toBe(84_000)
+    expect(smolTimeline.handoffAt).toBe(76_000)
 
-    // The 100k override caps the 320k route: usage 80k sits between the
-    // effective handoff budget (84k hard limit − 8k reserve = 76k) and the
-    // hard limit, so the notice fires where the bare route would stay quiet.
-    pressureState.bySession.set(lower.status.member.sessionId, 80_000)
-    ctx.agents.get(lower.status.member.sessionId)!.followup(createUserMessage({ content: [{ type: 'text', text: 'turn one' }], source: { kind: 'user' } }))
-    await waitForIdle(ctx, ctx.agents.get(lower.status.member.sessionId)!)
-    expect(noticesIn(lower.status.member.sessionId)).toHaveLength(1)
-
-    // An override above the route capacity never raises the budget: the same
-    // usage on the 400k-override Member still reads the 320k route (effective
-    // min), so no notice at 80k.
-    pressureState.bySession.set(raised.status.member.sessionId, 80_000)
-    ctx.agents.get(raised.status.member.sessionId)!.followup(createUserMessage({ content: [{ type: 'text', text: 'turn one' }], source: { kind: 'user' } }))
-    await waitForIdle(ctx, ctx.agents.get(raised.status.member.sessionId)!)
-    expect(noticesIn(raised.status.member.sessionId)).toHaveLength(0)
+    // An override above the route capacity never raises the budget: the
+    // 400k-override Member still reads the 320k route (effective min).
+    const greedy = ctx.agents.get(raised.status.member.sessionId)!
+    const greedyTimeline = await ctx.agentTeam.contextTimelineForAgent(greedy, { memberId: raised.status.member.memberId })
+    expect(greedyTimeline.hardLimit).toBe(304_000)
+    expect(greedyTimeline.handoffAt).toBe(291_200)
   })
 
   function faultyTextResponse(text: string): StreamChunk[] {

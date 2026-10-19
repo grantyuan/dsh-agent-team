@@ -156,6 +156,14 @@ export interface AgentTeamMemberPromptProfile {
 export interface AgentTeamAgentMember {
   readonly memberId: AgentTeamMemberId
   readonly sessionId: SessionId
+  /**
+   * Supervision succession edge: the Member this one replaced when supervision
+   * archived an unrecoverable predecessor and put a same-role generation in its
+   * place. Present only on handover successors; it widens this Member's Session
+   * lineage to include the predecessor's history. Members written before the
+   * edge existed omit the field.
+   */
+  readonly predecessorMemberId?: AgentTeamMemberId | undefined
   readonly workspaceId: WorkspaceId
   readonly handle: string
   readonly description: string

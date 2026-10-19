@@ -26,6 +26,8 @@ const UI07_SHOTS = join(BROWSER_ARTIFACTS, 'ui-07')
 const UI08_SHOTS = join(BROWSER_ARTIFACTS, 'ui-08')
 const UI09_SHOTS = join(BROWSER_ARTIFACTS, 'ui-09')
 const UI10_SHOTS = join(BROWSER_ARTIFACTS, 'ui-10')
+const UI11_SHOTS = join(BROWSER_ARTIFACTS, 'ui-11')
+const UI12_SHOTS = join(BROWSER_ARTIFACTS, 'ui-12')
 let scaffold: WebScaffold | undefined
 let browser: Browser | undefined
 
@@ -264,6 +266,8 @@ async function installLocalBundle(clearArtifacts = true): Promise<void> {
   await mkdir(UI08_SHOTS, { recursive: true })
   await mkdir(UI09_SHOTS, { recursive: true })
   await mkdir(UI10_SHOTS, { recursive: true })
+  await mkdir(UI11_SHOTS, { recursive: true })
+  await mkdir(UI12_SHOTS, { recursive: true })
 }
 
 it('drives the complete opt-in Agent Team journey in real Web', async () => {
@@ -1095,7 +1099,14 @@ it('drives the complete opt-in Agent Team journey in real Web', async () => {
     .filter((thread: { taskRef?: string }) => thread.taskRef === undefined)
     .reduce((latest: { revision: number } | undefined, thread: { revision: number }) => latest === undefined || thread.revision > latest.revision ? thread : latest, undefined)!
   for (const handle of ['builder', 'reviewer']) {
-    const status = scaffold.ctx.agentTeam.members({ workspaceId: allWorkspace.id }).find((entry: { member: { handle: string } }) => entry.member.handle === handle)!
+    const memberOf = () => scaffold!.ctx.agentTeam.members({ workspaceId: allWorkspace.id })
+      .find((entry: { member: { handle: string } }) => entry.member.handle === handle)!
+    // During a rollover the ledger binding already names the incoming Session
+    // while the outgoing one is still the live handle, and the Member reports
+    // unavailable for that window — the read waits for the Member's own active
+    // state instead of racing the transition.
+    await expect.poll(() => memberOf().availability).toBe('active')
+    const status = memberOf()
     const reader = scaffold.ctx.agents.get(status.member.sessionId)!
     await scaffold.ctx.agentTeam.readThreadForAgent(reader, {
       requestId: `m2-all-read-${handle}` as never, workspaceId: allWorkspace.id, threadRef: allThread.threadRef,
@@ -1975,14 +1986,21 @@ it('drives the complete opt-in Agent Team journey in real Web', async () => {
   expect(scaffold.ctx.agentTeam.inbox({ workspaceId: inboxWorkspace.id }).totalUnreadCount).toBe(baseUnread + 3)
   await expectSidebarUnread(String(baseUnread + 3))
 
-  // Narrow rail: 收件箱 → 任务 → Channels → Agents, unread marked on the first
-  // icon, and the icon is a destination that opens the Inbox page and expands
-  // the sidebar.
+  // Narrow rail: 收件箱 → 需要你决定 → 任务 → Channels → Agents, the unread dot
+  // marked on the first icon and the waiting-on-Human count on the second; the
+  // first icon is a destination that opens its own page and expands the sidebar,
+  // and that behaviour is asserted for the Inbox icon below.
   await page.setViewportSize({ width: 390, height: 844 })
   const inboxRail = page.locator('nav[class*="railWorkspace"]')
   await inboxRail.waitFor()
   const railLabels = await inboxRail.locator('button').evaluateAll(buttons => buttons.map(button => button.getAttribute('aria-label')))
-  expect(railLabels).toEqual([`收件箱，${baseUnread + 3} 条未读`, '任务', '频道', 'Agents'])
+  expect(railLabels).toHaveLength(5)
+  expect(railLabels![0]).toBe(`收件箱，${baseUnread + 3} 条未读`)
+  // The decision count is the Client's own read of the Host's `pendingDecisions`
+  // queue, so the journey pins the order and the shape rather than a literal
+  // number that this journey's own writing could move.
+  expect(railLabels![1]).toMatch(/^需要你决定，\d+ 件事在等你$/)
+  expect(railLabels!.slice(2)).toEqual(['任务', '频道', 'Agents'])
   await expectSidebarUnread(String(baseUnread + 3))
   // The dot replaced the number on the surface, so the rail's hover hint is where
   // a reader still meets the quantity without opening the page: the same name the
@@ -2002,7 +2020,12 @@ it('drives the complete opt-in Agent Team journey in real Web', async () => {
   await page.locator('[data-team-inbox]').waitFor()
   await expect.poll(() => page.locator('button[class*="inboxCard"]').count()).toBe(1)
   await expect.poll(async () => await inboxRow.count()).toBe(1)
-  await expect.poll(async () => await inboxRow.textContent()).toContain('#delivery')
+  // The row no longer prints its own 「Workspace / #Channel」 crumb — the group
+  // headings above it state both names once — so the Channel membership is read
+  // off the group the row sits under rather than off the row's own text.
+  await expect.poll(async () => await page.locator('[data-team-inbox] div[class*="channelGroup"]')
+    .filter({ hasText: '#delivery' })
+    .locator('button').filter({ hasText: '请 Human 决策的讨论' }).count()).toBe(1)
   const plainRow = page.locator('[data-team-inbox] button').filter({ hasText: '工程侧同步，无需决策' })
   await expect.poll(async () => await plainRow.count()).toBe(1)
   // The queue carries the shared header band plus its own count line, and that
@@ -2099,8 +2122,16 @@ it('drives the complete opt-in Agent Team journey in real Web', async () => {
   await settleLayout(page)
   const collapsedRow = await inboxPage.locator('button[class*="row"]').first().evaluate(row => {
     const box = (selector: string): DOMRect => (row.querySelector(selector) as HTMLElement).getBoundingClientRect()
-    const line = box('[class*="rowCrumb"]')
-    return { height: Math.round(row.getBoundingClientRect().height), sameLine: Math.abs(line.top - box('time').top) < 4 }
+    // The clock shares the row's identity line, and that line — not its
+    // provenance slot — is what the clock is measured against: the slot is an
+    // empty spacer on a taskless row, so it has no baseline of its own and its
+    // box would report the line's baseline rather than the line's top.
+    const line = box('[class*="rowLine"]')
+    const clock = box('time')
+    return {
+      height: Math.round(row.getBoundingClientRect().height),
+      sameLine: clock.top >= line.top - 2 && clock.bottom <= line.bottom + 2,
+    }
   })
   expect(collapsedRow.height).toBeLessThanOrEqual(62)
   expect(collapsedRow.sameLine).toBe(true)
@@ -2395,6 +2426,28 @@ it('drives the complete opt-in Agent Team journey in real Web', async () => {
   expect(stackBox.inset).toBe(stackBox.width + 8)
   await page.screenshot({ path: join(UI07_SHOTS, 'inbox-row-owners-desktop.png'), fullPage: true })
 
+  // The whole queue clears in one action: 「全部已读」 reads every Thread that
+  // still holds unread for this reader, so the one row the queue holds here — the
+  // Task Thread that named the Human — leaves the queue, the queue's own heading
+  // and count line go with it, and the entry's dot drops to whatever unread the
+  // read left behind rather than to a number this button prints. Where the row
+  // lands afterwards is the Host's admission rule, not this button's promise: the
+  // tail is the Threads this reader wrote in, and nobody wrote in this one, so the
+  // row leaves the page for both slices while the ledger still holds the Thread.
+  const inboxMarkAll = page.locator('[data-team-inbox]').getByRole('button', { name: '全部已读' })
+  await expect.poll(async () => await inboxMarkAll.count()).toBe(1)
+  expect(await inboxMarkAll.evaluate(button => button.closest('[class*="headerActions"]') !== null)).toBe(true)
+  await expect.poll(async () => await page.locator('[data-team-inbox]').getByRole('heading', { name: '需要我' }).count()).toBe(1)
+  expect(await inboxMarkAll.isDisabled()).toBe(false)
+  await inboxMarkAll.click()
+  await page.locator('[data-team-inbox]').getByRole('heading', { name: '最近活跃' }).waitFor({ timeout: 30_000 })
+  await expect.poll(async () => await page.locator('[data-team-inbox]').getByRole('heading', { name: '需要我' }).count()).toBe(0)
+  await expect.poll(async () => await stackRow.count()).toBe(0)
+  const drainedUnread = scaffold.ctx.agentTeam.inbox({ workspaceId: inboxWorkspace.id }).totalUnreadCount
+  await expectSidebarUnread(drainedUnread === 0 ? null : String(drainedUnread))
+  await settleAnimations(page)
+  await page.screenshot({ path: join(UI07_SHOTS, 'inbox-mark-all-read-desktop.png'), fullPage: true })
+
   // The Tasks page is the Human's whole-Team view of the same ledger the Inbox
   // queue reads: every Task with its live standing, and the sub-tasks an Agent
   // split underneath their parent, the parent carrying the done/total progress
@@ -2463,6 +2516,62 @@ it('drives the complete opt-in Agent Team journey in real Web', async () => {
   expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(390)
   await settleAnimations(page)
   await page.screenshot({ path: join(UI10_SHOTS, 'tasks-page-narrow.png'), fullPage: true })
+  await page.setViewportSize({ width: 1440, height: 960 })
+
+  // 需要你决定 is the same queue the Inbox chip reads, through its own page: every
+  // visible Workspace's Threads that still wait on the Human, partitioned by
+  // Workspace and then by Channel instead of merged into one flat list, with the
+  // reader's own sort key re-laying only the rows inside a group. The ask this
+  // journey planted — the delivery Thread's 「需要 Human 拍板」 mention, never
+  // answered — is what the page has to show, and it stays in the queue after the
+  // reader read the Thread: a read acknowledges unread, it does not answer.
+  await page.locator('button[class*="decisionsCard"]').click()
+  await page.locator('[data-team-decisions]').waitFor()
+  await expect.poll(async () => await page.locator('button[class*="decisionsCard"]').getAttribute('aria-current')).toBe('page')
+  const decisionRows = page.locator('[data-team-decision-row]')
+  await expect.poll(async () => await decisionRows.count(), { timeout: 30_000 }).toBeGreaterThanOrEqual(1)
+  // Two levels, both headings: the Workspace named once, then the Channel the
+  // Thread sits in, with the ask filed under them rather than carrying its own
+  // 「Workspace / #Channel」 crumb the way a merged list would.
+  const decisionGroups = page.locator('[data-team-decision-group]')
+  await expect.poll(async () => await decisionGroups.count()).toBeGreaterThanOrEqual(1)
+  await expect.poll(async () => await decisionGroups.first().locator('h2').count()).toBe(1)
+  const askedRow = decisionRows.filter({ hasText: '需要 Human 拍板' })
+  await expect.poll(async () => await askedRow.count()).toBe(1)
+  // The Channel membership is read off the group the row sits under — the
+  // heading and its rows share one `channelGroup` container — rather than off
+  // the row's own text, which no longer prints a crumb.
+  await expect.poll(async () => await page.locator('[data-team-decisions] div[class*="channelGroup"]')
+    .filter({ hasText: '#delivery' })
+    .locator('[data-team-decision-row]').filter({ hasText: '需要 Human 拍板' }).count()).toBe(1)
+  // The queue's axis is the Inbox's own control, defaulting to newest reply
+  // first, and the two personal marks sit beside the answers: 「已读」 drains the
+  // reader's own unread on this Thread without removing the row, and the follow
+  // toggle reads the Thread's Attention — which is the only thing that gives a
+  // Thread an unread count for this reader at all.
+  const decisionSort = page.locator('#team-decisions-sort')
+  await expect.poll(async () => await decisionSort.count()).toBe(1)
+  expect(await decisionSort.inputValue()).toBe('latestReply')
+  expect(await askedRow.getByRole('button', { name: /^已读$/ }).count()).toBe(1)
+  expect(await askedRow.getByRole('button', { name: /^(关注|取消关注)$/ }).count()).toBe(1)
+  // The page-wide action belongs to the header rather than to a row: 「全部已读」
+  // acts on the queue the reader is looking at, so it stands beside the sort the
+  // same way — one control over the whole page, and each row keeps its own 「已读」.
+  const decisionsMarkAll = page.locator('[data-team-decisions]').getByRole('button', { name: '全部已读' })
+  await expect.poll(async () => await decisionsMarkAll.count()).toBe(1)
+  expect(await decisionsMarkAll.evaluate(button => button.closest('[class*="headerActions"]') !== null)).toBe(true)
+  await settleAnimations(page)
+  await page.screenshot({ path: join(UI12_SHOTS, 'decisions-page-desktop.png'), fullPage: true })
+  // Narrow: the queue is the rail's second entry, and the page it opens keeps
+  // every row inside the 390px frame.
+  await page.setViewportSize({ width: 390, height: 844 })
+  const decisionsRailButton = page.getByRole('button', { name: /^需要你决定/ })
+  await decisionsRailButton.click()
+  await page.locator('[data-team-decisions]').waitFor()
+  await page.mouse.move(300, 600)
+  expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(390)
+  await settleAnimations(page)
+  await page.screenshot({ path: join(UI12_SHOTS, 'decisions-page-narrow.png'), fullPage: true })
   await page.setViewportSize({ width: 1440, height: 960 })
 
   // Losing the Host connection surfaces the failure in two places, and both
@@ -2805,6 +2914,275 @@ it('opens a taskless thread from its ref chip in real Web', async () => {
   await page.screenshot({ path: join(UI02_SHOTS, 'thread-ref-chip-opened-narrow.png'), fullPage: true })
   expect(consoleWatch).toEqual({ warnings: [], pageErrors: [] })
 }, 180_000)
+
+/**
+ * The supervision retirement handover, driven end to end in the real Web
+ * bundle, then read back through both the Host Remotes and the Client surfaces.
+ *
+ * The drive is test-side injection: the otherwise-healthy supervised Member is
+ * reported to the supervisor's own closure as an abnormal stop by patching the
+ * live `agentPresets` instance in place, and the patch is removed before any
+ * assertion — so the real supervision chain (restart → escalation → forced
+ * reset → handover) runs its own code and produces a real successor, not a
+ * fabricated roster. The three verified behaviors are then asserted:
+ *   1. the retired Member's history stays reachable through the successor's own
+ *      session-history entry (`memberSessions` / `memberSessionTranscript` and
+ *      the Client page),
+ *   2. the Channel carries exactly one complete retirement notice, addressed to
+ *      the team leader, and
+ *   3. the successor's configuration is identical to the predecessor's.
+ */
+it('retires a supervised Member into a successor in real Web', async () => {
+  await installLocalBundle(false)
+  scaffold = await launchWebScaffold({ harnessHome: HOME, profile: { packages: [{ dir: STAGED_BUNDLE, enabled: true }] } })
+  browser = await chromium.launch({ headless: true, executablePath: CHROME })
+  const page = await browser.newPage({ viewport: { width: 1440, height: 960 }, locale: 'zh-CN' })
+  const consoleWatch = watchConsole(page)
+  await page.goto(scaffold.authenticatedUrl)
+  await connectFreshWorkspaceZh(page, scaffold.workspaceCwd, 'team-workspace')
+
+  // --- Build the roster through the real Client dialogs --------------------
+  await page.getByRole('button', { name: '团队' }).click()
+  await page.getByRole('button', { name: '新建频道' }).click()
+  const channelDialog = page.getByRole('dialog', { name: '新建频道' })
+  await channelDialog.getByLabel('名称').fill('engineering')
+  await channelDialog.getByLabel('说明').fill('Controller handover')
+  await channelDialog.getByRole('button', { name: '创建频道' }).click()
+
+  // The retiring Member carries a pinned context window and a role paragraph:
+  // both must survive the handover for the parity assertion to mean anything.
+  await page.getByRole('button', { name: '添加 Agent' }).click()
+  const builderDialog = page.getByRole('dialog', { name: '添加 Agent' })
+  await builderDialog.getByLabel('名称').fill('builder')
+  await builderDialog.getByLabel('说明').fill('实现功能')
+  await builderDialog.getByLabel('上下文窗口覆盖').fill('96000')
+  await builderDialog.getByRole('button', { name: '编辑段落' }).click()
+  const stageDialog = page.getByRole('dialog', { name: '自定义角色段落' })
+  await stageDialog.getByRole('textbox', { name: '自定义角色段落' }).fill('你是负责实现功能的资深工程师。')
+  await stageDialog.getByRole('button', { name: '应用' }).click()
+  await expect.poll(async () => await page.getByRole('dialog', { name: '自定义角色段落' }).count()).toBe(0)
+  await builderDialog.getByRole('button', { name: '创建 Agent' }).click()
+  await page.getByRole('button', { name: '打开 builder 的会话' }).waitFor({ timeout: 20_000 })
+
+  await page.getByRole('button', { name: '添加 Agent' }).click()
+  const reviewerDialog = page.getByRole('dialog', { name: '添加 Agent' })
+  await reviewerDialog.getByLabel('名称').fill('reviewer')
+  await reviewerDialog.getByLabel('说明').fill('检查结果')
+  await reviewerDialog.getByRole('button', { name: '创建 Agent' }).click()
+  await page.getByRole('button', { name: '打开 reviewer 的会话' }).waitFor({ timeout: 20_000 })
+
+  // Membership lives on the Channel side now.
+  await page.getByRole('button', { name: '# engineering' }).hover()
+  await page.getByRole('button', { name: 'engineering 的操作' }).click()
+  await page.getByRole('menuitem', { name: '编辑频道' }).click()
+  const joinEditor = page.getByRole('dialog', { name: '编辑频道' })
+  await joinEditor.waitFor()
+  for (const handle of ['builder', 'reviewer']) {
+    const row = joinEditor.locator('[data-team-member-row]').filter({ hasText: `@${handle}` })
+    await expect.poll(async () => await row.getByRole('button', { name: '添加' }).isEnabled(), { timeout: 30_000 }).toBe(true)
+    await row.getByRole('button', { name: '添加' }).click()
+  }
+  await expect.poll(async () => await joinEditor.getByRole('button', { name: '移除', exact: true }).count()).toBe(2)
+  await joinEditor.getByRole('button', { name: '关闭', exact: true }).click()
+
+  // reviewer is the team leader: the handover notice is addressed to it alone
+  // instead of being broadcast to the whole Channel.
+  const reviewerRow = page.locator('[class*="agentRow"]').filter({ hasText: 'reviewer' }).first()
+  await reviewerRow.hover()
+  await reviewerRow.getByRole('button', { name: 'reviewer 的操作' }).click()
+  await page.getByRole('menuitem', { name: '编辑 Agent' }).click()
+  const leaderEditor = page.getByRole('dialog', { name: '编辑 Agent' })
+  await leaderEditor.getByRole('checkbox', { name: '设为团队负责人' }).check()
+  await leaderEditor.getByRole('button', { name: '保存' }).click()
+  await expect.poll(async () => await page.getByRole('dialog', { name: '编辑 Agent' }).count()).toBe(0)
+
+  // --- Host side: capture the members, do real work, drive the handover -----
+  const ws = scaffold.ctx.workspaceRegistry.list()[0]!
+  const statuses = () => scaffold.ctx.agentTeam.members({ workspaceId: ws.id }) as readonly {
+    member: { memberId: string; handle: string; sessionId: string; state: string; predecessorMemberId?: string; leader?: boolean; description: string; presetId: string; model?: unknown; capabilities?: unknown; prompt?: unknown; contextStartPolicy?: unknown; contextWindow?: unknown }
+  }[]
+  const statusOf = (handle: string) => statuses().find(entry => entry.member.handle === handle)
+  const handlesOf = () => statuses().map(entry => entry.member.handle)
+  await expect.poll(() => statusOf('reviewer')?.member.leader ?? false, { timeout: 30_000 }).toBe(true)
+  const builderMember = statusOf('builder')!.member
+  const reviewerMember = statusOf('reviewer')!.member
+  const channelRef = scaffold.ctx.agentTeam.view({ workspaceId: ws.id }).channels.find(channel => channel.name === 'engineering')!.channelRef
+
+  let builderAgent = scaffold.ctx.agents.get(builderMember.sessionId)
+  for (let i = 0; i < 80 && builderAgent === undefined; i += 1) {
+    await new Promise(resolve => setTimeout(resolve, 250))
+    builderAgent = scaffold.ctx.agents.get(builderMember.sessionId)
+  }
+  expect(builderAgent).toBeDefined()
+
+  // Completed work: Task #1 is claimed, finished, and accepted, so the notice
+  // reports a finished direction and a completed task.
+  const task1 = await scaffold.ctx.agentTeam.sendMessage({ asTask: true, requestId: 'ui11-task-1' as never, workspaceId: ws.id, channelRef, body: 'Build the feature', recipients: [builderMember.memberId] })
+  if (task1.kind !== 'committed') throw new Error(`expected committed Task #1 start, received ${task1.kind}`)
+  await builderAgent!.whenIdle()
+  const read1 = await scaffold.ctx.agentTeam.readThreadForAgent(builderAgent!, { requestId: 'ui11-read-1' as never, workspaceId: ws.id, taskRef: task1.task!.taskRef })
+  const claim1 = await scaffold.ctx.agentTeam.changeClaimForAgent(builderAgent!, { requestId: 'ui11-claim-1' as never, workspaceId: ws.id, taskRef: task1.task!.taskRef, action: 'claim', direction: 'implements the feature', baseRevision: read1.thread.revision })
+  if (claim1.kind !== 'committed') throw new Error(`expected committed Task #1 claim, received ${claim1.kind}`)
+  const read1b = await scaffold.ctx.agentTeam.readThreadForAgent(builderAgent!, { requestId: 'ui11-read-1b' as never, workspaceId: ws.id, taskRef: task1.task!.taskRef })
+  const done1 = await scaffold.ctx.agentTeam.changeClaimForAgent(builderAgent!, { requestId: 'ui11-done-1' as never, workspaceId: ws.id, taskRef: task1.task!.taskRef, action: 'done', claimRef: (claim1 as { claim: { claimRef: string } }).claim.claimRef as never, baseRevision: read1b.thread.revision })
+  if (done1.kind !== 'committed') throw new Error(`expected committed Task #1 done, received ${done1.kind}`)
+  const humanRead1 = await scaffold.ctx.agentTeam.readThread({ requestId: 'ui11-human-read-1' as never, workspaceId: ws.id, taskRef: task1.task!.taskRef })
+  const accepted1 = await scaffold.ctx.agentTeam.changeTask({ requestId: 'ui11-accept-1' as never, workspaceId: ws.id, taskRef: task1.task!.taskRef, action: 'accept', baseRevision: humanRead1.thread.revision })
+  if (accepted1.kind !== 'committed') throw new Error(`expected committed Task #1 accept, received ${accepted1.kind}`)
+  await builderAgent!.whenIdle()
+
+  // Released work: Task #2 stays claimed and open, so the notice lists it as
+  // now-unclaimed and asks the leader to reassign it.
+  const task2 = await scaffold.ctx.agentTeam.sendMessage({ asTask: true, requestId: 'ui11-task-2' as never, workspaceId: ws.id, channelRef, body: 'Integrate the interface', recipients: [builderMember.memberId] })
+  if (task2.kind !== 'committed') throw new Error(`expected committed Task #2 start, received ${task2.kind}`)
+  await builderAgent!.whenIdle()
+  const read2 = await scaffold.ctx.agentTeam.readThreadForAgent(builderAgent!, { requestId: 'ui11-read-2' as never, workspaceId: ws.id, taskRef: task2.task!.taskRef })
+  const claim2 = await scaffold.ctx.agentTeam.changeClaimForAgent(builderAgent!, { requestId: 'ui11-claim-2' as never, workspaceId: ws.id, taskRef: task2.task!.taskRef, action: 'claim', direction: 'integrates the interface', baseRevision: read2.thread.revision })
+  if (claim2.kind !== 'committed') throw new Error(`expected committed Task #2 claim, received ${claim2.kind}`)
+  await builderAgent!.whenIdle()
+
+  // Drive the real chain: report the healthy Member to the supervisor's own
+  // closure as an abnormal stop, then tick until the successor lands. The patch
+  // reaches the supervisor because the closure calls the instance method.
+  const teamAny = scaffold.ctx.agentTeam as unknown as Record<string, unknown>
+  const origStateOf = (teamAny.supervisionStateOf as (id: string) => string).bind(teamAny)
+  let forced = true
+  ;(teamAny as { supervisionStateOf: (id: string) => string }).supervisionStateOf =
+    (id: string) => (forced && id === builderMember.memberId) ? 'stopped' : origStateOf(id)
+  try {
+    for (let pass = 0; pass < 8; pass += 1) {
+      await scaffold.ctx.agentTeam.runSupervisionPass()
+      const rebuilt = scaffold.ctx.agents.get(builderMember.sessionId)
+      if (rebuilt !== undefined) await rebuilt.whenIdle()
+      if (handlesOf().includes('builder-2')) break
+    }
+  } finally {
+    forced = false
+  }
+  expect(handlesOf()).toContain('builder-2')
+  const successor = statusOf('builder-2')!
+  expect(successor.member.predecessorMemberId).toBe(builderMember.memberId)
+
+  // --- ① History reachable through the successor's own entry ----------------
+  const sessions = await scaffold.ctx.agentTeam.memberSessions({ memberId: successor.member.memberId })
+  expect(sessions.length).toBeGreaterThanOrEqual(2)
+  expect(sessions[0]!.isCurrent).toBe(true)
+  expect(sessions[0]!.sessionId).toBe(successor.member.sessionId)
+  const predecessorGenerations = sessions.filter(generation => !generation.isCurrent)
+  expect(predecessorGenerations.length).toBeGreaterThanOrEqual(1)
+  for (const generation of predecessorGenerations) expect(generation.predecessorHandle).toBe('builder')
+  const readableGenerations = predecessorGenerations.filter(generation => generation.createdAt !== undefined)
+  expect(readableGenerations.length).toBeGreaterThanOrEqual(1)
+  let sawTaskText = false
+  for (const generation of readableGenerations) {
+    const transcript = await scaffold.ctx.agentTeam.memberSessionTranscript({ memberId: successor.member.memberId, sessionId: generation.sessionId })
+    if (transcript.entries.some(entry => entry.text.includes('Build the feature'))) sawTaskText = true
+  }
+  expect(sawTaskText).toBe(true)
+
+  // The same lineage through the Client: the successor's row opens the audit
+  // page and its inherited generations render the predecessor's transcript.
+  const agentsSection = page.getByRole('button', { name: 'Agents', exact: true })
+  if (await agentsSection.getAttribute('aria-expanded') !== 'true') await agentsSection.click()
+  const successorRow = page.locator('[class*="agentRow"]').filter({ hasText: 'builder-2' }).first()
+  await successorRow.waitFor({ timeout: 30_000 })
+  await successorRow.hover()
+  await successorRow.getByRole('button', { name: 'builder-2 的操作' }).click()
+  await page.getByRole('menuitem', { name: '历史会话' }).click()
+  const historyPage = page.locator('[data-team-session-history]')
+  await historyPage.waitFor()
+  await expect.poll(() => historyPage.getByText('历史会话：builder-2').count(), { timeout: 20_000 }).toBe(1)
+  await expect.poll(async () => await historyPage.getByRole('alert').count()).toBe(0)
+  const currentGeneration = historyPage.getByRole('button', { name: /当前会话/ })
+  await expect.poll(async () => await currentGeneration.count(), { timeout: 20_000 }).toBe(1)
+  await expect.poll(async () => await currentGeneration.isDisabled()).toBe(false)
+  await expect.poll(async () => await historyPage.getByRole('button', { name: /继承自 builder/ }).count()).toBeGreaterThanOrEqual(1)
+  await settleLayout(page)
+  await page.screenshot({ path: join(UI11_SHOTS, 'retirement-history.png'), fullPage: true })
+  await page.setViewportSize({ width: 390, height: 844 })
+  await settleLayout(page)
+  await page.screenshot({ path: join(UI11_SHOTS, 'retirement-history-narrow.png'), fullPage: true })
+  await page.setViewportSize({ width: 1440, height: 960 })
+  await settleLayout(page)
+  const readableInherited = historyPage.locator('button:enabled').filter({ hasText: '继承自 builder' })
+  await expect.poll(async () => await readableInherited.count()).toBeGreaterThanOrEqual(1)
+  const inheritedCount = await readableInherited.count()
+  // A generation switch loads its transcript asynchronously, so read after each
+  // click only once the selected generation's own log has settled — the very
+  // first read otherwise still shows the default-selected current session.
+  let sawTaskTextInUi = false
+  for (let index = 0; index < inheritedCount && !sawTaskTextInUi; index += 1) {
+    await readableInherited.nth(index).click()
+    try {
+      await expect.poll(async () => ((await historyPage.locator('[role="log"]').textContent()) ?? '').includes('Build the feature'), { timeout: 8_000 }).toBe(true)
+      sawTaskTextInUi = true
+    } catch {
+      // This inherited generation's stored log does not hold the task text; try the next.
+    }
+  }
+  expect(sawTaskTextInUi).toBe(true)
+  await historyPage.getByRole('button', { name: '返回' }).click()
+  await historyPage.waitFor({ state: 'detached' })
+
+  // --- ② The Channel notice is complete and addressed to the leader ---------
+  const noticeItems = scaffold.ctx.agentTeam.view({ workspaceId: ws.id }).items
+    .filter(item => item.message.body.includes('Supervision retirement — builder'))
+  expect(noticeItems).toHaveLength(1)
+  const notice = noticeItems[0]!
+  expect(notice.message.sender).toBe('member:human')
+  expect([...notice.mentions]).toEqual([reviewerMember.memberId])
+  const noticeBody = notice.message.body
+  expect(noticeBody).toContain('Cause: builder')
+  expect(noticeBody).toContain('and was archived.')
+  expect(noticeBody).toContain('Completed work in service:')
+  expect(noticeBody).toContain('Finished directions:')
+  expect(noticeBody).toContain('- implements the feature (task #1)')
+  expect(noticeBody).toContain('Completed tasks: 1')
+  expect(noticeBody).toContain('Released work now unclaimed:')
+  expect(noticeBody).toContain('- integrates the interface (task #2)')
+  expect(noticeBody).toContain('@reviewer please reassign the items above to builder-2.')
+  expect(noticeBody).toContain('Succession: builder-2 is builder\'s same-role replacement: same preset, same pinned settings, inherited private memory, and the same Channel reach.')
+
+  await page.getByRole('button', { name: '# engineering' }).click()
+  const channelFeed = page.locator('[data-team-channel]')
+  await channelFeed.waitFor()
+  await expect.poll(async () => ((await channelFeed.textContent()) ?? '').includes('Supervision retirement'), { timeout: 20_000 }).toBe(true)
+  await expect.poll(async () => ((await channelFeed.textContent()) ?? '').includes('- integrates the interface (task #2)')).toBe(true)
+  // The plain-text notice is shorter than the 600-character clamp ceiling, so the
+  // whole body renders at once: its last line is present and no expand control
+  // appears, and the screenshot captures the complete notice without a click.
+  const noticeArticle = channelFeed.locator('article').filter({ hasText: 'Supervision retirement — builder' })
+  await expect.poll(async () => await noticeArticle.count()).toBeGreaterThanOrEqual(1)
+  await expect.poll(async () => ((await noticeArticle.first().textContent()) ?? '').includes('same Channel reach.')).toBe(true)
+  expect(await noticeArticle.first().locator('[data-message-expand="true"]').count()).toBe(0)
+  await settleLayout(page)
+  await page.screenshot({ path: join(UI11_SHOTS, 'retirement-notice.png'), fullPage: true })
+  await page.setViewportSize({ width: 390, height: 844 })
+  await settleLayout(page)
+  await page.screenshot({ path: join(UI11_SHOTS, 'retirement-notice-narrow.png'), fullPage: true })
+  await page.setViewportSize({ width: 1440, height: 960 })
+  await settleLayout(page)
+
+  // --- ③ The successor's configuration equals the predecessor's -------------
+  const parityFields = ['description', 'presetId', 'model', 'capabilities', 'prompt', 'contextStartPolicy', 'contextWindow', 'leader'] as const
+  const predecessor = statusOf('builder')!.member
+  for (const field of parityFields) {
+    expect(JSON.stringify(successor.member[field] ?? null)).toBe(JSON.stringify(predecessor[field] ?? null))
+  }
+  // The same parity through the Client editor: the inherited window override is
+  // echoed and the successor is not the leader.
+  await successorRow.hover()
+  await successorRow.getByRole('button', { name: 'builder-2 的操作' }).click()
+  await page.getByRole('menuitem', { name: '编辑 Agent' }).click()
+  const parityEditor = page.getByRole('dialog', { name: '编辑 Agent' })
+  await parityEditor.waitFor()
+  await expect.poll(() => parityEditor.getByLabel('上下文窗口覆盖').inputValue()).toBe('96000')
+  await expect.poll(async () => await parityEditor.getByRole('checkbox', { name: '设为团队负责人' }).isChecked()).toBe(false)
+  await parityEditor.screenshot({ path: join(UI11_SHOTS, 'retirement-parity.png') })
+  await parityEditor.getByRole('button', { name: '关闭', exact: true }).click()
+
+  expect(consoleWatch).toEqual({ warnings: [], pageErrors: [] })
+}, 240_000)
 
 /** One real 1×1 RGBA PNG: the avatar store validates the payload as an image and
  * the page must decode it, so a placeholder byte string would prove nothing. The

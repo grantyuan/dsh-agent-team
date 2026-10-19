@@ -51,6 +51,77 @@
   max-width: 880px;
 }
 
+/* The ordering of a cross-Workspace Team list is the reader's own taste, not a
+   Team fact, so it is a labeled native select in the header band beside the
+   totals it reads — the control rhythm the shipped surfaces already keep. One
+   declaration set serves the Inbox and the decision queue because the two pages
+   offer the same kind of control about the same kind of list. */
+.sortControl {
+  align-items: center;
+  display: flex;
+  flex: none;
+  gap: 6px;
+}
+.sortLabel {
+  color: var(--dsw-alias-label-tertiary);
+  font-size: 12px;
+  white-space: nowrap;
+}
+.sortSelect {
+  background: transparent;
+  border: 1px solid var(--dsw-alias-border-l2);
+  border-radius: var(--dsw-radius-sm, 6px);
+  color: var(--dsw-alias-label-primary);
+  cursor: pointer;
+  font: inherit;
+  font-size: 12px;
+  padding: 2px 6px;
+}
+.sortSelect:focus-visible {
+  outline: var(--dsw-focus-ring-width, 2px) solid var(--dsw-focus-ring-color, var(--dsw-alias-state-business-primary));
+  outline-offset: -1px;
+}
+
+/* A cross-Workspace list is partitioned, never merged flat: the Workspace a row
+   belongs to is a heading, and the Channel inside it is a nested one, so the
+   reader sees the same Thread land under the same two names every time rather
+   than reading where each row came from off the row itself. Group order is
+   fixed (see `groupThreadRows`); only the rows inside a Channel group follow
+   the page's sort key, which is what keeps a group from moving while the reader
+   re-lays what it holds. */
+.group + .group {
+  margin-top: 18px;
+}
+.channelGroup + .channelGroup {
+  margin-top: 10px;
+}
+/* The Workspace heading opens on the column the page's rows open their text on
+   — the shared 34px inset the Inbox sections already use — and speaks in the
+   caption voice: it names a boundary, it is not a subject itself. */
+.groupTitle {
+  color: var(--dsw-alias-label-secondary);
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 18px;
+  margin: 0 0 4px;
+  padding: 0 8px 0 34px;
+}
+/* The Channel heading nests under its Workspace: same ink family, one step
+   quieter and one step further in, so the two levels never read as siblings. */
+.channelTitle {
+  color: var(--dsw-alias-label-tertiary);
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 18px;
+  margin: 0 0 4px;
+  padding: 0 8px 0 44px;
+}
+/* How much the group holds, so a reader never counts rows to find out. */
+.groupCount {
+  font-variant-numeric: tabular-nums;
+  margin-left: 6px;
+}
+
 .timeline {
   min-height: 0;
   overflow-x: hidden;

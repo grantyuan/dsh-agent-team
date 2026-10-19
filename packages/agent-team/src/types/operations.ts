@@ -156,7 +156,7 @@ export interface AgentTeamMemberSessionRolledOverOperation extends AgentTeamOper
     readonly handoffEventSeq: SessionSeq
     /** The checkpoint a return was addressed to; absent on a fresh rollover. */
     readonly checkpointRef?: AgentTeamContextCheckpointRef
-    /** Why the rollover happened: the model asked, or a pressure notice was honored. */
+    /** Why the rollover happened: the model asked, or ('pressure') a historical Host order no longer produced. */
     readonly trigger: 'model' | 'pressure'
   }
 }

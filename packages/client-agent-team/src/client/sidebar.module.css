@@ -124,7 +124,8 @@
    they read as one family, not one control, and a reader addressing one by
    name never lands on the other. */
 .inboxCard,
-.tasksCard {
+.tasksCard,
+.decisionsCard {
   align-items: center;
   background: transparent;
   border: 0;
@@ -145,17 +146,22 @@
 .inboxCard[aria-current='page'],
 .tasksCard:hover,
 .tasksCard:focus-visible,
-.tasksCard[aria-current='page'] {
+.tasksCard[aria-current='page'],
+.decisionsCard:hover,
+.decisionsCard:focus-visible,
+.decisionsCard[aria-current='page'] {
   /* The mark on the card cuts itself out of the card, not out of the page. */
   --team-mark-ring: var(--dsw-alias-interactive-bg-hover);
   background: var(--dsw-alias-interactive-bg-hover);
 }
 .inboxCard:focus-visible,
-.tasksCard:focus-visible {
+.tasksCard:focus-visible,
+.decisionsCard:focus-visible {
   outline: var(--dsw-focus-ring-width, 2px) solid var(--dsw-focus-ring-color, var(--dsw-alias-state-business-primary));
   outline-offset: -2px;
 }
-.inboxCard .inboxMark {
+.inboxCard .inboxMark,
+.decisionsCard .inboxMark {
   color: var(--dsw-alias-label-tertiary);
 }
 .inboxCardLabel {

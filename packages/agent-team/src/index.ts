@@ -33,29 +33,29 @@ import { reportEnvironment } from './environment-check.ts'
 import { HUMAN_PROFILE_DEFAULT_NAME, HUMAN_PROFILE_REPO_URL, HUMAN_PROFILE_SETTINGS_NAMESPACE, HUMAN_PROFILE_SETTINGS_SCHEMA, HUMAN_PROFILE_VERSION, assertValidHumanName, normalizeHumanName, parseLegacyHumanProfile, planLegacyAdoption, type LegacyHumanProfileFields } from './human-profile.ts'
 import { humanAvatarsRoot, readHumanAvatar, removeHumanAvatar, writeHumanAvatar } from './human-avatar.ts'
 import { createHumanUpdateChecker } from './human-update-check.ts'
-import { isPressureRequestBlockDiagnostic, PressurePolicyCoordinator } from './pressure-policy.ts'
+import { PressurePolicyCoordinator } from './pressure-policy.ts'
 import { CONTEXT_CONTINUITY_PROJECTION_KEY, readContextTimeline, type ContextProjectionConfig, type ContextTimelineItem, type ContextTimelineSource, type TransitionPlan } from '@wowyuarm/dsh-context-continuity'
 import { createTeamContextManagement, TEAM_CONTEXT_CODEC } from './context-continuity-host.ts'
 import { AGENT_TEAM_PLUGIN_ID, isAgentTeamSource } from './context-source.ts'
 import { boundaryByRef, carriedInputOf, checkpointByRef, checkpointRefFor, createTeamContextProjectionConfig, createTeamContextProjectionDefinition, foldTeamContextProjection, retainedTopicsThrough, TeamContextProjectionHost } from './context-projection.ts'
-import { AGENT_TEAM_HUMAN_MEMBER_ID, AgentTeamLedger, agentTeamHumanActor, type AgentTeamDurableMemberResult } from './ledger.ts'
+import { AGENT_TEAM_HUMAN_HANDLE, AGENT_TEAM_HUMAN_MEMBER_ID, AgentTeamLedger, agentTeamHumanActor, type AgentTeamDurableMemberResult } from './ledger.ts'
 import { LedgerFence, ledgerFenceFor } from './ledger-fence.ts'
 import { AGENT_TEAM_TOOL_NAMES, BUNDLED_SKILLS_DIRECTORY, deepCopyCapabilities, deepCopyPrompt, isProtectedPromptSection, memberMemoryDirectoryName, memberMemoryDirectoryPath, MemberRuntime, promptSectionByteLength, sectionToolMapping } from './member-runtime.ts'
 import { PRUNE_WINDOW_DAYS, PRUNE_WINDOW_TURNS, foldLineageUsage, type UsageFold } from './member-section-usage.ts'
 import { CURATE_MAX_TOKENS, CURATE_TIMEOUT_MS, buildCurateMessages, parseCurateProposal, type CuratePromptInput } from './member-prompt-curation.ts'
-import { DIGEST_MAX_TOKENS, DIGEST_MESSAGE_LIMIT, DIGEST_TIMEOUT_MS, buildDigestMessages, parseThreadDigest, type ThreadDigestMessage } from './thread-digest.ts'
+import { DIGEST_MAX_TOKENS, DIGEST_MESSAGE_LIMIT, DIGEST_RETIREMENT_ENTRY_LIMIT, DIGEST_TIMEOUT_MS, buildDigestMessages, parseThreadDigest, type ThreadDigestMessage } from './thread-digest.ts'
 import { listPrivateSkillNames } from './member-skills.ts'
 import { BlockAssembler, LlmError } from '@deepseek-ai/dsh-llm'
 import type { MemberSkillSelectionRef } from './member-skills.ts'
 import { classifyRecoverableError, RecoveryCoordinator, RECOVERY_MAX_CONSECUTIVE_ERRORS } from './recovery.ts'
 import { assistantPlainText, classifyAssistantResponse, classifyStoppedTurnTail, COMPLETION_MARKER, RESPONSE_GUARD_MAX_CONSECUTIVE, RESPONSE_GUARD_NOTICE_SUMMARY, ResponseGuardCoordinator } from './response-guard.ts'
 import { buildRelevanceJudge, CONTEXT_RELEVANCE_THRESHOLD, DISPATCH_HISTORY_MESSAGE_LIMIT, parseRelevanceScore, RELEVANCE_JUDGE_MAX_TOKENS, RELEVANCE_JUDGE_TIMEOUT_MS } from './context-relevance.ts'
-import { MemberSupervisor, nextReplacementHandle, supervisionHandoffText, SUPERVISION_FAILURE_WINDOW_MS, SUPERVISION_HUNG_MS, SUPERVISION_MAX_CONSECUTIVE_FAILURES, SUPERVISION_MAX_RESTART_ATTEMPTS, SUPERVISION_WINDOW_FAILURES, type MemberSupervisionState, type SupervisionTrigger } from './supervisor.ts'
+import { MemberSupervisor, nextReplacementHandle, supervisionRetirementNotice, SUPERVISION_FAILURE_WINDOW_MS, SUPERVISION_HUNG_MS, SUPERVISION_MAX_CONSECUTIVE_FAILURES, SUPERVISION_MAX_RESTART_ATTEMPTS, SUPERVISION_WINDOW_FAILURES, type MemberSupervisionState, type SupervisionSessionRecap, type SupervisionTrigger } from './supervisor.ts'
 import { CONTINUATION_NUDGE_MARKER, TaskContinuationWatcher, continuationNudgeText, type ContinuationLeader, type ContinuationTask } from './continuation-watcher.ts'
 import { CompletionLiaison, INTERRUPT_PUSH_SUMMARY, liaisonFeedbackText, liaisonReportCheckText, liaisonResumePushText, liaisonTaskPushText, type LiaisonInterrupt, type LiaisonLeader } from './completion-liaison.ts'
 import { TruncationEscalator, truncationEscalationText, type TruncationLeader } from './truncation-escalation.ts'
 import { StoredSessionReadError, StoredSessionReader, sessionFailureOf } from './stored-session-reader.ts'
-import { doctorAnalysisPrompt, humanTranscriptEntriesOf, renderFailureTranscript, type TranscriptEvent } from './failure-transcript.ts'
+import { doctorAnalysisPrompt, humanTranscriptEntriesOf, renderFailureTranscript, type TranscriptEntry, type TranscriptEvent } from './failure-transcript.ts'
 import { agentTeamDomainSpec } from './spec.ts'
 import { formatTeamTimestamp } from './time-format.ts'
 import type {
@@ -100,6 +100,8 @@ import type {
   AgentTeamRemoveHumanAvatarResult,
   AgentTeamInbox,
   AgentTeamInboxRequest,
+  AgentTeamPendingDecisions,
+  AgentTeamPendingDecisionsRequest,
   AgentTeamJoinChannelRequest,
   AgentTeamJoinChannelResult,
   AgentTeamJoinWorkspaceRequest,
@@ -294,17 +296,74 @@ const MAX_TIMELINE_ANCESTORS = 8
 /** Session-history dialog page budgets: rendered lines and characters per read. */
 const SESSION_TRANSCRIPT_PAGE_ENTRIES = 150
 const SESSION_TRANSCRIPT_PAGE_CHARS = 24_000
-/** Product pressure budget constants (see docs/team-collaboration/README.md). */
-const CONTEXT_HARD_LIMIT_CAP = 256_000
-const CONTEXT_HANDOFF_AT_CAP = 200_000
-const CONTEXT_HANDOFF_RESERVE = 8_000
-const CONTEXT_SAFE_OUTPUT_RESERVE = 16_000
+/** The digest author label for one folded final-Session transcript entry. */
+function retirementRecapAuthor(role: TranscriptEntry['role']): string {
+  switch (role) {
+    case 'user': return AGENT_TEAM_HUMAN_HANDLE
+    case 'team': return 'teammate'
+    case 'notice':
+    case 'system': return 'notice'
+    case 'error':
+    case 'warning': return 'outcome'
+    case 'tool-call':
+    case 'tool-result': return 'tool'
+    default: return 'member'
+  }
+}
 /**
- * Usage at or above which an acknowledged acceptance advises a fresh
- * rollover instead of keeping the context; capped by the route's effective
- * handoff budget so narrow routes get a proportionally earlier boundary.
+ * Fold one retired Member's final-Session transcript into the digest's message
+ * shape: the newest {@link DIGEST_RETIREMENT_ENTRY_LIMIT} entries, the Member's
+ * own turns labelled by its handle, everyone else by lane.
  */
-const ACCEPT_TASK_BOUNDARY_THRESHOLD = 128_000
+export function retirementRecapDigestMessages(handle: string, entries: readonly TranscriptEntry[]): readonly ThreadDigestMessage[] {
+  return Object.freeze(entries.slice(-DIGEST_RETIREMENT_ENTRY_LIMIT).map(entry => Object.freeze({
+    author: entry.role === 'assistant' ? handle : retirementRecapAuthor(entry.role),
+    text: entry.text,
+    mentions: [] as readonly string[],
+  })))
+}
+/**
+ * Pressure budget reserves (see docs/team-collaboration/README.md). Budgets
+ * are priced from the live route's own model information — the context window
+ * and the adapter's default per-request output cap — never fixed product
+ * caps; the constants below are floors for what the route does not disclose.
+ */
+const CONTEXT_MIN_OUTPUT_RESERVE = 16_000
+const CONTEXT_MIN_HANDOFF_RESERVE = 8_000
+const CONTEXT_HANDOFF_RESERVE_OF_WINDOW = 0.04
+/**
+ * Usage at or above this share of the route's handoff budget, an acknowledged
+ * acceptance advises a fresh rollover instead of keeping the context. A
+ * fixed token number here would price wide routes too late and narrow ones
+ * not at all, so the boundary follows the derived budget.
+ */
+const CONTEXT_ACCEPT_ADVICE_OF_HANDOFF = 0.64
+/**
+ * The conservative route a tool path assumes when it cannot read the live
+ * budget: the narrowest common class of deployed routes, never a cap that
+ * would masquerade as the real budget.
+ */
+const CONTEXT_FALLBACK_ROUTE_WINDOW = 128_000
+
+/**
+ * Derive one route's pressure budgets from its model information:
+ * `hardLimit = window − outputReserve` where the reserve is the model's
+ * disclosed default per-request output cap floored at 16K — a request that
+ * may spend that many tokens on the answer cannot also fill the window with
+ * context; `handoffAt = hardLimit − handoffReserve` where the reserve is
+ * `max(8K, 4% of window)` — the deeper the window, the more room a single
+ * forced compaction must leave behind, since one reduction is not guaranteed
+ * to clear an arbitrary overrun. Both floors at zero: a route narrower than
+ * its reserves prices no usable budget instead of a negative one.
+ */
+export function deriveContextPressureBudget(routeWindow: number, defaultMaxTokens?: number): { readonly hardLimit: number; readonly handoffAt: number } {
+  const outputReserve = Math.max(CONTEXT_MIN_OUTPUT_RESERVE, defaultMaxTokens ?? 0)
+  const hardLimit = Math.max(0, routeWindow - outputReserve)
+  const handoffReserve = Math.max(CONTEXT_MIN_HANDOFF_RESERVE, Math.floor(routeWindow * CONTEXT_HANDOFF_RESERVE_OF_WINDOW))
+  return { hardLimit, handoffAt: Math.max(0, hardLimit - handoffReserve) }
+}
+
+const FALLBACK_PRESSURE_BUDGET = deriveContextPressureBudget(CONTEXT_FALLBACK_ROUTE_WINDOW)
 
 /** One live invalidation subscription, restricted to its declared scope. */
 interface ChangeWaiter {
@@ -569,6 +628,13 @@ export default class AgentTeam extends TypertRemoteService {
    * Member reads healthy again.
    */
   private readonly supervisionEscalation = new Map<AgentTeamMemberId, { trigger: SupervisionTrigger; restartAttempts: number; reset: boolean }>()
+  /**
+   * The best-effort final-Session recap per Member in the coercion chain. The
+   * digest runs outside the ledger queue from the give-up onward and drops its
+   * result into a mutable slot that the later handover reads without waiting;
+   * an entry lives only while its escalation does.
+   */
+  private readonly retirementRecaps = new Map<AgentTeamMemberId, { recap?: SupervisionSessionRecap }>()
   private readonly pressurePolicy: PressurePolicyCoordinator
   private readonly notifiedInbox = new Map<AgentTeamMemberId, string>()
   private attachmentGcTimer?: ReturnType<typeof setInterval> | undefined
@@ -871,30 +937,11 @@ export default class AgentTeam extends TypertRemoteService {
   constructor(ctx: Context, public config: Config) {
     super(ctx, 'agentTeam')
     this.pressurePolicy = new PressurePolicyCoordinator({
-      agentForMember: memberId => this.handles.get(memberId)?.agent,
       memberForAgent: agent => {
         const member = this.memberForAgent(agent)
         return member === undefined ? undefined : { memberId: member.memberId, sessionId: agent.id }
       },
       compactionForAgent: agent => this.ctx.agentPresets.serviceFor(agent, 'compaction'),
-      limitsForAgent: agent => this.routeLimitsForAgent(agent),
-      activeClaimLabels: memberId => this.activeClaimLabels(memberId),
-      runningJobLabels: memberId => this.runningJobLabels(memberId),
-      failed: (memberId, sessionId, diagnostic) => {
-        this.setMemberFailure(memberId, 'compaction', diagnostic, sessionId)
-        this.emitAutoCompactionChanged(memberId)
-      },
-      healed: memberId => {
-        if (this.clearMemberFailure(memberId, 'compaction')) this.emitAutoCompactionChanged(memberId)
-      },
-      // The policy ran out of gentle means: an ordered reduction the Member did
-      // not run and the Host could not carry out is the supervision chain's
-      // reset, taken on the spot instead of waiting for the next ten-minute pass
-      // to read the block back.
-      escalate: (memberId, diagnostic) => {
-        this.ctx.logger.warn(`agent-team: context pressure policy handing member '${this.memberLabel(memberId)}' to the supervision chain: ${diagnostic}`)
-        this.supervisor.onBlockedStop(memberId)
-      },
       compactWithFallback: (agent, memberId, signal) => this.policyCompactWithFallback(memberId, agent, signal),
       log: message => { this.ctx.logger.warn(`agent-team: ${message}`) },
     })
@@ -1151,6 +1198,7 @@ export default class AgentTeam extends TypertRemoteService {
       this.runningAgents.clear()
       this.memberActivity.clear()
       this.supervisionEscalation.clear()
+      this.retirementRecaps.clear()
       await this.fence?.release()
       await domain.close()
     }, 'agentTeam.dispose')
@@ -1331,9 +1379,17 @@ export default class AgentTeam extends TypertRemoteService {
     const member = this.requireLedger().getMember(request.memberId)
     if (member === undefined) throw new Error(`unknown Agent Member '${request.memberId}'`)
     const lineage = await this.memberSessionLineage(member)
+    const ledger = this.requireLedger()
     return Object.freeze(lineage.map(generation => Object.freeze({
       sessionId: generation.sessionId,
       isCurrent: generation.isCurrent,
+      // A generation inherited across a succession edge belongs to a retired
+      // predecessor; carry its handle so the page labels it apart from the
+      // successor's own generations. The owner is the requested Member on its
+      // own generations (no label).
+      ...(generation.ownerMemberId === member.memberId
+        ? {}
+        : { predecessorHandle: ledger.getMember(generation.ownerMemberId)?.handle }),
       ...(generation.createdAt === undefined ? {} : { createdAt: generation.createdAt }),
       ...(generation.eventCount === undefined ? {} : { eventCount: generation.eventCount }),
     })))
@@ -1383,10 +1439,20 @@ export default class AgentTeam extends TypertRemoteService {
     })
   }
 
-  /** One generation from the lineage walk: metadata when readable, own events for the transcript. */
+  /**
+   * The lineage walk: the requested Member's own generations newest-first,
+   * then — when it carries a supervision succession edge — the predecessor's
+   * generations, and so on through the chain. Each Member's own walk follows
+   * the Session `parentSession` chain (fork generations) and the ledger's
+   * recorded `previousSessionForMember` fallback for an unreadable current
+   * binding. The whole walk is bounded by `MAX_TIMELINE_ANCESTORS`, and a
+   * `seen` set keeps a corrupt cycle from looping; a missing or unreadable
+   * predecessor ends the walk safely instead of throwing.
+   */
   private memberSessionLineage(member: AgentTeamAgentMember): Promise<readonly {
     readonly sessionId: SessionId
     readonly isCurrent: boolean
+    readonly ownerMemberId: AgentTeamMemberId
     readonly createdAt?: number
     readonly eventCount?: number
     readonly events?: readonly SessionEvent[]
@@ -1396,60 +1462,85 @@ export default class AgentTeam extends TypertRemoteService {
       const generations: Array<{
         readonly sessionId: SessionId
         readonly isCurrent: boolean
+        readonly ownerMemberId: AgentTeamMemberId
         readonly createdAt?: number
         readonly eventCount?: number
         readonly events?: readonly SessionEvent[]
         readonly unreadableDetail?: string
       }> = []
-      const handle = this.handles.get(member.memberId)
-      // The live handle, when there is one, IS the current readable generation
-      // even after the durable binding has moved onto its next Session: during
-      // a context transition the bound Session may not exist on disk yet, and
-      // a stored read of it would fail with "not found" while the handle's
-      // generation still carries the Member's newest events.
-      let sessionId: SessionId | undefined = handle?.agent.session.id ?? member.sessionId
-      let guard = 0
-      while (sessionId !== undefined && guard++ <= MAX_TIMELINE_ANCESTORS) {
-        const isCurrent = generations.length === 0
-        if (isCurrent && handle !== undefined && handle.agent.session.id === sessionId) {
-          const session = handle.agent.session
+      const ledger = this.requireLedger()
+      const seenSessions = new Set<SessionId>()
+      const seenMembers = new Set<AgentTeamMemberId>()
+      let owner: AgentTeamAgentMember | undefined = member
+      // Only the requested Member's first generation is `isCurrent`; every
+      // generation inherited across the succession edge is history.
+      let ownsCurrent = true
+      while (owner !== undefined && generations.length <= MAX_TIMELINE_ANCESTORS) {
+        if (seenMembers.has(owner.memberId)) break
+        seenMembers.add(owner.memberId)
+        const handle = this.handles.get(owner.memberId)
+        // The live handle, when there is one, IS the current readable generation
+        // even after the durable binding has moved onto its next Session: during
+        // a context transition the bound Session may not exist on disk yet, and
+        // a stored read of it would fail with "not found" while the handle's
+        // generation still carries the Member's newest events.
+        let sessionId: SessionId | undefined = handle?.agent.session.id ?? owner.sessionId
+        let firstOfMember = true
+        let guard = 0
+        while (sessionId !== undefined && guard++ <= MAX_TIMELINE_ANCESTORS && generations.length <= MAX_TIMELINE_ANCESTORS) {
+          if (seenSessions.has(sessionId)) break
+          const isCurrent = ownsCurrent && generations.length === 0
+          if (isCurrent && handle !== undefined && handle.agent.session.id === sessionId) {
+            const session = handle.agent.session
+            seenSessions.add(sessionId)
+            generations.push({
+              sessionId,
+              isCurrent,
+              ownerMemberId: owner.memberId,
+              createdAt: session.header.createdAt,
+              eventCount: session.snapshotEvents().length,
+              events: session.ownEvents(),
+            })
+            sessionId = session.header.parentSession
+            firstOfMember = false
+            continue
+          }
+          const read = await this.sessionReader.read(sessionId)
+          if (!read.ok) {
+            seenSessions.add(sessionId)
+            generations.push({ sessionId, isCurrent, ownerMemberId: owner.memberId, unreadableDetail: read.failure.detail })
+            // A durable binding can name a Session that never materialized (a
+            // renewal or rollover committed while its activation failed or is
+            // still running). The ledger recorded which Session that transition
+            // retired: when the unreadable entry IS the Member's bound Session,
+            // resume the walk at the recorded predecessor instead of ending —
+            // archived history stays auditable through exactly the crash that
+            // generation cannot describe. Mid-walk ancestor failures keep their
+            // old contract: the entry states the stop and nothing follows it.
+            const predecessor = firstOfMember && sessionId === owner.sessionId
+              ? ledger.previousSessionForMember(owner.memberId)
+              : undefined
+            if (predecessor === undefined || predecessor === sessionId) break
+            sessionId = predecessor
+            firstOfMember = false
+            continue
+          }
+          const inspection = read.inspection
+          seenSessions.add(sessionId)
           generations.push({
             sessionId,
             isCurrent,
-            createdAt: session.header.createdAt,
-            eventCount: session.snapshotEvents().length,
-            events: session.ownEvents(),
+            ownerMemberId: owner.memberId,
+            createdAt: inspection.header.createdAt,
+            eventCount: inspection.events.length,
+            events: inspection.events.slice(inspection.inheritedEventCount),
           })
-          sessionId = session.header.parentSession
-          continue
+          sessionId = inspection.header.parentSession
+          firstOfMember = false
         }
-        const read = await this.sessionReader.read(sessionId)
-        if (!read.ok) {
-          generations.push({ sessionId, isCurrent, unreadableDetail: read.failure.detail })
-          // A durable binding can name a Session that never materialized (a
-          // renewal or rollover committed while its activation failed or is
-          // still running). The ledger recorded which Session that transition
-          // retired: when the unreadable entry IS the current binding, resume
-          // the walk at the recorded predecessor instead of ending — archived
-          // history stays auditable through exactly the crash the newest
-          // generation cannot describe. Mid-walk ancestor failures keep their
-          // old contract: the entry states the stop and nothing follows it.
-          const predecessor = isCurrent && sessionId === member.sessionId
-            ? this.requireLedger().previousSessionForMember(member.memberId)
-            : undefined
-          if (predecessor === undefined || predecessor === sessionId) break
-          sessionId = predecessor
-          continue
-        }
-        const inspection = read.inspection
-        generations.push({
-          sessionId,
-          isCurrent,
-          createdAt: inspection.header.createdAt,
-          eventCount: inspection.events.length,
-          events: inspection.events.slice(inspection.inheritedEventCount),
-        })
-        sessionId = inspection.header.parentSession
+        ownsCurrent = false
+        const predecessorId: AgentTeamMemberId | undefined = owner.predecessorMemberId
+        owner = predecessorId === undefined ? undefined : ledger.getMember(predecessorId)
       }
       return generations
     })()
@@ -2902,17 +2993,16 @@ export default class AgentTeam extends TypertRemoteService {
     const status = this.memberStatus(member)
     if (status.availability !== 'active' || status.presence === 'error') return 'stopped'
     this.supervisionEscalation.delete(memberId)
+    this.retirementRecaps.delete(memberId)
     return 'healthy'
   }
 
   /**
    * One supervised bring-up: the same repair `recoverMember` performs, chosen by
    * what is actually missing. No live Session (or an orphaned composition) is
-   * rebuilt; a stopped Member whose failure signature is a pressure-policy
-   * request block escalates straight into the coercion chain's reset — the
-   * nudge cannot heal that class; any other live Agent that stopped mid-work
-   * gets the automatic continuation prompt. The next pass judges the attempt,
-   * so a throw here only means it did not help.
+   * rebuilt; any other live Agent that stopped mid-work gets the automatic
+   * continuation prompt. The next pass judges the attempt, so a throw here only
+   * means it did not help.
    */
   private async restartMemberUnderSupervision(memberId: AgentTeamMemberId): Promise<void> {
     const ledger = this.requireLedger()
@@ -2922,22 +3012,6 @@ export default class AgentTeam extends TypertRemoteService {
     if (handle === undefined || this.ctx.agentPresets.composedPreset(handle.agent.ctx) === undefined) {
       this.ctx.logger.warn(`agent-team: supervision rebuilding member '${member.handle}' after it stopped with no live composition`)
       await this.reactivateMember(memberId)
-      return
-    }
-    // A pressure-policy request block is the one stop a bring-up nudge provably
-    // cannot heal: the Member's context sits at or above the hard limit with its
-    // compaction failed or refused, so every later turn is refused before any
-    // model call and the nudge would only wake the Member straight into the same
-    // block. The coercion chain's fresh-context reset is the remedy, so the
-    // escalation starts here instead of spending the bring-up budget on nudges.
-    // The recorded failure must belong to the Member's current Session: a block
-    // left over from an earlier generation says nothing about this one, and
-    // resetting over it would throw away a healthy context.
-    const failures = this.memberFailures.get(memberId)
-    const blockFailure = failures?.runtime ?? failures?.compaction
-    if (blockFailure?.sessionId === handle.agent.id && isPressureRequestBlockDiagnostic(blockFailure.message)) {
-      this.ctx.logger.warn(`agent-team: supervision skipping the bring-up nudge for member '${member.handle}': its requests are blocked by the context pressure policy (${blockFailure.message}); escalating to a context reset`)
-      this.supervisor.onBlockedStop(memberId)
       return
     }
     this.ctx.logger.warn(`agent-team: supervision asking member '${member.handle}' to continue the work it stopped on`)
@@ -2958,12 +3032,95 @@ export default class AgentTeam extends TypertRemoteService {
   private async escalateSupervisedMember(memberId: AgentTeamMemberId, trigger: SupervisionTrigger, restartAttempts: number): Promise<void> {
     if (this.supervisionEscalation.has(memberId)) return
     this.supervisionEscalation.set(memberId, { trigger, restartAttempts, reset: false })
+    // The final-Session recap is kicked off here, one whole supervision tick
+    // before the handover it may decorate, so its bounded call has long settled
+    // by the time the notice is built. It runs outside the ledger queue.
+    const member = this.requireLedger().getMember(memberId)
+    if (member !== undefined) this.startRetirementRecap(member)
     await this.forceResetSupervisedMember(memberId, trigger)
     // forceReset swallows a renewal that committed but could not reactivate —
     // that is still the reset step having run. Only a lifecycle refusal
     // (requireAccepting) reaches here, and it leaves reset:false so the next
     // pass retries the reset before any handover.
     this.supervisionEscalation.set(memberId, { trigger, restartAttempts, reset: true })
+  }
+
+  /**
+   * Kick off the retirement recap outside the ledger queue: a one-shot,
+   * propose-only digest of the Member's final Session whose result lands in a
+   * per-Member slot the later handover reads without waiting. It never enters
+   * the ledger, never becomes a Team fact, and never fails the handover — a
+   * timeout, abort, or model error simply leaves no recap to append.
+   */
+  private startRetirementRecap(member: AgentTeamAgentMember): void {
+    const entry: { recap?: SupervisionSessionRecap } = {}
+    this.retirementRecaps.set(member.memberId, entry)
+    void this.retirementSessionRecap(member)
+      .then(recap => { if (recap !== undefined) entry.recap = recap })
+      .catch(() => {})
+  }
+
+  /**
+   * The best-effort recap itself: the retired Member's own final-Session
+   * transcript, newest 20 entries, through the shared digest shape on the
+   * Member's pinned model (the Host default when it pinned none). It reads only
+   * the Member's bound Session — never an inherited ancestor — and resolves
+   * `undefined` on any failure or timeout instead of throwing.
+   */
+  private async retirementSessionRecap(member: AgentTeamAgentMember): Promise<SupervisionSessionRecap | undefined> {
+    try {
+      const messages = await this.retiredFinalSessionDigestInput(member)
+      if (messages.length === 0) return undefined
+      const llm = this.ctx.get('llm')
+      if (llm === undefined) return undefined
+      const { system, messages: request } = buildDigestMessages({ messages })
+      const selection = member.model ?? this.ctx.agentDefaultModel.currentSelection()
+      const timeout = AbortSignal.timeout(DIGEST_TIMEOUT_MS)
+      const assembler = new BlockAssembler()
+      try {
+        for await (const chunk of llm.stream({
+          provider: selection.provider,
+          model: selection.model,
+          messages: [...request],
+          system,
+          maxTokens: DIGEST_MAX_TOKENS,
+          signal: timeout,
+        })) assembler.push(chunk)
+      } catch {
+        return undefined
+      }
+      // A cancelled call never produces a recap, even when a mock or lenient
+      // adapter ignored the signal and streamed to completion.
+      if (timeout.aborted) return undefined
+      const finish = assembler.finish
+      if (finish.kind === 'error' || finish.kind === 'aborted' || finish.kind === 'max-tokens') return undefined
+      const text = assembler.blocks().filter(block => block.type === 'text').map(block => block.text).join('')
+      const parsed = parseThreadDigest(text)
+      return Object.freeze({ summary: parsed.summary, keyPoints: parsed.keyPoints })
+    } catch {
+      return undefined
+    }
+  }
+
+  /**
+   * The recap input: the Member's own final-Session transcript folded to the
+   * digest's message shape, newest 20 entries. The live handle is preferred
+   * while the Member's bound Session still has one; a stored read covers the
+   * case where the failed mount has already released it.
+   */
+  private async retiredFinalSessionDigestInput(member: AgentTeamAgentMember): Promise<readonly ThreadDigestMessage[]> {
+    const handle = this.handles.get(member.memberId)
+    let events: readonly SessionEvent[] | undefined
+    if (handle !== undefined && handle.agent.session.id === member.sessionId) {
+      events = handle.agent.session.ownEvents()
+    } else {
+      const read = await this.sessionReader.read(member.sessionId)
+      if (read.ok) events = read.inspection.events.slice(read.inspection.inheritedEventCount)
+    }
+    if (events === undefined) return []
+    const entries: TranscriptEntry[] = []
+    for (const event of events) entries.push(...humanTranscriptEntriesOf(event))
+    return retirementRecapDigestMessages(member.handle, entries)
   }
 
   /**
@@ -2980,6 +3137,7 @@ export default class AgentTeam extends TypertRemoteService {
       const state = this.supervisionStateOf(memberId)
       if (state === 'healthy') {
         this.supervisionEscalation.delete(memberId)
+        this.retirementRecaps.delete(memberId)
         continue
       }
       if (state === 'settling') continue
@@ -2995,6 +3153,7 @@ export default class AgentTeam extends TypertRemoteService {
       try {
         await this.handOverSupervisedMember(memberId, escalation.trigger, escalation.restartAttempts)
         this.supervisionEscalation.delete(memberId)
+        this.retirementRecaps.delete(memberId)
       } catch (error) {
         this.ctx.logger.warn(`agent-team: supervision handover for member '${memberId}' failed: ${error instanceof Error ? error.message : String(error)}`)
       }
@@ -3205,8 +3364,11 @@ export default class AgentTeam extends TypertRemoteService {
         ledger.workspacesOf(memberId).map(workspaceId => [workspaceId, ledger.channelsForMember(memberId, workspaceId)] as const),
       )
       const homeChannels = channelsByWorkspace.get(failed.workspaceId) ?? []
+      const taskNumbers = new Map(ledger.workspacesOf(memberId).flatMap(workspaceId =>
+        ledger.tasksForWorkspace({ workspaceId }).tasks.map(task => [task.taskRef, task.taskNumber] as const)))
       const releasedClaims = ledger.activeClaimsForMember(memberId)
-        .map(claim => Object.freeze({ direction: claim.direction, taskRef: claim.taskRef as string }))
+        .map(claim => Object.freeze({ direction: claim.direction, taskNumber: taskNumbers.get(claim.taskRef) ?? 0 }))
+      const completedWork = ledger.completedWorkForMember(memberId)
       // A Workspace that no longer exists is left to the startup sweep instead of
       // being re-granted onto a Member that cannot activate in it.
       const otherWorkspaces = [...channelsByWorkspace.keys()].filter(workspaceId =>
@@ -3217,12 +3379,17 @@ export default class AgentTeam extends TypertRemoteService {
       const replacement: AgentTeamAgentMember = Object.freeze({
         memberId: replacementId,
         sessionId: SessionId(`agent-team-${randomUUID()}`),
+        predecessorMemberId: failed.memberId,
         workspaceId: failed.workspaceId,
         handle: replacementHandle,
         description: failed.description,
         presetId: failed.presetId,
         ...(failed.model === undefined ? {} : { model: Object.freeze({ ...failed.model }) }),
         ...(failed.capabilities === undefined ? {} : { capabilities: Object.freeze(deepCopyCapabilities(failed.capabilities)) }),
+        ...(failed.prompt === undefined ? {} : { prompt: Object.freeze(deepCopyPrompt(failed.prompt)) }),
+        ...(failed.contextStartPolicy === undefined ? {} : { contextStartPolicy: failed.contextStartPolicy }),
+        ...(failed.contextWindow === undefined ? {} : { contextWindow: failed.contextWindow }),
+        ...(failed.leader === undefined ? {} : { leader: failed.leader }),
         privateMemoryPath: dshHomePath('agent-team', 'members', memberMemoryDirectoryName(replacementId)),
         state: 'enabled',
       })
@@ -3239,6 +3406,9 @@ export default class AgentTeam extends TypertRemoteService {
         presetId: failed.presetId,
         ...(replacement.model === undefined ? {} : { model: replacement.model }),
         ...(replacement.capabilities === undefined ? {} : { capabilities: replacement.capabilities }),
+        ...(replacement.prompt === undefined ? {} : { prompt: replacement.prompt }),
+        ...(replacement.contextStartPolicy === undefined ? {} : { contextStartPolicy: replacement.contextStartPolicy }),
+        ...(replacement.contextWindow === undefined ? {} : { contextWindow: replacement.contextWindow }),
         channelRefs: homeChannels,
         member: replacement,
       })
@@ -3259,33 +3429,60 @@ export default class AgentTeam extends TypertRemoteService {
           this.emitCommitted(channelJoin.value.receipt)
         }
       }
+      // The notice is addressed to the workspace's designated leader when there
+      // is one: a single addressed recipient keeps the Channel quiet, and the
+      // human-actor send bypasses the member-in-Channel gate that a Member actor
+      // would have to clear. Only with no reachable leader does it fall back to
+      // the inherited-Channel broadcast.
+      const leader = ledger.listMembers().find(member =>
+        member.state === 'enabled' && member.leader === true
+        && member.memberId !== memberId && member.memberId !== stored.memberId
+        && ledger.workspacesOf(member.memberId).includes(failed.workspaceId))
+      const leaderChannel = leader === undefined ? undefined : ledger.channelsForMember(leader.memberId, failed.workspaceId)[0]
+      const addressedHandle = leader !== undefined && leaderChannel !== undefined ? leader.handle : AGENT_TEAM_HUMAN_HANDLE
+      // Read the recap slot without waiting: the digest was kicked off a whole
+      // supervision tick ago (at give-up) and has long settled — a still-open or
+      // failed call simply contributes nothing.
+      const sessionRecap = this.retirementRecaps.get(memberId)?.recap
+      const noticeBody = supervisionRetirementNotice({
+        failedHandle: failed.handle, replacementHandle: stored.handle, addressedHandle, trigger,
+        restartAttempts, maxRestartAttempts: SUPERVISION_MAX_RESTART_ATTEMPTS,
+        maxConsecutiveFailures: SUPERVISION_MAX_CONSECUTIVE_FAILURES,
+        maxWindowFailures: SUPERVISION_WINDOW_FAILURES,
+        maxFailureWindowMs: SUPERVISION_FAILURE_WINDOW_MS, completedWork, releasedClaims,
+        ...(sessionRecap === undefined ? {} : { sessionRecap }),
+      })
+      if (leader !== undefined && leaderChannel !== undefined) {
+        await this.sendMessageAs(agentTeamHumanActor(), {
+          requestId: randomUUID() as AgentTeamRequestId,
+          workspaceId: failed.workspaceId,
+          channelRef: leaderChannel,
+          body: noticeBody,
+          recipients: [leader.memberId],
+          asTask: false,
+        })
+        return
+      }
       if (homeChannels.length === 0) {
         // No shared Channel means no admin surface to ask through; the roster
         // change and the released Claims are still the durable record.
         this.ctx.logger.warn(`agent-team: supervision could not announce the '${failed.handle}' → '${stored.handle}' handover: the Member belonged to no Channel`)
         return
       }
-      // The handover is broadcast on every Channel the replacement inherited,
-      // and delivered to every live Member of those Channels: the `@human`
-      // body mention carries the admin ask, while the explicit recipients put
-      // the notice into each other Member's Inbox so the whole Team learns
-      // which handle now owns the failed Member's reach.
-      const handoverBody = supervisionHandoffText({
-        failedHandle: failed.handle, replacementHandle: stored.handle, trigger,
-        restartAttempts, maxRestartAttempts: SUPERVISION_MAX_RESTART_ATTEMPTS,
-        maxConsecutiveFailures: SUPERVISION_MAX_CONSECUTIVE_FAILURES,
-        maxWindowFailures: SUPERVISION_WINDOW_FAILURES,
-        maxFailureWindowMs: SUPERVISION_FAILURE_WINDOW_MS, releasedClaims,
-      })
+      // No qualifying leader: the notice is broadcast on every Channel the
+      // replacement inherited, and delivered to every live Member of those
+      // Channels — the `@human` body mention carries the admin ask, while the
+      // explicit recipients put the notice into each other Member's Inbox so the
+      // whole Team learns which handle now owns the failed Member's reach.
       const noticeChannels = ledger.workspacesOf(stored.memberId)
         .flatMap(workspaceId => ledger.channelsForMember(stored.memberId, workspaceId).map(channelRef => ({ workspaceId, channelRef })))
       for (const { workspaceId, channelRef } of noticeChannels) {
-        const audience = ledger.enabledChannelMembers(channelRef).filter(memberId => memberId !== stored.memberId)
+        const audience = ledger.enabledChannelMembers(channelRef).filter(enabledMemberId => enabledMemberId !== stored.memberId)
         await this.sendMessageAs({ kind: 'member', memberId: stored.memberId, handle: stored.handle }, {
           requestId: randomUUID() as AgentTeamRequestId,
           workspaceId,
           channelRef,
-          body: handoverBody,
+          body: noticeBody,
           ...(audience.length === 0 ? {} : { recipients: audience }),
           asTask: false,
         })
@@ -3703,6 +3900,19 @@ export default class AgentTeam extends TypertRemoteService {
     return this.requireLedger().inbox(agentTeamHumanActor(), request)
   }
 
+  /**
+   * Human decision queue: every Thread in one Workspace that still waits on
+   * the Human — a decision ask named at them, or an open Task awaiting
+   * acceptance — with the full ask material so the Client can answer from
+   * one surface instead of visiting each Thread. Propose-and-read only: it
+   * commits nothing and consumes nothing.
+   */
+  @Remote('pendingDecisions')
+  pendingDecisions(request: AgentTeamPendingDecisionsRequest): AgentTeamPendingDecisions {
+    this.requireWorkspace(request.workspaceId)
+    return this.requireLedger().pendingDecisions(agentTeamHumanActor(), request)
+  }
+
   /** Human's cross-Channel Task list: every Task with its sub-task linkage and live progress. */
   @Remote('tasks')
   tasks(request: AgentTeamTasksRequest): AgentTeamTasks {
@@ -3930,7 +4140,7 @@ export default class AgentTeam extends TypertRemoteService {
     try {
       const limits = await this.routeLimitsForAgent(agent)
       if (limits === undefined) return this.unavailableAdvice()
-      const taskBoundaryThreshold = Math.min(ACCEPT_TASK_BOUNDARY_THRESHOLD, limits.handoffAt)
+      const taskBoundaryThreshold = Math.floor(limits.handoffAt * CONTEXT_ACCEPT_ADVICE_OF_HANDOFF)
       if (limits.usageTokens >= limits.handoffAt) {
         return Object.freeze({ usageTokens: limits.usageTokens, taskBoundaryThreshold, handoffAt: limits.handoffAt, hardLimit: limits.hardLimit,
           action: 'handoff-now',
@@ -4102,24 +4312,17 @@ export default class AgentTeam extends TypertRemoteService {
   }
 
   /**
-   * Effective context-pressure budget for one Member's current route:
-   * `hardLimit = min(256K, routeWindow - outputReserve)` and
-   * `handoffAt = min(200K, hardLimit - handoffReserve)`.
-   */
-  private contextLimits(routeWindow: number): { readonly hardLimit: number; readonly handoffAt: number } {
-    const hardLimit = Math.min(CONTEXT_HARD_LIMIT_CAP, Math.max(0, routeWindow - CONTEXT_SAFE_OUTPUT_RESERVE))
-    const handoffAt = Math.min(CONTEXT_HANDOFF_AT_CAP, Math.max(0, hardLimit - CONTEXT_HANDOFF_RESERVE))
-    return { hardLimit, handoffAt }
-  }
-
-  /**
    * Budget + measurement for one Member's CURRENT routed selection — the
    * member-pinned model or the default selection, resolved through the LLM
-   * service so a route change is honored at the next pre-step. The last
-   * persisted `request/context` event wins when it matches the current
-   * selection (no directory round-trip for an unchanged route). A selection
-   * whose capacity cannot be resolved returns `undefined` and the pressure
-   * policy fails closed instead of assuming an unbounded route.
+   * service so a route change is honored at the next on-demand read. The budget
+   * is priced from the route's OWN model information — context window plus the
+   * adapter's default per-request output cap — through
+   * {@link deriveContextPressureBudget}; a last persisted `request/context`
+   * event still supplies the window when the resolution discloses none. This
+   * pricing is passive: it feeds only the acceptance advice, the context
+   * timeline, and the checkpoint-return guard, never a request decision —
+   * a selection whose capacity cannot be resolved simply degrades those
+   * surfaces to their unavailable or fallback presentations.
    */
   private async routeLimitsForAgent(agent: Agent): Promise<{ readonly usageTokens: number; readonly hardLimit: number; readonly handoffAt: number } | undefined> {
     const member = this.memberForAgent(agent)
@@ -4134,45 +4337,59 @@ export default class AgentTeam extends TypertRemoteService {
     const meter = agent.ctx.get('tokenMeter')
     const usageTokens = meter?.measure(agent.session)?.totalTokens
     if (usageTokens === undefined) return undefined
-    const persisted = agent.session.requestContext()
-    let contextWindow: number | undefined
-    if (persisted?.provider === selection.provider && persisted.model === selection.model) {
-      contextWindow = persisted.contextWindow
-    }
+    const routeInfo = await this.resolvedRouteInfo(selection)
+    let contextWindow = routeInfo?.contextWindow
     if (contextWindow === undefined) {
-      contextWindow = await this.resolvedContextWindow(selection)
+      const persisted = agent.session.requestContext()
+      if (persisted?.provider === selection.provider && persisted.model === selection.model) {
+        contextWindow = persisted.contextWindow
+      }
     }
     if (contextWindow === undefined) return undefined
     // A Member's durable window override caps — never raises — the routed
     // model's capacity; the LLM route cannot be widened from Team settings.
     const effectiveWindow = member.contextWindow === undefined ? contextWindow : Math.min(member.contextWindow, contextWindow)
-    const { hardLimit, handoffAt } = this.contextLimits(effectiveWindow)
+    // The override narrows the priced window itself, so the route's output
+    // reserve applies against the narrowed budget exactly as against the bare
+    // route — an override below the reserve floors to a zero budget.
+    const { hardLimit, handoffAt } = deriveContextPressureBudget(effectiveWindow, routeInfo?.defaultMaxTokens)
     return { usageTokens, hardLimit, handoffAt }
   }
 
-  /** Cache of resolved context windows per provider/model; unknown stays unknown. */
-  private readonly routeWindows = new Map<string, number | undefined>()
+  /**
+   * Cache of resolved model information per provider/model; unknown stays
+   * unknown, and a route resolved without a disclosed field stays without it.
+   */
+  private readonly routeInfos = new Map<string, { readonly contextWindow?: number; readonly defaultMaxTokens?: number } | undefined>()
 
   /**
-   * Resolve one selection's provider-owned context capacity, cached per
-   * route. The LLM service is resolved lazily (not a hard inject): the Host
-   * mounts it in every production shape, while ledger-level fixtures provide
-   * only the services the Team service itself owns. A missing or throwing
-   * resolution is an unknown route — the pressure policy fails closed on it.
+   * Resolve one selection's provider-owned model information — the context
+   * window and the default per-request output cap that prices the pressure
+   * budget — cached per route (one directory round-trip per route per
+   * process). The LLM service is resolved lazily (not a hard inject): the
+   * Host mounts it in every production shape, while ledger-level fixtures
+   * provide only the services the Team service itself owns. A missing or
+   * throwing resolution is an unknown route — the pressure policy fails
+   * closed on it.
    */
-  private async resolvedContextWindow(selection: { readonly provider: string; readonly model: string }): Promise<number | undefined> {
+  private async resolvedRouteInfo(selection: { readonly provider: string; readonly model: string }): Promise<{ readonly contextWindow?: number; readonly defaultMaxTokens?: number } | undefined> {
     const key = `${selection.provider}::${selection.model}`
-    if (this.routeWindows.has(key)) return this.routeWindows.get(key)
-    let contextWindow: number | undefined
+    if (this.routeInfos.has(key)) return this.routeInfos.get(key)
+    let info: { readonly contextWindow?: number; readonly defaultMaxTokens?: number } | undefined
     try {
       const llm = this.ctx.get('llm')
-      const info = llm === undefined ? undefined : await llm.resolveModelInfo(selection.provider, selection.model)
-      contextWindow = info?.context?.contextWindow
+      const modelInfo = llm === undefined ? undefined : await llm.resolveModelInfo(selection.provider, selection.model)
+      if (modelInfo !== undefined) {
+        info = Object.freeze({
+          ...(modelInfo.context?.contextWindow === undefined ? {} : { contextWindow: modelInfo.context.contextWindow }),
+          ...(modelInfo.defaultMaxTokens === undefined ? {} : { defaultMaxTokens: modelInfo.defaultMaxTokens }),
+        })
+      }
     } catch {
-      contextWindow = undefined
+      info = undefined
     }
-    this.routeWindows.set(key, contextWindow)
-    return contextWindow
+    this.routeInfos.set(key, info)
+    return info
   }
 
   /**
@@ -4249,7 +4466,10 @@ export default class AgentTeam extends TypertRemoteService {
         // closed: pricing the unknown as zero would wave an oversized seed
         // through.
         const limits = await this.routeLimitsForAgent(agent)
-        const handoffAt = limits?.handoffAt ?? CONTEXT_HANDOFF_AT_CAP
+        // A route whose live budget cannot be priced is priced as the
+        // conservative fallback, never as the old fixed 200K cap that would
+        // wave a seed through on a narrower route.
+        const handoffAt = limits?.handoffAt ?? FALLBACK_PRESSURE_BUDGET.handoffAt
         const sourceUsage = await this.sourceUsageTokens(sessionId, sourceIsCurrent, agent)
         if (sourceUsage === undefined) {
           throw new Error(`checkpoint '${checkpointRef}' could not be priced: its source Session's context cost cannot be measured; write a fresh handoff instead`)
@@ -4478,8 +4698,10 @@ export default class AgentTeam extends TypertRemoteService {
     const measurement = meter?.measure(agent.session)
     const usageTokens = measurement?.totalTokens ?? 0
     const limits = await this.routeLimitsForAgent(agent)
-    const hardLimit = limits?.hardLimit ?? CONTEXT_HARD_LIMIT_CAP
-    const handoffAt = limits?.handoffAt ?? CONTEXT_HANDOFF_AT_CAP
+    // An unpriceable route displays the conservative fallback budget, never a
+    // fixed cap pretending to be the live route's capacity.
+    const hardLimit = limits?.hardLimit ?? FALLBACK_PRESSURE_BUDGET.hardLimit
+    const handoffAt = limits?.handoffAt ?? FALLBACK_PRESSURE_BUDGET.handoffAt
     // One measurement per lineage source, memoized by Session: the engine
     // measures a source once before pricing its anchors, and the boundary
     // overlay below reads the same map to tell an unprovable budget (never
@@ -5043,7 +5265,7 @@ export default class AgentTeam extends TypertRemoteService {
           if (!this.contextManagement.needsAdmissionGate(agent)) return
           this.contextManagement.captureQueuedInput(agent)
         })
-        agentCtx.on('agent/pre-step', async ({ agent, messages, signal }, next) => {
+        agentCtx.on('agent/pre-step', async ({ agent, messages }, next) => {
           // Check before AND after the waterfall: a rollover pending at either
           // edge must reject this old-generation step, preserving its claimed
           // input for the new generation instead of letting it run or drop.
@@ -5051,13 +5273,6 @@ export default class AgentTeam extends TypertRemoteService {
             this.contextManagement.captureClaimedInput(agent, messages)
             return { kind: 'reject' as const }
           }
-          // Team pressure policy rides the same pre-step seam after the
-          // admission gate: the handoff-budget notice steers into the running
-          // turn, and the hard limit forces compaction before the request is
-          // forwarded — failing closed blocks the step instead of submitting
-          // over the Team limit. Missing route capacity is an explicit reject.
-          const pressure = await this.pressurePolicy.onPreStep(agent, signal)
-          if (pressure.kind === 'reject') return { kind: 'reject' as const }
           const decision = await next()
           if (decision.kind === 'reject' || !this.contextManagement.needsAdmissionGate(agent)) return decision
           this.contextManagement.captureClaimedInput(agent, messages)
@@ -5137,9 +5352,6 @@ export default class AgentTeam extends TypertRemoteService {
       this.modelSelections.set(member.memberId, selected)
       this.clearMemberFailure(member.memberId, 'activation')
       this.nameMemberSession(member, created.agent)
-      // The one-shot pressure notice needs no explicit re-arm here: it latches
-      // on durable Session evidence, and a fresh generation's own event span
-      // starts empty — a new Session is itself the re-arm.
       // Snapshot whether this generation had already started its own turns
       // BEFORE any recovery delivery below: the handoff steer and the Inbox
       // wake legitimately append `turn/start` to this Session, and those must
@@ -5450,30 +5662,8 @@ export default class AgentTeam extends TypertRemoteService {
     }
     // Task acceptance no longer schedules standalone auto compaction: it is
     // a semantic checkpoint/context cue (delivered as ordinary Team
-    // notification), and the Team pressure policy owns compaction entry.
-  }
-
-  /** Model-visible active-Claim labels for the pressure notice. */
-  private activeClaimLabels(memberId: AgentTeamMemberId): readonly string[] {
-    const ledger = this.ledger
-    if (ledger === undefined) return []
-    const labels: string[] = []
-    for (const claim of ledger.activeClaimsForMember(memberId)) {
-      if (claim.state !== 'active') continue
-      labels.push(`${claim.claimRef} (${claim.direction})`)
-    }
-    return labels
-  }
-
-  /** Model-visible running/stopping job labels for the pressure notice. */
-  private runningJobLabels(memberId: AgentTeamMemberId): readonly string[] {
-    const handle = this.handles.get(memberId)
-    if (handle === undefined) return []
-    const jobs = handle.agent.ctx.get('jobs')
-    if (jobs === undefined) return []
-    return jobs.list(handle.agent)
-      .filter((job: { status: string }) => job.status === 'running' || job.status === 'stopping')
-      .map((job: { id: string; name?: string }) => `${job.name ?? job.id}`)
+    // notification), and compaction stays a Member-owned or overflow-recovery
+    // action.
   }
 
   private emitAutoCompactionChanged(memberId: AgentTeamMemberId): void {

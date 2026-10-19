@@ -121,6 +121,25 @@
   background: var(--dsw-alias-bg-l1);
 }
 
+/* Outcome rows the message surface never carried: the role badge carries the
+   alarm, the row keeps a quiet tint so a failed turn reads apart from prose. */
+.entry[data-role="error"] {
+  background: var(--dsw-alias-bg-l1);
+}
+
+.entry[data-role="error"] .entryRole {
+  color: var(--dsw-alias-state-error-primary);
+}
+
+.entry[data-role="warning"] {
+  background: var(--dsw-alias-bg-l1);
+}
+
+.entry[data-role="warning"] .entryRole {
+  color: var(--dsw-alias-label-secondary);
+  font-weight: 700;
+}
+
 .entryMeta {
   align-items: baseline;
   color: var(--dsw-alias-label-tertiary);

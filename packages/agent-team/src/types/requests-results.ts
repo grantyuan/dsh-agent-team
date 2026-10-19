@@ -231,6 +231,13 @@ export interface AgentTeamMemberSessionSummary {
   readonly sessionId: AgentTeamMemberSessionId
   /** The live generation's Session; the dialog marks it 当前会话. */
   readonly isCurrent: boolean
+  /**
+   * Handle of the retired predecessor this Session was inherited from through a
+   * supervision succession edge. Absent on the Member's own generations; date
+   * and count stay the predecessor's own, so the page labels inherited history
+   * apart from the successor's live Session.
+   */
+  readonly predecessorHandle?: string | undefined
   /** Creation instant (Unix ms) from the stored header; absent when unreadable. */
   readonly createdAt?: number
   /** Physical event count (fork-inherited prefix included); absent when unreadable. */
@@ -253,10 +260,14 @@ export interface AgentTeamMemberSessionTranscriptEntry {
   /**
    * `system` is the rendered system prompt, `team` a Member-to-Member relay,
    * and `notice` a Host-injected Team notice or context envelope; the rest
-   * are the ordinary conversation lanes. The Human review surface renders
-   * every role, and Markdown-bearing roles keep their line breaks.
+   * are the ordinary conversation lanes. `error` and `warning` are outcomes
+   * the stored log records outside the message surface — a turn that failed,
+   * was cancelled or blocked, a model attempt that committed no reply, a
+   * tool's structured failure — so the review page shows the whole real
+   * process, not just the messages. The Human review surface renders every
+   * role, and Markdown-bearing roles keep their line breaks.
    */
-  readonly role: 'system' | 'notice' | 'team' | 'user' | 'assistant' | 'tool-call' | 'tool-result'
+  readonly role: 'system' | 'notice' | 'team' | 'user' | 'assistant' | 'tool-call' | 'tool-result' | 'error' | 'warning'
   /** Bounded text with the stored line breaks kept; per-entry clamped. */
   readonly text: string
 }
@@ -445,7 +456,7 @@ export interface AgentTeamRolloverSessionRequest {
   readonly newSessionId: AgentTeamMemberSessionId
   /** Seq of the successful `context_rollover` tool result in the previous Session log. */
   readonly handoffEventSeq: AgentTeamMemberSessionSeq
-  /** Why the rollover happened: the model asked, or honored a pressure notice. */
+  /** Why the rollover happened: the model asked, or ('pressure') a historical Host order no longer produced. */
   readonly trigger: 'model' | 'pressure'
   /** Seed source Session for a checkpoint return; absent on a fresh rollover. */
   readonly sourceSessionId?: AgentTeamMemberSessionId
@@ -1054,6 +1065,62 @@ export interface AgentTeamInbox {
   readonly totalDirectCount: number
 }
 
+/** Read-only decision-queue projection for one Workspace. */
+export interface AgentTeamPendingDecisionsRequest {
+  readonly workspaceId: WorkspaceId
+}
+
+/** One decision the Human queue holds: a Thread that waits on the Human's answer. */
+export interface AgentTeamPendingDecision {
+  readonly workspaceId: WorkspaceId
+  readonly channelRef: AgentTeamChannelRef
+  readonly channelName: string
+  readonly task?: AgentTeamTask
+  /** The Task's ordinal inside its home Channel; absent on taskless Threads. */
+  readonly taskNumber?: number
+  /** The Thread the Human answers; its revision fences a direct reply. */
+  readonly thread: AgentTeamThread
+  /**
+   * Why the Thread waits: the newest Message that named the Human asked for a
+   * call and no Human word followed it, or an open Task stands awaiting
+   * acceptance.
+   */
+  readonly reason: 'decision_request' | 'task_review'
+  /**
+   * The ask as its author wrote it: the requesting Message's body, or — for an
+   * awaiting-acceptance Task — the Member's latest report on the Thread (the
+   * Thread anchor when it carries none). Bounded for transport, generously
+   * enough to answer from.
+   */
+  readonly askText: string
+  readonly askOccurredAt: string
+  /** The person waiting on the Human's answer. */
+  readonly askActor: AgentTeamInboxActor
+  /** Instant of the Thread's anchor Message — the row's creation time. */
+  readonly createdOccurredAt: string
+  /**
+   * Instant of the newest reply — the last Message after the anchor, whoever
+   * wrote it. Absent while the Thread has no reply yet, and a row ordering by
+   * 「最后消息」 falls back to {@link createdOccurredAt}. This is the same fact
+   * the Inbox row carries, so the two surfaces order a Thread by one clock.
+   */
+  readonly latestReplyOccurredAt?: string
+  /**
+   * Unread facts this reader holds on the Thread. Unread is derived from Thread
+   * Attention, so a Thread the Human does not follow reads zero here — the row's
+   * 「已读」 action is only meaningful once there is something to consume.
+   */
+  readonly unreadCount: number
+  /** Absent while the Human does not follow this Thread; drives 「关注/取消关注」. */
+  readonly attention?: AgentTeamThreadAttention
+}
+
+export interface AgentTeamPendingDecisions {
+  readonly humanMemberId: AgentTeamMemberId
+  /** Oldest wait first: the ask nobody has answered the longest leads the queue. */
+  readonly items: readonly AgentTeamPendingDecision[]
+}
+
 /** Human intent to read the Workspace's whole Task list with progress facts. */
 export interface AgentTeamTasksRequest {
   readonly workspaceId: WorkspaceId
@@ -1087,6 +1154,39 @@ export interface AgentTeamTaskRow {
 export interface AgentTeamTasks {
   readonly humanMemberId: AgentTeamMemberId
   readonly tasks: readonly AgentTeamTaskRow[]
+}
+
+/** One Direction a Member finished (a `done` Claim) with its Task's position, for the retirement notice. */
+export interface AgentTeamCompletedDirection {
+  readonly direction: string
+  readonly taskRef: AgentTeamTaskRef
+  /** The Task's ordinal inside its home Channel; 0 when the Task's Channel is gone. */
+  readonly taskNumber: number
+  /** The Task's Thread opening line, bounded like an Inbox subject. */
+  readonly subject: string
+}
+
+/** One Task a Member finished and the Human then accepted or closed, for the retirement notice. */
+export interface AgentTeamCompletedTask {
+  readonly taskRef: AgentTeamTaskRef
+  readonly taskNumber: number
+  readonly subject: string
+  readonly resolution: 'accepted' | 'closed'
+}
+
+/**
+ * The finished work one Member left behind, derived from operations — the
+ * read-only input the supervision retirement notice draws its completed-work
+ * section from. Participation counts Threads the Member wrote a Message in or
+ * held a Claim on, the same reach the Inbox's recent slice admits.
+ */
+export interface AgentTeamCompletedWork {
+  /** `done` Claims the Member owned, Task-number order — what it finished doing. */
+  readonly finishedDirections: readonly AgentTeamCompletedDirection[]
+  /** Tasks the Member finished and that reached Human acceptance or closure. */
+  readonly completedTasks: readonly AgentTeamCompletedTask[]
+  /** Collaboration Threads the Member took part in. */
+  readonly participatedThreadCount: number
 }
 
 /** Request to atomically receive and acknowledge one contiguous Thread batch. */

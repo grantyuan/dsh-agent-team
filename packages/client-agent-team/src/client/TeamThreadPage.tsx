@@ -762,6 +762,7 @@ export function TeamThreadPage(props: TeamThreadPageProps) {
   // timeline, and a Thread restored without either returns further.
   const backLabel = threadOrigin === 'inbox' ? t('backToInbox')
     : threadOrigin === 'tasks' ? t('backToTasks')
+    : threadOrigin === 'decisions' ? t('backToDecisions')
     : channelRef === undefined ? t('backToWorkspace')
     : t('backToChannel')
 
