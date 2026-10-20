@@ -524,6 +524,95 @@
   white-space: nowrap;
 }
 
+/* The Member's current-task line: a second row under the Agent row naming
+   what it is on. Quieter than the row itself — tertiary ink, full-width but
+   content-height — and the whole line is one hit target opening the queue
+   dialog, the same surface the row menu's Task-queue entry opens. */
+.agentTaskLine {
+  align-items: center;
+  background: transparent;
+  border: 0;
+  border-radius: var(--dsw-radius-sm, 6px);
+  color: var(--dsw-alias-label-tertiary);
+  cursor: pointer;
+  display: flex;
+  gap: 6px;
+  margin: 0 8px 2px;
+  min-width: 0;
+  padding: 2px 0;
+  text-align: left;
+}
+.agentTaskLine:hover,
+.agentTaskLine:focus-visible {
+  color: var(--dsw-alias-label-secondary);
+}
+.agentTaskLine:focus-visible {
+  outline: var(--dsw-focus-ring-width, 2px) solid var(--dsw-focus-ring-color, var(--dsw-alias-state-business-primary));
+  outline-offset: 1px;
+}
+.agentTaskSubject {
+  flex: 1;
+  font-size: 11px;
+  line-height: 15px;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.agentTaskMore {
+  flex: none;
+  font-size: 10px;
+  line-height: 13px;
+}
+
+/* The queue dialog's own grammar: the section heading is the Tasks page's
+   small section voice, and the row's main button stretches so the whole line
+   opens the Thread while the trailing reassign control stays its own target. */
+.queueHeading {
+  color: var(--dsw-alias-label-secondary);
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 18px;
+  margin: 10px 0 4px;
+}
+.queueHeading:first-child {
+  margin-top: 0;
+}
+.queueRowMain {
+  align-items: center;
+  background: transparent;
+  border: 0;
+  color: var(--dsw-alias-label-primary);
+  cursor: pointer;
+  display: flex;
+  flex: 1;
+  gap: 6px;
+  min-width: 0;
+  padding: 0;
+  text-align: left;
+}
+.queueRowMain strong {
+  flex: none;
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 16px;
+}
+.queueRowMain small {
+  color: var(--dsw-alias-label-tertiary);
+  flex: none;
+  font-size: 11px;
+  line-height: 15px;
+}
+.queueRowSubject {
+  flex: 1;
+  font-size: 12px;
+  line-height: 16px;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .unavailableDot {
   background: var(--dsw-alias-label-tertiary);
   border-radius: 50%;

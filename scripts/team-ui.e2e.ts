@@ -2564,7 +2564,9 @@ it('drives the complete opt-in Agent Team journey in real Web', async () => {
   expect(await tasksParentRow.textContent()).toContain('子任务 0/1')
   const tasksChildRow = page.locator('[data-team-tasks] button').filter({ hasText: '叠放校验：拆分出的第一步' })
   await expect.poll(async () => await tasksChildRow.count()).toBe(1)
-  expect(await tasksChildRow.getAttribute('class')).toContain('subtask')
+  // Indentation lives on the tree's branch container now, so the child row is
+  // asserted by its ancestor branch rather than a row-level class.
+  expect(await tasksChildRow.evaluate(row => row.closest('[class*="branch"]') !== null)).toBe(true)
   expect(await tasksChildRow.textContent()).toContain('待处理')
   // Finished work stands in its own section behind the open work — the journey's
   // first Task ended closed, so the section is populated here, not assumed.

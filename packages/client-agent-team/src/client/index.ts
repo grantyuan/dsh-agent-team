@@ -40,6 +40,7 @@ import type {
   AgentTeamTaskRequest,
   AgentTeamTasksBatchRequest,
   AgentTeamTasksRequest,
+  AgentTeamMemberTasksRequest,
   AgentTeamUpdateChannelRequest,
   AgentTeamUpdateMemberRequest,
   AgentTeamViewRequest,
@@ -153,6 +154,10 @@ function registerModeShadow<T extends object>(
     drafts,
     humanIdentity,
     loadMembers: (request: AgentTeamMembersRequest) => ctx.remote.agentTeam.members(request),
+    loadMemberTasks: (request: AgentTeamMemberTasksRequest) => ctx.remote.agentTeam.memberTasks(request),
+    // The Agents panel's reassignment consultation: one Human Message naming
+    // the Task and the requested taker, delivered to the Team leader's Channel.
+    sendMessage: (request: AgentTeamSendMessageRequest) => ctx.remote.agentTeam.sendMessage(request),
     joinChannel: (request: AgentTeamJoinChannelRequest) => ctx.remote.agentTeam.joinChannel(request),
     removeChannelMember: (request: AgentTeamRemoveChannelMemberRequest) => ctx.remote.agentTeam.removeChannelMember(request),
     updateChannel: (request: AgentTeamUpdateChannelRequest) => ctx.remote.agentTeam.updateChannel(request),

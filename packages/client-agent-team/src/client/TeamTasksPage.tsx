@@ -35,27 +35,35 @@ interface TeamTasksPageProps {
 const OPEN_STATES = new Set(['todo', 'in_progress', 'in_review'])
 const isOpen = (task: AgentTeamTaskRow): boolean => OPEN_STATES.has(task.status)
 
-/** One top-level Task with the sub-tasks that named it as their parent. */
-interface TaskGroup {
+/** One Task with its full sub-task tree underneath it, however deep the split went. */
+interface TaskNode {
   readonly row: TeamTaskRow
-  readonly children: readonly TeamTaskRow[]
+  readonly children: readonly TaskNode[]
+}
+
+/** One Workspace's slice of a section: its root Tasks with their trees. */
+interface WorkspaceBucket {
+  readonly workspaceId: WorkspaceId
+  readonly workspaceTitle: string
+  readonly trees: readonly TaskNode[]
 }
 
 /**
  * The Human Task list: one `tasks` call per visible Workspace, rendering every
  * Task with its live standing and the sub-task trees Agents split underneath.
  * The ledger stays flat, so the tree assembles here — a Task with a
- * `parentTaskRef` renders indented under its parent (which the Host guaranteed
- * lives in the same Channel), with a `{done}/{total}` progress count beside the
- * parent. Rows merge across every Workspace in the Host's own Channel-ordinal
- * order, split into the same two sections the Inbox speaks — open work first,
- * finished work after — so a reader scans what still moves before what stopped.
- * A sub-task whose parent is not in the merged list (archived away, or a
- * one-sided projection gap) falls back to a top-level row, so no Task is ever
- * invisible. Open rows carry a selection checkbox: the multi-select bar
- * resolves them through one Host batch call, each Task its own durable
- * operation. Opening a row navigates to its Thread; selecting acknowledges
- * nothing and viewing acknowledges nothing.
+ * `parentTaskRef` nests under its parent at any depth (which the Host
+ * guaranteed lives in the same Channel), and a parent carries a
+ * `{done}/{total}` progress count over its whole subtree. Rows group into the
+ * same two sections the Inbox speaks — open work first, finished work after —
+ * so a reader scans what still moves before what stopped; when the rows span
+ * more than one Workspace, each section splits into per-Workspace groups in
+ * the Workspace list's own order. A sub-task whose parent is not in the merged
+ * list (archived away, or a one-sided projection gap) falls back to a root
+ * row, so no Task is ever invisible. Open rows carry a selection checkbox: the
+ * multi-select bar resolves them through one Host batch call, each Task its
+ * own durable operation. Opening a row navigates to its Thread; selecting
+ * acknowledges nothing and viewing acknowledges nothing.
  */
 export function TeamTasksPage({ useWorkspaces, loadTasks, subscribeChanges, changeTasks, selectWorkspace, selectThread, humanName, humanAvatarUrl, t }: TeamTasksPageProps) {
   const workspaces = useWorkspaces(state => state.items)
@@ -165,38 +173,51 @@ export function TeamTasksPage({ useWorkspaces, loadTasks, subscribeChanges, chan
   }
 
   const all = rows ?? []
-  const byRef = new Map(all.map(row => [row.task.taskRef, row]))
-  const assemble = (source: readonly TeamTaskRow[]): readonly TaskGroup[] => {
+  // The tree assembles per section: a row whose parent is not in the same
+  // section's rows stands as a root, so mixed standing inside one tree still
+  // renders every Task exactly once.
+  const assembleTree = (source: readonly TeamTaskRow[]): readonly TaskNode[] => {
+    const inSource = new Set(source.map(row => row.task.taskRef))
     const childrenByParent = new Map<string, TeamTaskRow[]>()
-    const topLevel: TeamTaskRow[] = []
+    const roots: TeamTaskRow[] = []
     for (const row of source) {
       const parentRef = row.task.parentTaskRef
-      const parent = parentRef === undefined ? undefined : byRef.get(parentRef)
-      // A child joins its parent only when the parent is itself a top-level
-      // row here; deeper nesting flattens to the parent's level instead of
-      // growing a second indent.
-      if (parentRef === undefined || parent === undefined || parent.task.parentTaskRef !== undefined) {
-        topLevel.push(row)
+      if (parentRef === undefined || !inSource.has(parentRef)) {
+        roots.push(row)
         continue
       }
       const bucket = childrenByParent.get(parentRef)
       if (bucket === undefined) childrenByParent.set(parentRef, [row])
       else bucket.push(row)
     }
-    return topLevel.map(row => {
-      const children = childrenByParent.get(row.task.taskRef)
-      return children === undefined ? { row, children: [] } : { row, children }
-    })
+    const build = (row: TeamTaskRow): TaskNode => ({ row, children: (childrenByParent.get(row.task.taskRef) ?? []).map(build) })
+    return roots.map(build)
+  }
+  // Sections keep one list while the rows sit in one Workspace and split into
+  // per-Workspace groups the moment they span more, in the Workspace list's
+  // own order — the same rule the Inbox page speaks for its Workspace chips.
+  const bucketTrees = (trees: readonly TaskNode[]): readonly WorkspaceBucket[] => {
+    const order = new Map(workspaces.map((workspace, index) => [workspace.workspaceId, index]))
+    const buckets: WorkspaceBucket[] = []
+    const byId = new Map<WorkspaceId, WorkspaceBucket & { readonly trees: TaskNode[] }>()
+    for (const tree of trees) {
+      let bucket = byId.get(tree.row.workspaceId)
+      if (bucket === undefined) {
+        bucket = { workspaceId: tree.row.workspaceId, workspaceTitle: tree.row.workspaceTitle, trees: [] }
+        byId.set(tree.row.workspaceId, bucket)
+        buckets.push(bucket)
+      }
+      bucket.trees.push(tree)
+    }
+    return buckets.sort((left, right) => (order.get(left.workspaceId) ?? 0) - (order.get(right.workspaceId) ?? 0))
   }
   const openRows = all.filter(row => isOpen(row.task))
   const doneRows = all.filter(row => !isOpen(row.task))
-  const openGroups = assemble(openRows)
-  const doneGroups = assemble(doneRows)
+  const openBuckets = bucketTrees(assembleTree(openRows))
+  const doneBuckets = bucketTrees(assembleTree(doneRows))
   // A row names its Workspace only while the rows on screen span more than
   // one — the same rule the Inbox page speaks.
-  const shownWorkspaces = new Set<string>()
-  for (const row of all) shownWorkspaces.add(row.workspaceTitle)
-  const showWorkspace = shownWorkspaces.size > 1
+  const showWorkspace = new Set(all.map(row => row.workspaceTitle)).size > 1
   const human = humanMemberId === undefined
     ? undefined
     : { memberId: humanMemberId, name: humanName, ...(humanAvatarUrl === undefined ? {} : { avatarUrl: humanAvatarUrl }) } satisfies TeamAvatarHuman
@@ -224,18 +245,24 @@ export function TeamTasksPage({ useWorkspaces, loadTasks, subscribeChanges, chan
               </div>
             </div>
           : <>
-              {openGroups.length > 0 && <section className={inboxCss.section}>
+              {openRows.length > 0 && <section className={inboxCss.section}>
                 <h2 className={inboxCss.sectionTitle}>{t('tasksSectionOpen')}<span className={inboxCss.sectionCount}>{openRows.length}</span></h2>
-                <div className={inboxCss.list}>
-                  {openGroups.map(group => <TaskGroupView key={group.row.task.taskRef} group={group} showWorkspace={showWorkspace} human={human}
-                    selected={selected} onToggle={toggle} t={t} onOpen={open} />)}
-                </div>
+                {openBuckets.map(bucket => <div key={bucket.workspaceId}>
+                  {showWorkspace && <h3 className={taskCss.workspaceHeading}>{bucket.workspaceTitle}</h3>}
+                  <div className={inboxCss.list}>
+                    {bucket.trees.map(tree => <TaskNodeView key={tree.row.task.taskRef} node={tree} depth={0} showWorkspace={showWorkspace} human={human}
+                      selected={selected} onToggle={toggle} t={t} onOpen={open} />)}
+                  </div>
+                </div>)}
               </section>}
-              {doneGroups.length > 0 && <section className={inboxCss.section}>
+              {doneRows.length > 0 && <section className={inboxCss.section}>
                 <h2 className={inboxCss.sectionTitle}>{t('tasksSectionDone')}<span className={inboxCss.sectionCount}>{doneRows.length}</span></h2>
-                <div className={inboxCss.list}>
-                  {doneGroups.map(group => <TaskGroupView key={group.row.task.taskRef} group={group} showWorkspace={showWorkspace} human={human} t={t} onOpen={open} />)}
-                </div>
+                {doneBuckets.map(bucket => <div key={bucket.workspaceId}>
+                  {showWorkspace && <h3 className={taskCss.workspaceHeading}>{bucket.workspaceTitle}</h3>}
+                  <div className={inboxCss.list}>
+                    {bucket.trees.map(tree => <TaskNodeView key={tree.row.task.taskRef} node={tree} depth={0} showWorkspace={showWorkspace} human={human} t={t} onOpen={open} />)}
+                  </div>
+                </div>)}
               </section>}
               {selected.size > 0 && <div className={taskCss.batchBar} role="toolbar" aria-label={t('tasksBatchSelected', { count: selected.size })}>
                 <span className={taskCss.batchCount}>{t('tasksBatchSelected', { count: selected.size })}</span>
@@ -256,9 +283,15 @@ export function TeamTasksPage({ useWorkspaces, loadTasks, subscribeChanges, chan
   </main>
 }
 
-/** One top-level Task with its indented sub-tasks, if any. Open rows carry their selection checkbox. */
-function TaskGroupView({ group, showWorkspace, human, selected, onToggle, t, onOpen }: {
-  readonly group: TaskGroup
+/**
+ * One Task with its sub-tasks nested underneath, recursively: each level of
+ * Agent splitting grows one more indent instead of flattening back to the top
+ * level. Any parent — at any depth — carries a `{done}/{total}` chip counting
+ * its whole subtree. Open rows carry their selection checkbox at every depth.
+ */
+function TaskNodeView({ node, depth, showWorkspace, human, selected, onToggle, t, onOpen }: {
+  readonly node: TaskNode
+  readonly depth: number
   readonly showWorkspace: boolean
   readonly human: TeamAvatarHuman | undefined
   readonly selected?: ReadonlySet<AgentTeamTaskRef> | undefined
@@ -266,24 +299,37 @@ function TaskGroupView({ group, showWorkspace, human, selected, onToggle, t, onO
   readonly t: TeamConversationProps['t']
   readonly onOpen: (row: TeamTaskRow) => void
 }) {
-  const done = group.children.filter(child => !isOpen(child.task)).length
+  const progress = subtreeProgress(node)
   return <>
-    <TaskRow row={group.row} showWorkspace={showWorkspace} human={human} t={t}
-      {...(group.children.length === 0 ? {} : { progress: { done, total: group.children.length } })}
+    <TaskRow row={node.row} showWorkspace={showWorkspace} human={human} t={t}
+      {...(progress === undefined ? {} : { progress })}
       {...(selected === undefined || onToggle === undefined ? {} : { check: {
-        checked: selected.has(group.row.task.taskRef),
-        onCheck: on => { onToggle(group.row.task.taskRef, on) },
-        label: t('tasksSelectRow', { number: group.row.task.taskNumber }),
+        checked: selected.has(node.row.task.taskRef),
+        onCheck: on => { onToggle(node.row.task.taskRef, on) },
+        label: t('tasksSelectRow', { number: node.row.task.taskNumber }),
       } })}
-      onOpen={() => { onOpen(group.row) }} />
-    {group.children.map(child => <TaskRow key={child.task.taskRef} row={child} showWorkspace={showWorkspace} human={human} subtask t={t}
-      {...(selected === undefined || onToggle === undefined ? {} : { check: {
-        checked: selected.has(child.task.taskRef),
-        onCheck: on => { onToggle(child.task.taskRef, on) },
-        label: t('tasksSelectRow', { number: child.task.taskNumber }),
-      } })}
-      onOpen={() => { onOpen(child) }} />)}
+      onOpen={() => { onOpen(node.row) }} />
+    {node.children.length > 0 && <div className={taskCss.branch}>
+      {node.children.map(child => <TaskNodeView key={child.row.task.taskRef} node={child} depth={depth + 1} showWorkspace={showWorkspace} human={human}
+        {...(selected === undefined ? {} : { selected })} {...(onToggle === undefined ? {} : { onToggle })} t={t} onOpen={onOpen} />)}
+    </div>}
   </>
+}
+
+/** A parent's `{done}/{total}` over its whole subtree; undefined on a leaf. */
+function subtreeProgress(node: TaskNode): { readonly done: number, readonly total: number } | undefined {
+  if (node.children.length === 0) return undefined
+  let done = 0
+  let total = 0
+  const walk = (parent: TaskNode): void => {
+    for (const child of parent.children) {
+      total += 1
+      if (!isOpen(child.row.task)) done += 1
+      walk(child)
+    }
+  }
+  walk(node)
+  return { done, total }
 }
 
 /**
@@ -297,10 +343,9 @@ function TaskGroupView({ group, showWorkspace, human, selected, onToggle, t, onO
  * A selectable row carries the checkbox outside the row button — a control
  * inside a button would open the Thread on the very click meant to select.
  */
-function TaskRow({ row, showWorkspace, subtask, progress, human, check, t, onOpen }: {
+function TaskRow({ row, showWorkspace, progress, human, check, t, onOpen }: {
   readonly row: TeamTaskRow
   readonly showWorkspace: boolean
-  readonly subtask?: boolean | undefined
   readonly progress?: { readonly done: number, readonly total: number } | undefined
   readonly human: TeamAvatarHuman | undefined
   readonly check?: { readonly checked: boolean, readonly onCheck: (on: boolean) => void, readonly label: string } | undefined
@@ -311,7 +356,6 @@ function TaskRow({ row, showWorkspace, subtask, progress, human, check, t, onOpe
   const owners = namedAvatarOwners(task.claimOwners, human)
   const rowButton = <button type="button" className={[
     inboxCss.row,
-    ...(subtask === true ? [taskCss.subtask] : []),
     ...(check !== undefined ? [taskCss.inShell] : []),
   ].join(' ')} onClick={onOpen}>
     <span className={inboxCss.rowActor} aria-hidden="true">

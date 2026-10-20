@@ -1203,6 +1203,30 @@ export interface AgentTeamTasks {
   readonly tasks: readonly AgentTeamTaskRow[]
 }
 
+/** Human intent to read every Agent Member's working queue in one Workspace. */
+export interface AgentTeamMemberTasksRequest {
+  readonly workspaceId: WorkspaceId
+}
+
+/**
+ * One Member's working queue: the Tasks it currently holds Claims on, and the
+ * unclaimed Tasks waiting in its Channels. Rows reuse the Task-list row so a
+ * Client renders both surfaces with one grammar.
+ */
+export interface AgentTeamMemberTaskQueue {
+  readonly memberId: AgentTeamMemberId
+  /** Open Tasks the Member holds a live (active or done) Claim on, newest activity first. */
+  readonly current: readonly AgentTeamTaskRow[]
+  /** Unclaimed `todo` Tasks in Channels the Member has joined, Channel ordinal order. */
+  readonly queued: readonly AgentTeamTaskRow[]
+}
+
+/** The per-Member working-queue projection: one queue per visible Agent Member. */
+export interface AgentTeamMemberTasks {
+  readonly humanMemberId: AgentTeamMemberId
+  readonly queues: readonly AgentTeamMemberTaskQueue[]
+}
+
 /** One Direction a Member finished (a `done` Claim) with its Task's position, for the retirement notice. */
 export interface AgentTeamCompletedDirection {
   readonly direction: string

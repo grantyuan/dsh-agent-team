@@ -183,6 +183,8 @@ import type {
   AgentTeamTasksBatchRequest,
   AgentTeamTasksBatchResult,
   AgentTeamTasksRequest,
+  AgentTeamMemberTasks,
+  AgentTeamMemberTasksRequest,
   AgentTeamSummarizeThreadRequest,
   AgentTeamSummarizeThreadResult,
   AgentTeamThreadAttentionRequest,
@@ -3999,6 +4001,13 @@ export default class AgentTeam extends TypertRemoteService {
   tasks(request: AgentTeamTasksRequest): AgentTeamTasks {
     this.requireWorkspace(request.workspaceId)
     return this.requireLedger().tasksForWorkspace(request)
+  }
+
+  /** Human's per-Member working queues: current Claims and unclaimed Channel work, one read for the roster. */
+  @Remote('memberTasks')
+  memberTasks(request: AgentTeamMemberTasksRequest): AgentTeamMemberTasks {
+    this.requireWorkspace(request.workspaceId)
+    return this.requireLedger().memberTasksForWorkspace(request)
   }
 
   /** Human's durable, atomically acknowledged Thread read. */

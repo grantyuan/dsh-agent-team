@@ -1,11 +1,22 @@
 /* The Tasks page rides the shared conversation seat and the Inbox row grammar;
    this sheet adds only what the Task list itself needs. */
 
-/* A sub-task row indents one level under its parent: 26px is the row's own 8px
-   inset plus the gutter column the dot and a face draw, so a child's content
-   opens past what its parent's leading cluster can occupy. */
-.subtask {
+/* A sub-task branch nests one level under its parent: 26px is the row's own
+   8px inset plus the gutter column the dot and a face draw, so a child's
+   content opens past what its parent's leading cluster can occupy. Branches
+   nest inside each other, so every Agent split grows one more indent. */
+.branch {
   margin-left: 26px;
+}
+
+/* A per-Workspace group heading inside a section: quieter than the section
+   title, loud enough to separate the Workspaces a merged list spans. */
+.workspaceHeading {
+  color: var(--dsw-alias-label-secondary);
+  font-size: 12px;
+  font-weight: 600;
+  margin: 10px 0 4px;
+  padding-inline: 8px;
 }
 
 /* The owner stack closes the identity line: it is fixed-width content in the

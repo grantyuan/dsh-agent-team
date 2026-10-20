@@ -73,6 +73,9 @@ import type {
   AgentTeamMemberSessionRolledOverOperation,
   AgentTeamMemberSessionRestartedOperation,
   AgentTeamMemberSuspendedOperation,
+  AgentTeamMemberTaskQueue,
+  AgentTeamMemberTasks,
+  AgentTeamMemberTasksRequest,
   AgentTeamMemberUpdatedOperation,
   AgentTeamMemberWorkspaceJoinedOperation,
   AgentTeamMemberWorkspaceLeftOperation,
@@ -568,6 +571,11 @@ export const AGENT_TEAM_RECALLED_BODY_TOMBSTONE = '[instruction withdrawn by the
 /** Bounded preview of a Thread anchor's body, collapsing to the tombstone once the Human recalled that anchor. */
 function boundedAnchorPreview(anchor: AgentTeamMessage): string {
   return anchor.recalledAt === undefined ? boundedInboxPreview(anchor.body) : AGENT_TEAM_RECALLED_BODY_TOMBSTONE
+}
+
+/** Open standings a live Claim can hold: work in flight, or finished and awaiting acceptance. */
+function isOpenTaskStatus(status: AgentTeamTask['status']): boolean {
+  return status === 'in_progress' || status === 'in_review'
 }
 
 /**
@@ -2691,6 +2699,54 @@ export class AgentTeamLedger {
       .sort((left, right) => left.taskNumber - right.taskNumber || left.taskRef.localeCompare(right.taskRef))
     const initialization = this.initialization()
     return Object.freeze({ humanMemberId: initialization.data.humanMemberId, tasks: Object.freeze(rows) })
+  }
+
+  /**
+   * The per-Member working-queue projection: one queue per visible Agent
+   * Member of the Workspace. 「Current」 is the Tasks the Member holds a live
+   * Claim on (active or done — a finished Claim still awaits Human
+   * acceptance, so the work stays its until the Task resolves); 「queued」 is
+   * the unclaimed `todo` Tasks in Channels the Member has joined, which is
+   * exactly what it could claim next. Rows are the Task-list rows, so the
+   * Client renders one grammar on both surfaces.
+   */
+  memberTasksForWorkspace(request: AgentTeamMemberTasksRequest): AgentTeamMemberTasks {
+    const numbers = this.taskNumbers(request.workspaceId)
+    const rowsByTaskRef = new Map([...this.state.tasks.values()]
+      .filter(task => this.workspaceOfTask(task) === request.workspaceId)
+      .map(task => [task.taskRef, this.taskRowFor(task, numbers)]))
+    // Live Claims by owner: active Claims name work in flight, done Claims
+    // name finished directions whose Task still awaits acceptance.
+    const currentByMember = new Map<AgentTeamMemberId, AgentTeamTaskRow[]>()
+    for (const claim of this.state.claims.values()) {
+      if (claim.state === 'released') continue
+      const row = rowsByTaskRef.get(claim.taskRef)
+      if (row === undefined || !isOpenTaskStatus(row.status)) continue
+      const bucket = currentByMember.get(claim.owner)
+      if (bucket === undefined) currentByMember.set(claim.owner, [row])
+      else if (!bucket.some(existing => existing.taskRef === row.taskRef)) bucket.push(row)
+    }
+    // Unclaimed Tasks per Channel, so a Member's queue reads its joined
+    // Channels only — work it could not claim is not its queue.
+    const queuedByChannel = new Map<AgentTeamChannelRef, AgentTeamTaskRow[]>()
+    for (const row of rowsByTaskRef.values()) {
+      if (row.status !== 'todo') continue
+      const bucket = queuedByChannel.get(row.channelRef)
+      if (bucket === undefined) queuedByChannel.set(row.channelRef, [row])
+      else bucket.push(row)
+    }
+    const queues: AgentTeamMemberTaskQueue[] = []
+    for (const member of this.state.members.values()) {
+      if (member.state === 'inactive' || member.state === 'archived') continue
+      if (!this.participatesIn(member.memberId, request.workspaceId)) continue
+      const current = (currentByMember.get(member.memberId) ?? [])
+        .sort((left, right) => right.lastActivityAt.localeCompare(left.lastActivityAt))
+      const queued = (this.channelsForMember(member.memberId, request.workspaceId) ?? []).flatMap(channelRef => queuedByChannel.get(channelRef) ?? [])
+      queues.push(Object.freeze({ memberId: member.memberId, current: Object.freeze(current), queued: Object.freeze(queued) }))
+    }
+    queues.sort((left, right) => left.memberId.localeCompare(right.memberId))
+    const initialization = this.initialization()
+    return Object.freeze({ humanMemberId: initialization.data.humanMemberId, queues: Object.freeze(queues) })
   }
 
   /**

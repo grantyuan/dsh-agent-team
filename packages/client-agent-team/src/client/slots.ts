@@ -77,6 +77,8 @@ import type {
   AgentTeamTasksBatchRequest,
   AgentTeamTasksBatchResult,
   AgentTeamTasksRequest,
+  AgentTeamMemberTasks,
+  AgentTeamMemberTasksRequest,
   AgentTeamSendMessageRequest,
   AgentTeamSendMessageResult,
   AgentTeamUpdateChannelRequest,
@@ -145,6 +147,15 @@ export type TeamSidebarProps = PropsRuntime<'sidebar.workspaces'>
   & {
     navigation: TeamNavigationSource
     loadMembers: (request: AgentTeamMembersRequest) => Promise<RemoteResult<readonly AgentTeamClientMemberStatus[]>>
+    /** One Workspace's per-Member working queues behind the Agents panel's task surfaces. */
+    loadMemberTasks: (request: AgentTeamMemberTasksRequest) => Promise<RemoteResult<AgentTeamMemberTasks>>
+    /**
+     * Human-sent Message into one Channel — the Agent panel's only write lane.
+     * The task-reassignment consultation rides it: one Message to the Team
+     * leader's own Channel naming the Task and the requested taker, and the
+     * leader decides and arranges from there.
+     */
+    sendMessage: (request: AgentTeamSendMessageRequest) => Promise<RemoteResult<AgentTeamSendMessageResult>>
     /** Human direct-only Inbox slice; the badge sums each visible Workspace's total. */
     loadInbox: (request: AgentTeamInboxRequest) => Promise<RemoteResult<AgentTeamInbox>>
     /** The waiting-decision total plus the new-decision cue, read once for both surfaces. */

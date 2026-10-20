@@ -4,11 +4,15 @@ import type {
   AgentTeamClientMemberStatus,
   AgentTeamInterruptRef,
   AgentTeamInterruptView,
+  AgentTeamMemberId,
+  AgentTeamMemberTaskQueue,
   AgentTeamModelSelection,
+  AgentTeamTaskRow,
 } from '@wowyuarm/dsh-agent-team/types'
 import type { WorkspaceId } from '@deepseek-ai/dsh-api-workspace-controller/client'
-import { Button, IconArchiveOutlineRegular, IconClockOutlineRegular, IconEditOutlineRegular, IconGaugeOutlineRegular, IconInspectOutlineRegular, IconNewChatOutlineRegular, IconPauseOutlineRegular, IconPlayOutlineRegular, IconPlusOutlineRegular, IconRefreshOutlineRegular, Input, Modal, Tooltip } from '@deepseek-ai/dsh-client-ui-primitives'
-import { formatAbsoluteTime } from './team-formatters.ts'
+import { Button, IconChecklistOutlineRegular, IconChevronDownOutlineRegular, IconArchiveOutlineRegular, IconClockOutlineRegular, IconEditOutlineRegular, IconGaugeOutlineRegular, IconInspectOutlineRegular, IconNewChatOutlineRegular, IconPauseOutlineRegular, IconPlayOutlineRegular, IconPlusOutlineRegular, IconRefreshOutlineRegular, Input, Menu, Modal, Tooltip } from '@deepseek-ai/dsh-client-ui-primitives'
+import type { MenuEntry } from '@deepseek-ai/dsh-client-ui-primitives'
+import { claimersLabel, formatAbsoluteTime, formatInboxTime, formatTaskStatus, taskStatusDot } from './team-formatters.ts'
 import type { TeamSidebarProps } from './slots.ts'
 import { TeamMemberIdentity } from './TeamMemberRow.tsx'
 import { SortableRow, useSidebarRowDrag } from './sidebar-drag.tsx'
@@ -18,6 +22,7 @@ import { mintRequestId } from './requests.ts'
 import { diagnosticText } from './TeamPresenceDot.tsx'
 import { TeamRowMenu } from './TeamRowMenu.tsx'
 import { TeamSidebarSection } from './TeamSidebarSection.tsx'
+import { TeamStateDot } from './TeamStateDot.tsx'
 import { AgentEditorDialog, ContextPickerField, MemberPromptDialog, ModelPickerField, parseContextWindow, sameModel, warmModelCatalog } from './TeamMemberEditor.tsx'
 import { TeamAgentImport } from './TeamAgentImport.tsx'
 import createCss from './create.module.css'
@@ -26,6 +31,7 @@ import css from './sidebar.module.css'
 interface TeamAgentsPanelProps {
   readonly workspaceId: WorkspaceId
   readonly loadMembers: TeamSidebarProps['loadMembers']
+  readonly loadMemberTasks: TeamSidebarProps['loadMemberTasks']
   readonly subscribeChanges: TeamSidebarProps['subscribeChanges']
   readonly addMember: TeamSidebarProps['addMember']
   readonly updateMember: TeamSidebarProps['updateMember']
@@ -41,7 +47,11 @@ interface TeamAgentsPanelProps {
   readonly archiveMember: TeamSidebarProps['archiveMember']
   readonly joinWorkspace: TeamSidebarProps['joinWorkspace']
   readonly leaveWorkspace: TeamSidebarProps['leaveWorkspace']
+  readonly loadChannels: TeamSidebarProps['loadChannels']
   readonly loadModels: TeamSidebarProps['loadModels']
+  /** Human Message lane for the task-reassignment consultation to the Team leader. */
+  readonly sendMessage: TeamSidebarProps['sendMessage']
+  readonly selectThread: TeamSidebarProps['selectThread']
   /** The Member Session currently embedded in the conversation seat, if any. */
   readonly memberSessionId?: AgentTeamClientMemberStatus['member']['sessionId']
   readonly openMemberSession: TeamSidebarProps['openMemberSession']
@@ -49,7 +59,7 @@ interface TeamAgentsPanelProps {
   readonly t: TeamSidebarProps['t']
 }
 
-export function TeamAgentsPanel({ workspaceId, loadMembers, subscribeChanges, addMember, updateMember, loadPromptView, curateMemberPrompt, recoverMember, clearMemberContext, compactMemberContext, loadMemberInterrupts, releaseMemberInterrupt, selectSessionHistory, diagnoseMember, archiveMember, joinWorkspace, leaveWorkspace, loadModels, memberSessionId, openMemberSession, onCreatingChange, t }: TeamAgentsPanelProps) {
+export function TeamAgentsPanel({ workspaceId, loadMembers, loadMemberTasks, subscribeChanges, addMember, updateMember, loadPromptView, curateMemberPrompt, recoverMember, clearMemberContext, compactMemberContext, loadMemberInterrupts, releaseMemberInterrupt, selectSessionHistory, diagnoseMember, archiveMember, joinWorkspace, leaveWorkspace, loadChannels, loadModels, sendMessage, selectThread, memberSessionId, openMemberSession, onCreatingChange, t }: TeamAgentsPanelProps) {
   const [members, setMembers] = useState<readonly AgentTeamClientMemberStatus[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string>()
@@ -134,9 +144,18 @@ export function TeamAgentsPanel({ workspaceId, loadMembers, subscribeChanges, ad
   // Only the first refresh owns the loading surface; presence wakes (Agent
   // running/idle) ride the dedicated scope and refresh rows in place.
   const loadedRef = useRef(false)
+  // Per-Member working queues behind the rows' current-task line and the
+  // queue dialog. A failed queue read hides the lines but never the roster:
+  // the dialog re-reads on open and reports there.
+  const [queues, setQueues] = useState<readonly AgentTeamMemberTaskQueue[]>([])
   const refresh = useCallback(async () => {
     if (!loadedRef.current) setLoading(true)
-    const result = await loadMembers({ workspaceId })
+    const [result, tasksResult] = await Promise.all([
+      loadMembers({ workspaceId }),
+      loadMemberTasks({ workspaceId }),
+    ])
+    if (tasksResult.ok) setQueues(tasksResult.value.queues)
+    else setQueues([])
     if (result.ok) {
       // Archived Members are hidden from every surface; the row disappears
       // the moment the workspace-scope wake delivers the archived state.
@@ -149,7 +168,7 @@ export function TeamAgentsPanel({ workspaceId, loadMembers, subscribeChanges, ad
       setError(result.error.message)
     }
     setLoading(false)
-  }, [loadMembers, workspaceId, followRollover])
+  }, [loadMembers, loadMemberTasks, workspaceId, followRollover])
 
   useEffect(() => { void refresh() }, [refresh])
   // Warm the Host model catalog while the roster loads, so the create and
@@ -319,7 +338,7 @@ export function TeamAgentsPanel({ workspaceId, loadMembers, subscribeChanges, ad
         <div className={css.agentList}>
           {orderedMembers.map(status => (
             <SortableRow key={status.member.memberId} drag={drag} orderKey={status.member.memberId}>
-              <AgentRow workspaceId={workspaceId} leaveWorkspace={leaveWorkspace} status={status} {...(memberSessionId === undefined ? {} : { current: status.member.sessionId === memberSessionId })} updateMember={updateMember} loadPromptView={loadPromptView} curateMemberPrompt={curateMemberPrompt} recoverMember={recoverMember} clearMemberContext={clearMemberContext} compactMemberContext={compactMemberContext} loadMemberInterrupts={loadMemberInterrupts} releaseMemberInterrupt={releaseMemberInterrupt} selectSessionHistory={selectSessionHistory} diagnoseMember={diagnoseMember} archiveMember={archiveMember} loadModels={loadModels} openMemberSession={openMemberSession} onUpdated={refresh} t={t} />
+              <AgentRow workspaceId={workspaceId} leaveWorkspace={leaveWorkspace} status={status} {...(memberSessionId === undefined ? {} : { current: status.member.sessionId === memberSessionId })} updateMember={updateMember} loadPromptView={loadPromptView} curateMemberPrompt={curateMemberPrompt} recoverMember={recoverMember} clearMemberContext={clearMemberContext} compactMemberContext={compactMemberContext} loadMemberInterrupts={loadMemberInterrupts} releaseMemberInterrupt={releaseMemberInterrupt} selectSessionHistory={selectSessionHistory} diagnoseMember={diagnoseMember} archiveMember={archiveMember} loadChannels={loadChannels} loadModels={loadModels} openMemberSession={openMemberSession} members={members} {...(queues.find(queue => queue.memberId === status.member.memberId) !== undefined ? { queue: queues.find(queue => queue.memberId === status.member.memberId) } : {})} loadMemberTasks={loadMemberTasks} sendMessage={sendMessage} selectThread={selectThread} onUpdated={refresh} t={t} />
             </SortableRow>
           ))}
         </div>
@@ -337,9 +356,13 @@ export function TeamAgentsPanel({ workspaceId, loadMembers, subscribeChanges, ad
 /**
  * One sidebar Agent row: the select button opens the Member's own Session
  * conversation page, the avatar carries identity plus the presence badge, and
- * the row menu opens the editor.
+ * the row menu opens the editor. The row also surfaces the Member's working
+ * queue: the newest Task it holds a Claim on renders as a second line on the
+ * row, and the row menu's Task-queue entry opens the full queue — current
+ * Claims and unclaimed Channel work, each row opening its Thread, each row
+ * asking the Team leader to reassign it.
  */
-function AgentRow({ workspaceId, leaveWorkspace, status, current, updateMember, loadPromptView, curateMemberPrompt, recoverMember, clearMemberContext, compactMemberContext, loadMemberInterrupts, releaseMemberInterrupt, selectSessionHistory, diagnoseMember, archiveMember, loadModels, openMemberSession, onUpdated, t }: {
+function AgentRow({ workspaceId, leaveWorkspace, status, current, updateMember, loadPromptView, curateMemberPrompt, recoverMember, clearMemberContext, compactMemberContext, loadMemberInterrupts, releaseMemberInterrupt, selectSessionHistory, diagnoseMember, archiveMember, loadChannels, loadModels, openMemberSession, members, queue, loadMemberTasks, sendMessage, selectThread, onUpdated, t }: {
   readonly workspaceId: WorkspaceId
   readonly leaveWorkspace: TeamSidebarProps['leaveWorkspace']
   readonly status: AgentTeamClientMemberStatus
@@ -356,14 +379,23 @@ function AgentRow({ workspaceId, leaveWorkspace, status, current, updateMember, 
   readonly selectSessionHistory: TeamSidebarProps['selectSessionHistory']
   readonly diagnoseMember: TeamSidebarProps['diagnoseMember']
   readonly archiveMember: TeamSidebarProps['archiveMember']
+  readonly loadChannels: TeamSidebarProps['loadChannels']
   readonly loadModels: TeamSidebarProps['loadModels']
   readonly openMemberSession: TeamSidebarProps['openMemberSession']
+  /** The Workspace roster, behind the reassign dialog's taker picker. */
+  readonly members: readonly AgentTeamClientMemberStatus[]
+  /** This Member's working queue, as the last panel refresh read it. */
+  readonly queue?: AgentTeamMemberTaskQueue | undefined
+  readonly loadMemberTasks: TeamSidebarProps['loadMemberTasks']
+  readonly sendMessage: TeamSidebarProps['sendMessage']
+  readonly selectThread: TeamSidebarProps['selectThread']
   readonly onUpdated: () => Promise<void> | void
   readonly t: TeamSidebarProps['t']
 }) {
   const [menuOpen, setMenuOpen] = useState(false)
   const [editing, setEditing] = useState(false)
   const [interruptsOpen, setInterruptsOpen] = useState(false)
+  const [tasksOpen, setTasksOpen] = useState(false)
   const [archiving, setArchiving] = useState(false)
   const [resetting, setResetting] = useState(false)
   const [compacting, setCompacting] = useState(false)
@@ -513,6 +545,9 @@ function AgentRow({ workspaceId, leaveWorkspace, status, current, updateMember, 
               // lifecycle state, because archived logs survive suspensions
               // and renewals alike.
               { id: 'history', label: t('sessionHistory'), icon: <IconClockOutlineRegular /> },
+              // The Member's working queue: current Claims plus unclaimed
+              // Channel work, each row navigable and reassignable.
+              { id: 'tasks', label: t('agentTasks'), icon: <IconChecklistOutlineRegular /> },
               // The interrupt stack is a durable ledger read: the Host annotates
               // the return verdict only while the Member is live, and the dialog
               // degrades to unverified entries otherwise.
@@ -524,6 +559,7 @@ function AgentRow({ workspaceId, leaveWorkspace, status, current, updateMember, 
               else if (id === 'archive') setArchiving(true)
               else if (id === 'reset') setResetting(true)
               else if (id === 'history') selectSessionHistory(status.member.memberId)
+              else if (id === 'tasks') setTasksOpen(true)
               else if (id === 'interrupts') setInterruptsOpen(true)
               else if (id === 'compact') {
                 setCompactModel(undefined)
@@ -536,6 +572,17 @@ function AgentRow({ workspaceId, leaveWorkspace, status, current, updateMember, 
           />
         </span>
       </div>
+      {/* The newest current Task rides the row itself: one quiet line naming
+          what the Member is on, opening the same queue dialog the menu entry
+          opens. A queue read failure leaves no line and no error — the row is
+          a convenience, the dialog reports for itself. */}
+      {queue?.current[0] !== undefined && (
+        <button type="button" className={css.agentTaskLine} title={`${t('taskLabel', { number: queue.current[0].taskNumber })} · ${queue.current[0].subject}`} onClick={() => { setTasksOpen(true) }}>
+          <TeamStateDot state={taskStatusDot(queue.current[0].status)} />
+          <span className={css.agentTaskSubject}>{t('taskLabel', { number: queue.current[0].taskNumber })} · {queue.current[0].subject}</span>
+          {queue.current.length > 1 && <small className={css.agentTaskMore}>{t('agentTasksCount', { count: queue.current.length - 1 })}</small>}
+        </button>
+      )}
       {!archiving && !resetting && !compacting && rowAlert !== undefined && <div className={css.rowAlert} role="alert">{rowAlert}</div>}
       {resetting && (
         <Modal
@@ -606,6 +653,19 @@ function AgentRow({ workspaceId, leaveWorkspace, status, current, updateMember, 
           loadMemberInterrupts={loadMemberInterrupts}
           releaseMemberInterrupt={releaseMemberInterrupt}
           onClose={() => { setInterruptsOpen(false) }}
+          t={t}
+        />
+      )}
+      {tasksOpen && (
+        <MemberTasksDialog
+          workspaceId={workspaceId}
+          status={status}
+          members={members}
+          loadMemberTasks={loadMemberTasks}
+          loadChannels={loadChannels}
+          sendMessage={sendMessage}
+          selectThread={selectThread}
+          onClose={() => { setTasksOpen(false) }}
           t={t}
         />
       )}
@@ -685,6 +745,218 @@ function MemberInterruptsDialog({ workspaceId, status, loadMemberInterrupts, rel
         ))}
       </ul>}
       {error !== undefined && <p className={createCss.error} role="alert">{error}</p>}
+    </Modal>
+  )
+}
+
+/**
+ * One Member's working queue: the open Tasks it holds Claims on first, then
+ * the unclaimed Tasks waiting in its Channels. The read happens on open, so a
+ * stale panel snapshot never feeds the dialog; a row opens the Task's Thread,
+ * and its trailing control starts the reassignment consultation.
+ */
+function MemberTasksDialog({ workspaceId, status, members, loadMemberTasks, loadChannels, sendMessage, selectThread, onClose, t }: {
+  readonly workspaceId: WorkspaceId
+  readonly status: AgentTeamClientMemberStatus
+  /** The Workspace roster, behind the reassign dialog's taker picker. */
+  readonly members: readonly AgentTeamClientMemberStatus[]
+  readonly loadMemberTasks: TeamSidebarProps['loadMemberTasks']
+  readonly loadChannels: TeamSidebarProps['loadChannels']
+  readonly sendMessage: TeamSidebarProps['sendMessage']
+  readonly selectThread: TeamSidebarProps['selectThread']
+  readonly onClose: () => void
+  readonly t: TeamSidebarProps['t']
+}) {
+  const [queue, setQueue] = useState<AgentTeamMemberTaskQueue>()
+  const [error, setError] = useState<string>()
+  const [reassigning, setReassigning] = useState<AgentTeamTaskRow>()
+  const reload = useCallback(async () => {
+    try {
+      const result = await loadMemberTasks({ workspaceId })
+      if (result.ok) {
+        setQueue(result.value.queues.find(item => item.memberId === status.member.memberId))
+        setError(undefined)
+      } else {
+        setError(t('agentTasksLoadFailed', { message: result.error.message }))
+      }
+    } catch (cause) {
+      setError(t('agentTasksLoadFailed', { message: cause instanceof Error ? cause.message : String(cause) }))
+    }
+  }, [loadMemberTasks, workspaceId, status.member.memberId, t])
+  useEffect(() => { void reload() }, [reload])
+  const current = queue?.current ?? []
+  const queued = queue?.queued ?? []
+  const renderRow = (task: AgentTeamTaskRow) => (
+    <li key={task.taskRef} className={createCss.sectionRow}>
+      <button type="button" className={css.queueRowMain} title={task.subject} onClick={() => { selectThread(task.threadRef, task.channelRef, task.taskRef, task.taskNumber) }}>
+        <TeamStateDot state={taskStatusDot(task.status)} />
+        <strong>{t('taskLabel', { number: task.taskNumber })}</strong>
+        <span className={css.queueRowSubject}>{task.subject}</span>
+        {task.claimOwners.length > 0 && <small>{claimersLabel(task.claimOwners, t)}</small>}
+        <small>{formatInboxTime(task.lastActivityAt, t)}</small>
+      </button>
+      <Button variant="outline" onClick={() => { setReassigning(task) }}>{t('agentTasksReassign')}</Button>
+    </li>
+  )
+  return (
+    <Modal
+      open
+      onClose={onClose}
+      title={t('agentTasksTitle', { name: status.member.handle })}
+      closeLabel={t('close')}
+      contentClassName={createCss.dialogContent!}
+      footer={<Button variant="outline" onClick={onClose}>{t('close')}</Button>}
+    >
+      {queue === undefined && error === undefined && <p className={createCss.state}>{t('agentTasksLoading')}</p>}
+      {queue !== undefined && current.length === 0 && queued.length === 0 && <p className={createCss.state}>{t('agentTasksEmpty')}</p>}
+      {current.length > 0 && <h3 className={css.queueHeading}>{t('agentTasksCurrent')}</h3>}
+      {current.length > 0 && <ul className={createCss.sectionList}>{current.map(renderRow)}</ul>}
+      {queued.length > 0 && <h3 className={css.queueHeading}>{t('agentTasksQueued')}</h3>}
+      {queued.length > 0 && <p className={createCss.notice}>{t('agentTasksQueuedHint')}</p>}
+      {queued.length > 0 && <ul className={createCss.sectionList}>{queued.map(renderRow)}</ul>}
+      {error !== undefined && <p className={createCss.error} role="alert">{error}</p>}
+      {reassigning !== undefined && (
+        <TaskReassignDialog
+          workspaceId={workspaceId}
+          task={reassigning}
+          holder={status}
+          members={members}
+          loadChannels={loadChannels}
+          sendMessage={sendMessage}
+          onClose={() => { setReassigning(undefined) }}
+          t={t}
+        />
+      )}
+    </Modal>
+  )
+}
+
+/**
+ * The reassignment consultation: pick a taker from the Workspace roster, add
+ * an optional note, and one Human Message goes to the Team leader stating the
+ * Task, its standing and the requested taker. The leader stays the
+ * decision-maker — this surface only asks, it never moves the Claim.
+ */
+function TaskReassignDialog({ workspaceId, task, holder, members, loadChannels, sendMessage, onClose, t }: {
+  readonly workspaceId: WorkspaceId
+  readonly task: AgentTeamTaskRow
+  /** The Member whose queue the consultation starts from — the Task's holder. */
+  readonly holder: AgentTeamClientMemberStatus
+  readonly members: readonly AgentTeamClientMemberStatus[]
+  readonly loadChannels: TeamSidebarProps['loadChannels']
+  readonly sendMessage: TeamSidebarProps['sendMessage']
+  readonly onClose: () => void
+  readonly t: TeamSidebarProps['t']
+}) {
+  const [targetId, setTargetId] = useState<string>()
+  const [note, setNote] = useState('')
+  const [pickerOpen, setPickerOpen] = useState(false)
+  const [sending, setSending] = useState(false)
+  const [sent, setSent] = useState(false)
+  const [error, setError] = useState<string>()
+  const claimOwnerIds = new Set(task.claimOwners.map(owner => owner.memberId))
+  // A taker is any live roster Member other than the holder and the people
+  // already on the Task; the leader arbitrates finer fits.
+  const targets = members.filter(member => member.member.state !== 'inactive' && member.member.state !== 'archived'
+    && member.member.memberId !== holder.member.memberId && !claimOwnerIds.has(member.member.memberId))
+  const leader = members.find(member => member.member.leader === true && member.member.state !== 'inactive' && member.member.state !== 'archived')
+  const target = targets.find(member => member.member.memberId === targetId)
+  const send = async (): Promise<void> => {
+    if (leader === undefined || target === undefined || sending) return
+    setSending(true)
+    setError(undefined)
+    try {
+      // The Message needs one Channel the leader can hear: the first active
+      // one the leader has joined. The Human may post anywhere, so the
+      // sender's own membership never blocks the consultation.
+      const view = await loadChannels({ workspaceId })
+      if (!view.ok) throw new Error(view.error.message)
+      const leaderChannel = view.value.channels.find(channel => channel.state === 'active'
+        && view.value.members.some(membership => membership.channelRef === channel.channelRef && membership.memberId === leader.member.memberId))
+      if (leaderChannel === undefined) throw new Error(t('reassignNoLeaderChannel'))
+      const body = [
+        t('reassignBodyTitle', { number: task.taskNumber }),
+        t('reassignBodyTask', { subject: task.subject }),
+        t('reassignBodyRefs', { taskRef: task.taskRef, threadRef: task.threadRef }),
+        t('reassignBodyStatus', { status: formatTaskStatus(task.status, t) }),
+        task.claimOwners.length > 0
+          ? t('reassignBodyOwners', { owners: task.claimOwners.map(owner => owner.name).join(', ') })
+          : t('reassignBodyUnclaimed'),
+        t('reassignBodyTarget', { name: target.member.handle.replace(/^@/, '') }),
+        ...(note.trim() === '' ? [] : [t('reassignBodyNote', { note: note.trim() })]),
+        t('reassignBodyAsk'),
+      ].join('\n')
+      const result = await sendMessage({
+        requestId: mintRequestId(),
+        workspaceId,
+        channelRef: leaderChannel.channelRef,
+        body,
+        recipients: [leader.member.memberId],
+        asTask: false,
+      })
+      if (!result.ok) throw new Error(result.error.message)
+      setSent(true)
+    } catch (cause) {
+      setError(t('reassignFailed', { message: cause instanceof Error ? cause.message : String(cause) }))
+    } finally {
+      setSending(false)
+    }
+  }
+  const items: MenuEntry[] = targets.map(member => ({
+    id: member.member.memberId,
+    label: <>{member.member.handle.replace(/^@/, '')}<small className={css.menuHint}>{` ${member.member.description}`}</small></>,
+  }))
+  return (
+    <Modal
+      open
+      onClose={onClose}
+      title={t('reassignTitle', { number: task.taskNumber })}
+      closeLabel={t('close')}
+      contentClassName={createCss.dialogContent!}
+      footer={sent
+        ? <Button variant="primary" onClick={onClose}>{t('close')}</Button>
+        : <>
+          <Button variant="outline" disabled={sending} onClick={onClose}>{t('cancel')}</Button>
+          <Button variant="primary" disabled={sending || leader === undefined || target === undefined} onClick={() => { void send() }}>{sending ? t('reassignSending') : t('reassignConfirm')}</Button>
+        </>}
+    >
+      {sent ? <p className={createCss.notice}>{t('reassignSent')}</p> : <>
+        <p className={createCss.notice}>{t('reassignIntro')}</p>
+        {leader === undefined && <p className={createCss.error}>{t('reassignNoLeader')}</p>}
+        {leader !== undefined && targets.length === 0 && <p className={createCss.error}>{t('reassignNoTargets')}</p>}
+        {leader !== undefined && targets.length > 0 && <>
+          <div className={createCss.field}>
+            <span>{t('reassignTarget')}</span>
+            <Menu
+              open={pickerOpen}
+              portal
+              className={createCss.menuCap!}
+              items={items}
+              selectedIds={targetId === undefined ? [] : [targetId]}
+              onSelect={id => { setTargetId(id); setPickerOpen(false) }}
+              onClose={() => { setPickerOpen(false) }}
+              anchor={
+                <button
+                  type="button"
+                  className={createCss.selectTrigger!}
+                  aria-label={t('reassignTarget')}
+                  aria-haspopup="menu"
+                  aria-expanded={pickerOpen}
+                  onClick={() => { setPickerOpen(value => !value) }}
+                >
+                  <span className={createCss.selectValue}>{target === undefined ? t('reassignTargetPlaceholder') : target.member.handle.replace(/^@/, '')}</span>
+                  <span className={`${createCss.chevron!} ${pickerOpen ? createCss.chevronOpen! : ''}`} aria-hidden><IconChevronDownOutlineRegular /></span>
+                </button>
+              }
+            />
+          </div>
+          <label className={createCss.field}>
+            <span>{t('reassignNote')}</span>
+            <Input value={note} placeholder={t('reassignNotePlaceholder')} onChange={event => { setNote(event.target.value) }} disabled={sending} />
+          </label>
+        </>}
+        {error !== undefined && <p className={createCss.error} role="alert">{error}</p>}
+      </>}
     </Modal>
   )
 }
