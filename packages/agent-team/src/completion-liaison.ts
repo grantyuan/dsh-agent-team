@@ -372,8 +372,8 @@ export function liaisonTaskPushText(input: { readonly memberHandle: string, read
 /**
  * The @human relay of a declined push, quoting the Member's own feedback. It
  * posts under the refusing Member's own voice (the auto-prune notice shape):
- * a Human-voiced message could never deliver an `@human` mention to itself,
- * and the decision being relayed is the Member's own.
+ * the decision being relayed is the Member's own, so it speaks for itself
+ * rather than through the Team Assistant.
  */
 export function liaisonFeedbackText(input: { readonly feedbackText: string }): string {
   return `@human ${LIAISON_DECLINED_PUSH_MARKER} I declined the Task push for this Workspace. My feedback: "${sanitizeQuotedText(input.feedbackText)}". The Team will stop pushing open Tasks to me — reassign the work or direct me as you see fit.`

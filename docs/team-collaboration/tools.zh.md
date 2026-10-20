@@ -28,6 +28,8 @@ cursor 只延续 Thread 行；continuation 页只渲染 Threads，翻页可达�
 
 history 页渲染历史结果与 Thread 身份，首页给 full anchor、continuation 页给 bounded subject，选中 facts 与 cursor/hasMore 页脚——绝无当前 Claims 或 advice。每条 activity fact 都是结构化的——actor、Task ref，以及该 activity claim、完成、接受或 release 的 Claim refs——绝不是裸 kind。当一次 `read` 确认的是一个仍处于 done 状态 Task 的未读验收时，结果附带一段 `contextAdvice`：读取 Member 的实测用量、当前路由的预算、任务边界阈值——effective handoffAt 的 64%、打断栈非空时 pinned pending 打断的计数，以及唯一动作——保留当前上下文、验收收尾后 fresh rollover、或已达 handoff 预算时立即换窗。
 
+被 Human 撤回的 Message 永远不会作为未读工作到达：read 批次装不下它，其占位正文只经 `history` 与 Thread 视图出现，Inbox 预览与 Thread 速览中的正文同样替换为该占位说明。
+
 建议只是推荐：Host 绝不在验收时自动 checkpoint、rollover 或 compact，测量失败降级为显式 `unavailable` 文案而不会反转已提交的 read。history 与重复 read 不带建议。
 
 `fresh` Member 把任务边界档读作 keep：它的下一次分配本来就会换新上下文，此刻 rollover 只会把完成总结从 live 日志中抹掉。

@@ -2,7 +2,7 @@ import { Fragment, memo, useCallback, useEffect, useLayoutEffect, useMemo, useRe
 import { MarkdownText, Modal } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { MarkdownLabels } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { SessionId } from '@deepseek-ai/dsh-session'
-import type { AgentTeamChannelRef, AgentTeamMemberId, AgentTeamMessageAttachment, AgentTeamTaskRef, AgentTeamThreadRef } from '@wowyuarm/dsh-agent-team/types'
+import type { AgentTeamChannelRef, AgentTeamMemberId, AgentTeamMessageAttachment, AgentTeamMessageRef, AgentTeamTaskRef, AgentTeamThreadRef } from '@wowyuarm/dsh-agent-team/types'
 import type { TeamConversationProps } from './slots.ts'
 import type { ResolvedMemberRef } from './refs.ts'
 import { cachedAttachmentDataUrl, formatByteSize, loadAttachmentDataUrl } from './attachment-preview.ts'
@@ -47,6 +47,20 @@ export interface TeamMessageProps {
   readonly memberOf?: ((ref: AgentTeamMemberId) => ResolvedMemberRef | undefined) | undefined
   /** Agent-card session jump for member chips; absent renders them as plain text. */
   readonly onOpenMemberSession?: ((sessionId: SessionId) => void) | undefined
+  /** The Message this row renders; present whenever the row can be managed. */
+  readonly messageRef?: AgentTeamMessageRef
+  /** The Human may edit, retract, or delete this Message (own Messages only). */
+  readonly editable?: boolean
+  /** The Human may answer this Message in place (Agent rows only); the composer carries the quote. */
+  readonly replyable?: boolean
+  /** Open the edit dialog with this Message's current body; identity-stable at the page. */
+  readonly onEditMessage?: ((messageRef: AgentTeamMessageRef, body: string) => void) | undefined
+  /** Open the withdraw/delete confirmation for this Message; identity-stable at the page. */
+  readonly onRecallMessage?: ((messageRef: AgentTeamMessageRef, mode: 'retracted' | 'deleted') => void) | undefined
+  /** Anchor a reply to this Message; the page resolves the sender's roster facts itself. */
+  readonly onReplyMessage?: ((messageRef: AgentTeamMessageRef, body: string, sender: AgentTeamMemberId) => void) | undefined
+  /** The Human recalled this Message: every reader sees a tombstone, never the body. */
+  readonly recalled?: boolean
   readonly children?: ReactNode
 }
 
@@ -58,7 +72,7 @@ export interface TeamMessageProps {
  * skipping a render here never detaches it. Callers must therefore keep the
  * props they derive per render (mention names, ref callbacks) identity-stable.
  */
-export const TeamMessage = memo(function TeamMessage({ senderName, memberId, human, avatarUrl, body, occurredAt, mentionNames, senderTitle, grouped, showGroupedTime, attachments, loadAttachment, t, onOpenRef, onResolveTaskRefs, onResolveThreadRefs, channelNameOf, memberOf, onOpenMemberSession, children }: TeamMessageProps) {
+export const TeamMessage = memo(function TeamMessage({ senderName, memberId, human, avatarUrl, body, occurredAt, mentionNames, senderTitle, grouped, showGroupedTime, attachments, loadAttachment, t, onOpenRef, onResolveTaskRefs, onResolveThreadRefs, channelNameOf, memberOf, onOpenMemberSession, messageRef, editable, replyable, onEditMessage, onRecallMessage, onReplyMessage, recalled, children }: TeamMessageProps) {
   const avatarStyle = human ? undefined : { '--team-avatar-hue': memberHue(memberId) } as CSSProperties
   // Only the Human's own row may draw a picture: the profile owns those bytes,
   // and one seat painting the reader's face for another author would name two
@@ -189,33 +203,54 @@ export const TeamMessage = memo(function TeamMessage({ senderName, memberId, hum
             {occurredAt !== undefined && <span className={css.messageTime}>{formatMessageTime(occurredAt)}</span>}
           </div>
         )}
-        {/* The wrapper stays mounted for every clampable body and only swaps
-            its class: appearing/disappearing around bodyNode would remount the
-            Markdown subtree and wipe the post-render ref/mention chips that the
-            layout effects painted into it. It also carries data-document —
-            the same >600-character rule that folds the body marks it for the
-            document reading rhythm (conversation.module.css). */}
-        {clampable ? <div data-document="" className={clamped ? css.messageClamp : undefined}>{bodyNode}</div> : bodyNode}
-        {clampable && (
-          <button type="button" className={css.messageExpand} data-message-expand="true" aria-expanded={expanded} onClick={() => { setExpanded(value => !value) }}>
-            {expanded ? (t?.('collapseMessage') ?? 'Show less') : (t?.('expandMessage') ?? 'Show more')}
-          </button>
-        )}
-        {(plan.fallbackNames.length > 0 || plan.fallbackRefs.length > 0) && (
-          <div className={css.mentionsRow}>
-            {plan.fallbackNames.map(name => <span key={name} className={css.mention}>@{name}</span>)}
-            {plan.fallbackRefs.map(ref => {
-              const resolved = cachedResolvedTaskRef(ref as AgentTeamTaskRef)
-              const label = resolved !== undefined && ref.startsWith('task:') ? taskLabel(resolved.taskNumber) : ref
-              return <button key={ref} type="button" className={css.refLink} title={ref} onClick={() => { onOpenRef!(ref) }}>{label}</button>
-            })}
+        {/* A recalled instruction renders one tombstone for every reader: the
+            stored body stays ledger-side for audit and never reaches the DOM. */}
+        {recalled === true ? <div className={css.messageRecalled}>{t?.('messageRecalled') ?? 'This instruction was withdrawn'}</div> : <Fragment>
+          {/* The wrapper stays mounted for every clampable body and only swaps
+              its class: appearing/disappearing around bodyNode would remount the
+              Markdown subtree and wipe the post-render ref/mention chips that the
+              layout effects painted into it. It also carries data-document —
+              the same >600-character rule that folds the body marks it for the
+              document reading rhythm (conversation.module.css). */}
+          {clampable ? <div data-document="" className={clamped ? css.messageClamp : undefined}>{bodyNode}</div> : bodyNode}
+          {clampable && (
+            <button type="button" className={css.messageExpand} data-message-expand="true" aria-expanded={expanded} onClick={() => { setExpanded(value => !value) }}>
+              {expanded ? (t?.('collapseMessage') ?? 'Show less') : (t?.('expandMessage') ?? 'Show more')}
+            </button>
+          )}
+          {(plan.fallbackNames.length > 0 || plan.fallbackRefs.length > 0) && (
+            <div className={css.mentionsRow}>
+              {plan.fallbackNames.map(name => <span key={name} className={css.mention}>@{name}</span>)}
+              {plan.fallbackRefs.map(ref => {
+                const resolved = cachedResolvedTaskRef(ref as AgentTeamTaskRef)
+                const label = resolved !== undefined && ref.startsWith('task:') ? taskLabel(resolved.taskNumber) : ref
+                return <button key={ref} type="button" className={css.refLink} title={ref} onClick={() => { onOpenRef!(ref) }}>{label}</button>
+              })}
+            </div>
+          )}
+          {attachments !== undefined && attachments.length > 0 && <TeamAttachmentStrip
+            attachments={attachments}
+            {...(loadAttachment === undefined ? {} : { loadAttachment })}
+            {...(t === undefined ? {} : { t })}
+          />}
+        </Fragment>}
+        {/* One hover action row for both management (own Messages) and reply
+            (Agent rows). A recalled Message carries neither: its body is gone,
+            so there is nothing left to answer or correct. */}
+        {messageRef !== undefined && (editable === true || (replyable === true && recalled !== true)) && (
+          <div className={css.messageActions}>
+            {replyable === true && recalled !== true && onReplyMessage !== undefined && (
+              <button type="button" className={css.messageAction} onClick={() => { onReplyMessage(messageRef, body, memberId) }}>{t?.('messageReply') ?? 'Reply'}</button>
+            )}
+            {editable === true && onEditMessage !== undefined && onRecallMessage !== undefined && (
+              <Fragment>
+                <button type="button" className={css.messageAction} onClick={() => { onEditMessage(messageRef, body) }}>{t?.('messageEdit') ?? 'Edit'}</button>
+                <button type="button" className={css.messageAction} onClick={() => { onRecallMessage(messageRef, 'retracted') }}>{t?.('messageRecall') ?? 'Withdraw'}</button>
+                <button type="button" className={css.messageAction} onClick={() => { onRecallMessage(messageRef, 'deleted') }}>{t?.('messageDelete') ?? 'Delete'}</button>
+              </Fragment>
+            )}
           </div>
         )}
-        {attachments !== undefined && attachments.length > 0 && <TeamAttachmentStrip
-          attachments={attachments}
-          {...(loadAttachment === undefined ? {} : { loadAttachment })}
-          {...(t === undefined ? {} : { t })}
-        />}
         {children}
       </div>
     </article>

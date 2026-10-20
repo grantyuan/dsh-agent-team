@@ -256,7 +256,7 @@ export class TaskContinuationWatcher {
 export const CONTINUATION_NUDGE_MARKER = 'Continuation check: every Agent is stopped, but these Task(s) are still open:'
 
 /**
- * The continuation nudge: posted by the Host under the Human admin's voice
+ * The continuation nudge: posted by the Host in the Team Assistant's voice
  * into the open work's Channel, it names the leader, lists every open Task
  * with its standing, and states the one expectation — keep the Team moving.
  * The `@` mention is what delivers the Message and wakes the leader.

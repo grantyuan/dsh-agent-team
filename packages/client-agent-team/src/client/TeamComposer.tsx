@@ -56,7 +56,7 @@ function draftPreviewUrl(file: File): string | undefined {
   return url
 }
 
-export function TeamComposer({ members, followerMemberIds, drafts, draftKey, pending, confirmation, error, onEdit, onSubmit, placeholder, pendingFiles, onFilesChange, asTask, onAsTaskChange, t }: {
+export function TeamComposer({ members, followerMemberIds, drafts, draftKey, pending, confirmation, error, onEdit, onSubmit, placeholder, pendingFiles, onFilesChange, asTask, onAsTaskChange, replyTarget, onCancelReplyTarget, t }: {
   readonly members: readonly AgentTeamClientMemberStatus[]
   /** Current Thread followers; the Thread surface passes them so they rank above other candidates. */
   readonly followerMemberIds?: ReadonlySet<AgentTeamMemberId>
@@ -81,6 +81,9 @@ export function TeamComposer({ members, followerMemberIds, drafts, draftKey, pen
   /** Channel-only: create a real Task with the top-level Message. Default off. */
   readonly asTask?: boolean
   readonly onAsTaskChange?: (asTask: boolean) => void
+  /** The Message this draft answers; the page prepends the quote at send time. */
+  readonly replyTarget?: { readonly handle: string; readonly summary: string }
+  readonly onCancelReplyTarget?: () => void
   readonly t: TeamConversationProps['t']
 }) {
   const inputRef = useRef<HTMLTextAreaElement>(null)
@@ -280,6 +283,10 @@ export function TeamComposer({ members, followerMemberIds, drafts, draftKey, pen
   }}>
     <div className={css.card} data-team-composer>
       {confirmation !== undefined && <p className={css.confirmation} role="status">{confirmation}</p>}
+      {replyTarget !== undefined && <div className={css.replyTarget} data-team-reply-target>
+        <span className={css.replyTargetText}>{t('replyTargetLabel', { handle: replyTarget.handle, summary: replyTarget.summary })}</span>
+        {onCancelReplyTarget !== undefined && <button type="button" className={css.replyTargetCancel} aria-label={t('replyTargetCancel')} disabled={pending} onClick={onCancelReplyTarget}>×</button>}
+      </div>}
       <div className={css.inputArea}>
         {menuOpen && <div id={listId} ref={menuRef} className={css.mentionMenu} role="listbox" aria-label={t('mentionSuggestions')} style={{ maxHeight: menuMaxHeight }}>
           {options.map((option, index) => {

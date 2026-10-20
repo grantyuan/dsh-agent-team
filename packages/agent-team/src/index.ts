@@ -38,7 +38,7 @@ import { CONTEXT_CONTINUITY_PROJECTION_KEY, readContextTimeline, type ContextPro
 import { createTeamContextManagement, TEAM_CONTEXT_CODEC } from './context-continuity-host.ts'
 import { AGENT_TEAM_PLUGIN_ID, isAgentTeamSource } from './context-source.ts'
 import { boundaryByRef, carriedInputOf, checkpointByRef, checkpointRefFor, createTeamContextProjectionConfig, createTeamContextProjectionDefinition, foldTeamContextProjection, retainedTopicsThrough, TeamContextProjectionHost } from './context-projection.ts'
-import { AGENT_TEAM_HUMAN_HANDLE, AGENT_TEAM_HUMAN_MEMBER_ID, AGENT_TEAM_ASSISTANT_HANDLE, AGENT_TEAM_ASSISTANT_MEMBER_ID, AgentTeamLedger, agentTeamAssistantActor, agentTeamHumanActor, type AgentTeamDurableMemberResult } from './ledger.ts'
+import { AGENT_TEAM_HUMAN_HANDLE, AGENT_TEAM_HUMAN_MEMBER_ID, AGENT_TEAM_ASSISTANT_HANDLE, AGENT_TEAM_ASSISTANT_MEMBER_ID, AGENT_TEAM_RECALLED_BODY_TOMBSTONE, AgentTeamLedger, agentTeamAssistantActor, agentTeamHumanActor, type AgentTeamDurableMemberResult } from './ledger.ts'
 import { LedgerFence, ledgerFenceFor } from './ledger-fence.ts'
 import { AGENT_TEAM_TOOL_NAMES, BUNDLED_SKILLS_DIRECTORY, deepCopyCapabilities, deepCopyPrompt, isProtectedPromptSection, memberMemoryDirectoryName, memberMemoryDirectoryPath, MemberRuntime, promptSectionByteLength, sectionToolMapping } from './member-runtime.ts'
 import { PRUNE_WINDOW_DAYS, PRUNE_WINDOW_TURNS, foldLineageUsage, type UsageFold } from './member-section-usage.ts'
@@ -144,11 +144,15 @@ import type {
   AgentTeamResolveThreadRefsResult,
   AgentTeamTaskRef,
   AgentTeamThreadRef,
+  AgentTeamEditMessageRequest,
+  AgentTeamEditMessageResult,
   AgentTeamOperationReceipt,
   AgentTeamPromoteThreadRequest,
   AgentTeamPromoteThreadResult,
   AgentTeamPutAttachmentRequest,
   AgentTeamPutAttachmentResult,
+  AgentTeamRecallMessageRequest,
+  AgentTeamRecallMessageResult,
   AgentTeamRecoverMemberRequest,
   AgentTeamRecoverMemberResult,
   AgentTeamClearMemberContextRequest,
@@ -205,7 +209,7 @@ import type {
 
 export { agentTeamDomainSpec, agentTeamOperationSchema } from './spec.ts'
 export type * from './types.ts'
-export { AGENT_TEAM_HUMAN_HANDLE, AGENT_TEAM_HUMAN_MEMBER_ID, AGENT_TEAM_ASSISTANT_HANDLE, AGENT_TEAM_ASSISTANT_MEMBER_ID, AGENT_TEAM_INITIALIZE_REQUEST_ID } from './ledger.ts'
+export { AGENT_TEAM_HUMAN_HANDLE, AGENT_TEAM_HUMAN_MEMBER_ID, AGENT_TEAM_ASSISTANT_HANDLE, AGENT_TEAM_ASSISTANT_MEMBER_ID, AGENT_TEAM_INITIALIZE_REQUEST_ID, AGENT_TEAM_RECALLED_BODY_TOMBSTONE } from './ledger.ts'
 export { HUMAN_PROFILE_DEFAULT_NAME, HUMAN_PROFILE_REPO_URL, HUMAN_PROFILE_SETTINGS_NAMESPACE, HUMAN_PROFILE_SETTINGS_SCHEMA, HUMAN_PROFILE_VERSION, assertValidHumanName, normalizeHumanName } from './human-profile.ts'
 export { humanAvatarsRoot } from './human-avatar.ts'
 export { AGENT_TEAM_TOOL_NAMES } from './member-runtime.ts'
@@ -3293,8 +3297,8 @@ export default class AgentTeam extends TypertRemoteService {
 
   /**
    * Declined-push relay: the refusing Member speaks in its own Channel (the
-   * auto-prune notice shape — a Human-voiced message could not deliver an
-   * `@human` mention), quoting its decision verbatim so only the Channel
+   * auto-prune notice shape — it speaks for itself rather than through the
+   * Team Assistant), quoting its decision verbatim so only the Channel
    * carries the feedback to the Human.
    */
   private async notifyLiaisonFeedback(input: { readonly memberId: AgentTeamMemberId, readonly memberHandle: string, readonly workspaceId: WorkspaceId, readonly feedbackText: string }): Promise<void> {
@@ -3473,11 +3477,10 @@ export default class AgentTeam extends TypertRemoteService {
       }
       // No qualifying leader: the notice is broadcast on every Channel the
       // replacement inherited, in the Team Assistant's voice, and delivered to
-      // every live Member of those Channels — the `@human` body mention now
-      // actually carries the admin ask to the Human's Inbox (a Human-voiced
-      // Message could never mention itself), while the explicit recipients put
-      // the notice into each other Member's Inbox so the whole Team learns
-      // which handle now owns the failed Member's reach.
+      // every live Member of those Channels — the `@human` body mention
+      // actually carries the admin ask to the Human's Inbox, while the explicit
+      // recipients put the notice into each other Member's Inbox so the whole
+      // Team learns which handle now owns the failed Member's reach.
       const noticeChannels = ledger.workspacesOf(stored.memberId)
         .flatMap(workspaceId => ledger.channelsForMember(stored.memberId, workspaceId).map(channelRef => ({ workspaceId, channelRef })))
       for (const { workspaceId, channelRef } of noticeChannels) {
@@ -3888,6 +3891,80 @@ export default class AgentTeam extends TypertRemoteService {
     return this.replyAs(this.humanCall(request.workspaceId), request)
   }
 
+  /**
+   * Human correction of one Human-sent Message. The executor candidates are
+   * read from the pre-commit projection, the ledger commits the body swap, and
+   * only then — before the commit's wake is emitted — is every Member that may
+   * be executing the old body (mentioned, read through, currently running)
+   * force-stopped with its Inbox intact. Cancel first, wake second: the
+   * corrected instruction is re-delivered through the re-added markers and
+   * replays after the aborted turn converges instead of racing it.
+   */
+  @Remote('editMessage')
+  async editMessage(request: AgentTeamEditMessageRequest): Promise<AgentTeamEditMessageResult> {
+    const actor = this.humanCall(request.workspaceId)
+    const ledger = this.requireLedger()
+    const candidates = ledger.executorsOfMessage(request.messageRef)
+    const result = await ledger.editMessage({ ...request, actor })
+    const stoppedMembers = result.committed ? this.forceStopExecutors(candidates) : []
+    this.emitCommittedOutcome(result)
+    return { ...result.value, stoppedMembers }
+  }
+
+  /**
+   * Human retraction or deletion of one Human-sent Message, with the same
+   * pre-commit executor snapshot and force-stop ordering as the edit. A recall
+   * adds no marker, so the commit wake names nobody: the stopped Members learn
+   * of the withdrawal through an explicit notice, and every other reader sees
+   * the tombstone (or nothing, for a deletion) on its next look.
+   */
+  @Remote('recallMessage')
+  async recallMessage(request: AgentTeamRecallMessageRequest): Promise<AgentTeamRecallMessageResult> {
+    const actor = this.humanCall(request.workspaceId)
+    const ledger = this.requireLedger()
+    const candidates = ledger.executorsOfMessage(request.messageRef)
+    const result = await ledger.recallMessage({ ...request, actor })
+    const stoppedMembers = result.committed ? this.forceStopExecutors(candidates) : []
+    this.emitCommittedOutcome(result)
+    if (stoppedMembers.length > 0) this.notifyRecalledInstruction(stoppedMembers)
+    return { ...result.value, stoppedMembers }
+  }
+
+  /** Abort the running subset; their queued work survives (keepInbox) and the commit's wake replays it. */
+  private forceStopExecutors(memberIds: readonly AgentTeamMemberId[]): readonly AgentTeamMemberId[] {
+    const stopped: AgentTeamMemberId[] = []
+    for (const memberId of memberIds) {
+      const agent = this.handles.get(memberId)?.agent
+      if (agent === undefined || agent.status !== 'running') continue
+      try {
+        agent.cancel({ kind: 'user' }, { keepInbox: true })
+        stopped.push(memberId)
+      } catch (error) {
+        // A failed stop cannot roll back the committed correction.
+        this.ctx.logger.warn(`agent-team: force-stop of '${memberId}' failed: ${error instanceof Error ? error.message : String(error)}`)
+      }
+    }
+    return stopped
+  }
+
+  /** Plain-language withdrawal notice to force-stopped Members: this instruction is dead, the rest of the queue continues. */
+  private notifyRecalledInstruction(memberIds: readonly AgentTeamMemberId[]): void {
+    const notice = createUserMessage({ content: [{ type: 'text',
+      text: 'The user has withdrawn the instruction you were working on. Stop it now: do not produce further output for it, and do not report it as done. Every other pending instruction stays in effect — continue with those.' }],
+      source: { kind: AGENT_TEAM_PLUGIN_ID, form: 'notice', summary: 'Instruction withdrawn by the user' } })
+    for (const memberId of memberIds) {
+      const handle = this.handles.get(memberId)
+      if (handle === undefined) continue
+      try {
+        if (handle.agent.status === 'idle') handle.agent.followup(notice)
+        else handle.agent.steer(notice)
+      } catch (error) {
+        // Notification delivery cannot roll back a committed recall.
+        this.ctx.logger.warn(`agent-team: withdrawal notice not delivered to '${memberId}': ${error instanceof Error ? error.message : String(error)}`)
+      }
+    }
+  }
+
   /** Human's personal Attention operation. */
   @Remote('changeAttention')
   async changeAttention(request: AgentTeamThreadAttentionRequest): Promise<AgentTeamThreadAttentionResult> {
@@ -3971,9 +4048,11 @@ export default class AgentTeam extends TypertRemoteService {
     const nameOf = (memberId: AgentTeamMemberId): string => ledger.actorFor(memberId).name
     const replyFacts = history.facts.filter((fact): fact is Extract<AgentTeamThreadFact, { kind: 'message' }> =>
       fact.kind === 'message' && fact.message.messageRef !== history.anchor.messageRef)
+    // A recalled instruction is audit-only: its body reaches the digest model as
+    // the withdrawal tombstone, never as the withdrawn text.
     const transcript: readonly ThreadDigestMessage[] = [
-      { author: nameOf(history.anchor.sender), text: history.anchor.body, mentions: history.anchorMentions.map(nameOf) },
-      ...replyFacts.map(fact => ({ author: nameOf(fact.message.sender), text: fact.message.body, mentions: fact.mentions.map(nameOf) })),
+      { author: nameOf(history.anchor.sender), text: history.anchor.recalledAt === undefined ? history.anchor.body : AGENT_TEAM_RECALLED_BODY_TOMBSTONE, mentions: history.anchorMentions.map(nameOf) },
+      ...replyFacts.map(fact => ({ author: nameOf(fact.message.sender), text: fact.message.recalledAt === undefined ? fact.message.body : AGENT_TEAM_RECALLED_BODY_TOMBSTONE, mentions: fact.mentions.map(nameOf) })),
     ]
     const awaitingReview = history.task !== undefined && history.task.resolution === 'open' && history.task.status === 'in_review'
     const llm = this.ctx.get('llm')

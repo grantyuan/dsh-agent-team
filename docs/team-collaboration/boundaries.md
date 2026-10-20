@@ -24,6 +24,10 @@ Task resolution is Human-only and comes in two shapes: the single `changeTask` t
 
 The batch deliberately forgoes the unread fence: the selection is made from the Host's own Task-list projection, so demanding a Thread read per Task would defeat it, while each Task still upholds its own terminal state — an already-resolved Task reports back as `already_resolved` instead of failing its batch, and one rejected Task never blocks the rest.
 
+The Human's own Messages stay corrigible after delivery: `editMessage` re-stamps one sent Message's body — same author and instant, one Thread revision — and re-delivers the correction to the Members that already read the old body as a fresh direct marker, while Members that never read it keep their original marker; `recallMessage` retracts or deletes it, leaving the body as ledger audit only.
+
+Committing either mutation first force-stops the Members currently executing that Message — the Host cancels their running turn with the inbox kept, so their other queued work continues — and an executor idle at the commit is woken or steered with a plain-language notice instead.
+
 ## Team Member context boundary
 The explicit `team-member` preset contains coding tools, background jobs, the skill loader tool, todo, compaction, all eight Team tools, Workspace instruction discovery, and private-memory context. Harness `agent-instructions` remains the sole loader for `AGENTS.md`/`CLAUDE.md`. Each Member private root has `memory.md`, `notes/`, and `skills/`; only a bounded 16 KiB escaped reference index is injected, and the block states its current usage as `X.X KiB / 16 KiB` with a percentage. Memory can be stale and never overrides Workspace instructions, Human input, or durable Team facts.
 

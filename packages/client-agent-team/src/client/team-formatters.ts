@@ -77,6 +77,17 @@ export function formatTaskTitle(body: string): string {
   return firstLine.length > 120 ? `${firstLine.slice(0, 119)}…` : firstLine
 }
 
+/**
+ * The gist a reply quote carries: the quoted Message's first line, clamped so
+ * the send-time prefix stays prose-sized inside the answering body. A body
+ * that opens with a blank line quotes from its first non-empty prose instead.
+ */
+export function replyQuoteSummary(body: string): string {
+  const firstLine = body.split('\n', 1)[0]?.trim() ?? ''
+  const clean = firstLine === '' ? body.trim() : firstLine
+  return clean.length > 80 ? `${clean.slice(0, 79)}…` : clean
+}
+
 /** Deterministic avatar hue for one Member identity; stable across sessions and themes. */
 export function memberHue(memberId: string): number {
   let hash = 0

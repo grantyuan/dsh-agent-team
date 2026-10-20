@@ -6,7 +6,7 @@
 
 ## Human 工作流
 
-进入 Team mode 后默认打开 Channels。Human 导航路径是 Workspace → Channel → Thread；Task 是 Thread 上可选的卡片/header overlay，不是导航层级。Channel 顶层消息默认创建 taskless Thread；Human composer 提供默认关闭的「作为任务」控件，可原子创建 Task；taskless Thread 之后也可由 Human 通过 durable Host mutation promotion。promotion 成功后 Client 重读 Host projection，不乐观地自行合成 Task。taskless Thread 保留 reply、follow、mention、Inbox、read 和 history，只有存在 Task 后才展示 status、Claims 与 Task resolution 控件。Client 把 Host 的 Inbox 与决策队列渲染为页面，但自身不持有任何未读或决策状态。打开 Thread 会调用 Host 的 `readThread`，然后展示公开 Thread 时间线、分页历史、存在时的 Claims，以及处于错误状态且仍有 active Claim 的 Agent 风险。当前 Thread UI 不展示关注/取消关注按钮，也不展示 Human 的关注/取消关注观察。Human 消息按字面文本渲染，Agent 消息使用 Harness 共享的 Markdown 原语渲染；时间线打开时定位到最后一条消息，仅在读者停留在底部时跟随新消息，前插更早历史时保持视口稳定。读取全部自动化：有界批次的剩余未读由 Client 自动续读清零（不存在手动已读/继续阅读控件），Thread 打开期间到达的更新无论滚动位置一律持久确认——滚离底部的读者只会看到无读取语义的「↓ N 条新更新」纯跳转提示。消息正文中的已知 branded Task ref 会在原位置显示为可点击的 `Task #N`，Agent Markdown 内同样如此（整段恰好是一个 ref 的行内代码也会渲染为链接），并可解析到所属 Channel 与 Thread，支持跨频道跳转；模型常见的双冒号/大写拼写会先归一化为规范 ref 再查询。代码块和混合内容的行内代码保留原文；未知 ref 不提供导航。
+进入 Team mode 后默认打开 Channels。Human 导航路径是 Workspace → Channel → Thread；Task 是 Thread 上可选的卡片/header overlay，不是导航层级。Channel 顶层消息默认创建 taskless Thread；Human composer 提供默认关闭的「作为任务」控件，可原子创建 Task；taskless Thread 之后也可由 Human 通过 durable Host mutation promotion。promotion 成功后 Client 重读 Host projection，不乐观地自行合成 Task。taskless Thread 保留 reply、follow、mention、Inbox、read 和 history，只有存在 Task 后才展示 status、Claims 与 Task resolution 控件。Client 把 Host 的 Inbox 与决策队列渲染为页面，但自身不持有任何未读或决策状态。打开 Thread 会调用 Host 的 `readThread`，然后展示公开 Thread 时间线、分页历史、存在时的 Claims，以及处于错误状态且仍有 active Claim 的 Agent 风险。当前 Thread UI 不展示关注/取消关注按钮，也不展示 Human 的关注/取消关注观察。Human 消息按字面文本渲染，Agent 消息使用 Harness 共享的 Markdown 原语渲染；时间线打开时定位到最后一条消息，仅在读者停留在底部时跟随新消息，前插更早历史时保持视口稳定。读取全部自动化：有界批次的剩余未读由 Client 自动续读清零（不存在手动已读/继续阅读控件），Thread 打开期间到达的更新无论滚动位置一律持久确认——滚离底部的读者只会看到无读取语义的「↓ N 条新更新」纯跳转提示。消息正文中的已知 branded Task ref 会在原位置显示为可点击的 `Task #N`，Agent Markdown 内同样如此（整段恰好是一个 ref 的行内代码也会渲染为链接），并可解析到所属 Channel 与 Thread，支持跨频道跳转；模型常见的双冒号/大写拼写会先归一化为规范 ref 再查询。代码块和混合内容的行内代码保留原文；未知 ref 不提供导航。Thread 时间线里每条 Agent 消息行还带一个悬停「回复」操作，把被引用的消息——发送者 handle 加首行摘要——带进输入框上方的引用条；发送时把引用拼进正文，回答因此点名它所回应的那条消息，投递仍走普通 mention 扫描；发送前可随时取消（Human 自己的行与已撤回墓碑行不提供回复）。
 
 Thread 的速览按需生成，绝不自动：席位提供「生成速览」，只在读者按下时才花费一次 propose-only 的 Host 模型调用；当这条 Thread 在等 Human 时，它会列出待决问题与 Thread 自身消息里真实提出过的选项——选中一项或写下意见，发出的就是一条普通 reply；调用失败只留下一行安静的重试。当前状态没有已存速览的 Thread 打开时只展示这个按钮，不花费任何调用。Inbox 行自带时间戳（创建时间、最新回复及其作者），并在 Thread 等待 Human 时挂出决策标记；队列排序可按本浏览器偏好切换。两个切片（需要我、最近活跃）各自按 Workspace、再按 Channel 分区，组内保留 Host 的准入顺序，排序键不会移动分组位置。页头还挂着「全部已读」：把队列里每一条还挂着未读的 Thread 逐条读干，读者自己的未读因此不必逐行点过去就能清掉整页——读过就离开队列，之后落在哪里由 Host 的准入规则决定，而不是按钮的承诺：写过话的落回「最近活跃」，只是关注过或被点名的则离开这一页；侧栏入口的未读点也跟着那几次读完成而落下。
 
@@ -18,6 +18,8 @@ Client 使用以下 Host 接口：
 
 - `readThread`：确认一个 Thread 的未读批次。
 - `threadHistory`：读取更早事实，不改变已读状态。
+- `editMessage`：重写 Human 自己 Message 的正文，并把更正重新投递给已读过旧正文的 Member。
+- `recallMessage`：撤回或删除 Human 自己的 Message；之后所有读者看到的都是一条「已撤回」占位说明。两种变更提交时都会强停正在执行该指令的 Member，其排队的其它工作不受影响。
 - `summarizeThread`：读取一次 propose-only 的 Thread 通俗速览（summary、keyPoints，以及这条 Thread 在等 Human 的决策）；调用走团队自身配置的模型——指定 leader 优先，其次任一钉选模型的成员，都没有才落 Host 默认——结果以 `modelUsed` 报告实际路由；不提交任何内容，读者据此发出的决策走普通 `reply` 落成 Message。席位只在读者按下「生成速览」时花费该调用，打开 Thread 绝不花费。
 - `pendingDecisions`：读取 Host 跨可见 Workspace 汇总的「等待 Human 的一切」队列（提问文本、作者、频道、Task、原因，以及 Thread 时钟——创建时间与锚点之后的最新回复时间、该读者的未读数与 Attention），每个 Workspace 一个条目列表、上限 100；这是纯读，决策页经 `reply`、Task `accept`、Thread read（已读）或 `changeAttention`（关注/取消关注）作答。
 - `promoteThread`：原子地为 taskless Thread 附加真实 Task，并记录结构化 `promote` Task activity。

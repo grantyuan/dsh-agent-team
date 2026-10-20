@@ -1269,6 +1269,76 @@ describe('Agent Team Member lifecycle', () => {
     expect(request).toMatch(/Occurred at: \d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\+08:00/)
   })
 
+  it('force-stops the running executor the moment the Human edits the instruction it already read', async () => {
+    // Call 1 performs the durable read (the watermark passes the instruction);
+    // call 2 is the gated work turn that the edit must interrupt mid-flight.
+    const adapter = new GatedAdapter(2)
+    const { ctx, workspaceId } = await realHarness(adapter)
+    const channel = await ctx.agentTeam.createChannel({ requestId: requestId('edit-stop-channel'), workspaceId, name: 'engineering', description: 'Engineering work' })
+    const builder = await ctx.agentTeam.addMember({ requestId: requestId('edit-stop-builder'), workspaceId, handle: 'builder', description: 'Builds changes', presetId: 'team-member', channelRefs: [channel.channel.channelRef] })
+    const agent = ctx.agents.get(builder.status.member.sessionId)!
+    const memberId = builder.status.member.memberId
+    const committed = await ctx.agentTeam.sendMessage({ asTask: false, requestId: requestId('edit-stop-send'), workspaceId, channelRef: channel.channel.channelRef, body: 'Please investigate the export path @builder' })
+    if (committed.kind !== 'committed') throw new Error(`expected committed send, received ${committed.kind}`)
+    adapter.enqueue(toolCallResponse('edit-stop-read', 'team_thread', { action: 'read', threadRef: committed.thread.threadRef }))
+    await adapter.started.promise
+
+    const edited = await ctx.agentTeam.editMessage({ requestId: requestId('edit-stop-edit'), workspaceId, messageRef: committed.message.messageRef, body: 'Edited instruction: investigate the import path' })
+    expect(edited).toMatchObject({ kind: 'committed', stoppedMembers: [memberId] })
+    // The stop aborts the active turn: the gated model round never completes,
+    // and the member leaves its running state without producing work for the
+    // stale instruction.
+    adapter.release.resolve()
+    await agent.whenIdle()
+    expect(JSON.stringify(agent.session.ownEvents())).not.toContain('Initial work finished.')
+
+    // The commit re-delivers the corrected instruction: the member wakes again
+    // and its next turn shows the edited body, not the withdrawn one.
+    adapter.enqueue(textResponse('On it — import path it is.'))
+    await vi.waitFor(() => {
+      expect(adapter.requests.slice(2).some(request => JSON.stringify(request.messages).includes('Edited instruction: investigate the import path'))).toBe(true)
+    })
+    await agent.whenIdle()
+
+    // An idempotent retry answers without stopping anything a second time.
+    const retry = await ctx.agentTeam.editMessage({ requestId: requestId('edit-stop-edit'), workspaceId, messageRef: committed.message.messageRef, body: 'Edited instruction: investigate the import path' })
+    expect(retry).toMatchObject({ kind: 'committed', stoppedMembers: [] })
+  })
+
+  it('force-stops the running executor on recall, tells it plainly, and lets its queued work continue', async () => {
+    const adapter = new GatedAdapter(2)
+    const { ctx, workspaceId } = await realHarness(adapter)
+    const channel = await ctx.agentTeam.createChannel({ requestId: requestId('recall-stop-channel'), workspaceId, name: 'engineering', description: 'Engineering work' })
+    const builder = await ctx.agentTeam.addMember({ requestId: requestId('recall-stop-builder'), workspaceId, handle: 'builder', description: 'Builds changes', presetId: 'team-member', channelRefs: [channel.channel.channelRef] })
+    const agent = ctx.agents.get(builder.status.member.sessionId)!
+    const memberId = builder.status.member.memberId
+    const committed = await ctx.agentTeam.sendMessage({ asTask: false, requestId: requestId('recall-stop-send'), workspaceId, channelRef: channel.channel.channelRef, body: 'Please deploy the staging build @builder' })
+    if (committed.kind !== 'committed') throw new Error(`expected committed send, received ${committed.kind}`)
+    adapter.enqueue(toolCallResponse('recall-stop-read', 'team_thread', { action: 'read', threadRef: committed.thread.threadRef }))
+    await adapter.started.promise
+
+    // A second instruction joins the queue while the first one runs: the
+    // recall must stop only the first, leaving this one in effect.
+    const second = await ctx.agentTeam.sendMessage({ asTask: false, requestId: requestId('recall-stop-second'), workspaceId, channelRef: channel.channel.channelRef, body: 'Second instruction: file the incident report @builder' })
+    expect(second.kind).toBe('committed')
+
+    const recalled = await ctx.agentTeam.recallMessage({ requestId: requestId('recall-stop-recall'), workspaceId, messageRef: committed.message.messageRef, mode: 'retracted' })
+    expect(recalled).toMatchObject({ kind: 'committed', stoppedMembers: [memberId], message: { recalledAt: expect.any(String) } })
+    adapter.release.resolve()
+    await agent.whenIdle()
+    expect(JSON.stringify(agent.session.ownEvents())).not.toContain('Initial work finished.')
+
+    // The withdrawal notice is plain language, and the queued second
+    // instruction rides the same continuation instead of dying with the recall.
+    adapter.enqueue(textResponse('Understood — filing the report now.'))
+    await vi.waitFor(() => {
+      const continuation = adapter.requests.slice(2).map(request => JSON.stringify(request.messages)).join('\n')
+      expect(continuation).toContain('withdrawn the instruction')
+      expect(continuation).toContain('Second instruction: file the incident report')
+    })
+    await agent.whenIdle()
+  })
+
   it('delivers an agent-created top-level mention to the mentioned Member', async () => {
     const adapter = new ScriptedAdapter()
     const { ctx, workspaceId } = await realHarness(adapter)

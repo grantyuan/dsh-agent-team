@@ -372,6 +372,13 @@ export interface AgentTeamMessage {
   readonly sequence: number
   /** Wall-clock instant of the wrapping ledger operation; pre-occurredAt ledgers normalize on replay. */
   readonly occurredAt: string
+  /**
+   * Wall-clock instant of the Human retraction that recalled this Message,
+   * stamped by the `team/message-recalled` operation. Absent on live Messages;
+   * present means the instruction is dead — the body stays for audit while
+   * every reader renders a tombstone instead of the text.
+   */
+  readonly recalledAt?: string | undefined
 }
 
 /** Task overlay created by an atomic start or Human promotion. */

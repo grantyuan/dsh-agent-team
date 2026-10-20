@@ -48,6 +48,10 @@ import type {
   AgentTeamRemoveChannelMemberResult,
   AgentTeamResolveMemberInterruptRequest,
   AgentTeamResolveMemberInterruptResult,
+  AgentTeamEditMessageRequest,
+  AgentTeamEditMessageResult,
+  AgentTeamRecallMessageRequest,
+  AgentTeamRecallMessageResult,
   AgentTeamReplyRequest,
   AgentTeamResolveTaskRefsRequest,
   AgentTeamResolveTaskRefsResult,
@@ -219,6 +223,10 @@ export type TeamConversationProps = PropsRuntime<'main'> & PropsLocale<'team'> &
   joinChannel: (request: AgentTeamJoinChannelRequest) => Promise<RemoteResult<AgentTeamJoinChannelResult>>
   removeChannelMember: (request: AgentTeamRemoveChannelMemberRequest) => Promise<RemoteResult<AgentTeamRemoveChannelMemberResult>>
   reply: (request: AgentTeamReplyRequest) => Promise<RemoteResult<AgentTeamReplyResult | AgentTeamConfirmationRequired>>
+  /** Human correction of one Human-sent Message; the Host force-stops its running executors first. */
+  editMessage: (request: AgentTeamEditMessageRequest) => Promise<RemoteResult<AgentTeamEditMessageResult>>
+  /** Human retraction or deletion of one Human-sent Message, with the same force-stop guarantee. */
+  recallMessage: (request: AgentTeamRecallMessageRequest) => Promise<RemoteResult<AgentTeamRecallMessageResult>>
   changeTask: (request: AgentTeamTaskRequest) => Promise<RemoteResult<AgentTeamTaskResult>>
   changeTasks: (request: AgentTeamTasksBatchRequest) => Promise<RemoteResult<AgentTeamTasksBatchResult>>
   promoteThread: (request: AgentTeamPromoteThreadRequest) => Promise<RemoteResult<AgentTeamPromoteThreadResult>>

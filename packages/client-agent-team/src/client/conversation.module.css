@@ -305,6 +305,54 @@
   text-decoration: underline;
   text-underline-offset: 2px;
 }
+/* The recalled-instruction tombstone: one quiet line replacing the body for
+   every reader, styled to read as a deliberate marker, not a rendering fault. */
+.messageRecalled {
+  color: var(--dsw-alias-label-tertiary);
+  font-size: 13px;
+  font-style: italic;
+  margin: 6px 0;
+}
+/* The Human's own-message actions: hidden until the row is hovered or keyed
+   into, so the timeline stays quiet and keyboard users still reach them. */
+.messageActions {
+  display: flex;
+  gap: 10px;
+  margin-top: 4px;
+  opacity: 0;
+  transition: opacity 0.12s ease;
+}
+.messageRow:hover .messageActions,
+.messageRow:focus-within .messageActions {
+  opacity: 1;
+}
+.messageAction {
+  background: transparent;
+  border: 0;
+  color: var(--dsw-alias-label-tertiary);
+  cursor: pointer;
+  font-size: 12px;
+  line-height: 20px;
+  padding: 0;
+}
+.messageAction:hover,
+.messageAction:focus-visible {
+  color: var(--dsw-alias-label-primary);
+  outline: none;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+/* The edit dialog's textarea over the current body. */
+.messageEditArea {
+  background: transparent;
+  border: 1px solid var(--dsw-alias-border-secondary, var(--dsw-alias-label-tertiary));
+  border-radius: 8px;
+  color: inherit;
+  font: inherit;
+  padding: 8px 10px;
+  resize: vertical;
+  width: 100%;
+}
 /* Compact timeline typography over the shared Markdown primitive; the root
    font shorthand is reset so Agent and Human bodies share one text grid.
    Heading sizes are chat-tuned: the page h1 stays the loudest element.

@@ -142,7 +142,7 @@ export class TruncationEscalator {
 }
 
 /**
- * The escalation notice: posted by the Host under the Human admin's voice into
+ * The escalation notice: posted by the Host in the Team Assistant's voice into
  * the leader's Channel, it names the truncated Member and states the one
  * expectation — the leader decides what happens to it. The `@` mention
  * delivers through the ordinary Inbox path, waking the leader into a turn.

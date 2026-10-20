@@ -446,6 +446,49 @@ export interface AgentTeamDmSentOperation extends AgentTeamOperationBase {
 }
 
 /**
+ * Durable Human edit of one Human-sent Message's body. The Message keeps its
+ * identity, sequence, attachments, and original instant; only the body moves.
+ * Members who already read the old body receive the corrected instruction
+ * again through the re-delivery markers in the inbox delta, so an edit of an
+ * executing instruction re-drives the work instead of silently diverging.
+ */
+export interface AgentTeamMessageEditedOperation extends AgentTeamOperationBase {
+  readonly kind: 'team/message-edited'
+  readonly data: {
+    readonly workspaceId: WorkspaceId
+    /** The updated Message snapshot: identical facts except the new body. */
+    readonly message: AgentTeamMessage
+    /** The Thread with its revision advanced to this operation's sequence. */
+    readonly thread: AgentTeamThread
+    /** Re-delivery delta: direct markers re-added for mentioned Members who had already read the Message. */
+    readonly inbox: AgentTeamInboxDelta
+  }
+}
+
+/**
+ * Durable Human retraction (`retracted`) or deletion (`deleted`) of one
+ * Human-sent Message. A retraction keeps the fact visible as a tombstone —
+ * the body stays recorded for audit while every reader renders it recalled —
+ * and a deletion removes the fact from every timeline surface, ledger audit
+ * aside. Both clear every Member's unread state for the Message, so a
+ * recalled instruction can never wake or re-drive work.
+ */
+export interface AgentTeamMessageRecalledOperation extends AgentTeamOperationBase {
+  readonly kind: 'team/message-recalled'
+  readonly data: {
+    readonly workspaceId: WorkspaceId
+    /** `retracted` keeps a tombstone fact; `deleted` removes the fact outright. */
+    readonly mode: 'retracted' | 'deleted'
+    /** The Message snapshot with its `recalledAt` stamped to this operation's instant. */
+    readonly message: AgentTeamMessage
+    /** The Thread with its revision advanced to this operation's sequence. */
+    readonly thread: AgentTeamThread
+    /** Cleanup delta: every direct marker still held on the Message is removed. */
+    readonly inbox: AgentTeamInboxDelta
+  }
+}
+
+/**
  * Durable record of one interrupted Member session pinned to a restorable
  * checkpoint. The actor is the interrupted Member itself: the Host records
  * the entry only through its running turn. The private detail (handoff prose,
@@ -501,6 +544,8 @@ export type AgentTeamOperation =
   | AgentTeamChannelArchivedOperation
   | AgentTeamMessageSentOperation
   | AgentTeamThreadRepliedOperation
+  | AgentTeamMessageEditedOperation
+  | AgentTeamMessageRecalledOperation
   | AgentTeamThreadPromotedOperation
   | AgentTeamClaimCreatedOperation
   | AgentTeamClaimDoneOperation

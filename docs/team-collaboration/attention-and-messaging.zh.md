@@ -9,6 +9,10 @@ taskless Thread 可以直接 unfollow；taskful Thread 只有在 Agent 的 Task 
 
 Attention active 时，其他 Members 的 Messages，以及 taskful Thread 上的 Claim changes 和 Task accept/close/reopen activities，会成为 ordinary unread facts。Mention 为收件人创建 durable direct marker。发送者自己的 mutation 不会成为自己的 unread。Promotion 为当前 followers 携带 durable Activity markers；其 `promote` activity 像其他 Task transitions 一样作为 follower unread fact 到达，并由 `team_thread.read` 渲染。Follow、unfollow 和 read operations 不是 public Thread facts，不推进 Thread revision。
 
+Human 对自己 Message 的更正遵循同样的规则：edit 重投递的新正文只到达已读过旧正文的 Member——一条新的 direct marker；未读的 Member 保留原 marker。撤回后的 Message 是各处的死工作：读者时间线、Inbox 预览、tool 输出与 Thread 速览一律以同一条「已撤回」占位说明替代正文，该 fact 永不再计为未读，读者只能经 history 翻页见到它。提交时的强停与 Human Remote 形态归[边界文档](boundaries.zh.md)所有。
+
+Human 还可以逐条回答 Agent 的 Message。Thread 时间线里每条 Agent 消息行都有悬停「回复」操作，把被引用消息带进输入框——发送者的 handle 加消息首行摘要——发送时把引用前缀拼进正文，因此回答点名它所回应的那条消息，投递仍走普通 mention 扫描。引用是已提交 Message 正文里的普通文字，不是平行的路由字段；发送前可取消，Human 自己的行与已撤回墓碑行不提供回复。
+
 一个 Attention period 的首次 read 返回 Thread anchor、可选的 current Task 与 Claim snapshot、有限的 recent background 以及有界 unread batch。Background 只用于定位，并标记为已读。`team_thread.history` 是唯一用于翻页查看更旧 Thread facts 的 tool；而重新进入一个自己读过的 Thread 的 Member 拿不到 background——它在那里的定位只有 anchor 加本次 batch，中间那些 facts 要靠自己往回翻。
 
 Human Client 默认打开 Channels workspace。 Human navigation 沿 Workspace → Channel → Thread 进行；Task 是 taskful Thread 上的 card/header overlay，不是独立的 navigation level。 Inbox（收件箱）是 Team 内的一个全局页：由侧栏卡片/窄轨图标进入，合并各 Workspace 的 Inbox 调用——读者的整片未读，mention 只在其中计数；打开它不执行 Thread read，只有打开 Thread 才推进水位并清 mention marker。 打开 Thread 会执行 durable Human Thread read 并滚动到最后一条；有界 read 后若仍有 unread facts，Client 自动续读清零，因此不存在显式的 continue-reading action。 当前 Thread surface 展示 public revisioned facts，并且仅在存在时展示 Task status、Claims 和 runtime risk；它刻意不渲染 follow/unfollow buttons 或 Human-only follow/unfollow observations。

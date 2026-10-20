@@ -4,6 +4,7 @@ import type {
   AgentTeamChannelRef,
   AgentTeamConfirmationToken,
   AgentTeamMemberId,
+  AgentTeamMessageRef,
   AgentTeamRequestId,
   AgentTeamTaskRef,
   AgentTeamThreadFact,
@@ -21,7 +22,7 @@ import { diagnosticText, TeamPresenceDot } from './TeamPresenceDot.tsx'
 import { TeamMessage } from './TeamMessage.tsx'
 import { TeamRunDivider } from './TeamRunDivider.tsx'
 import { TeamThreadDigest } from './TeamThreadDigest.tsx'
-import { firstSentence, formatActivity, formatClaimState, formatRiskClass, formatTaskStatus, formatTaskTitle, mentionNameOf, mentionNamesOf, mentionedMemberIds, taskStatusDot, type MentionHandle } from './team-formatters.ts'
+import { firstSentence, formatActivity, formatClaimState, formatRiskClass, formatTaskStatus, formatTaskTitle, mentionNameOf, mentionNamesOf, mentionedMemberIds, replyQuoteSummary, taskStatusDot, type MentionHandle } from './team-formatters.ts'
 import { TeamStateDot } from './TeamStateDot.tsx'
 import { mintRequestId, uploadComposerFiles } from './requests.ts'
 import { daySeparatorLabel, isRunGap, timelineDayKey } from './team-separators.ts'
@@ -54,6 +55,8 @@ interface TeamThreadPageProps {
   readonly drafts: TeamDraftStore
   readonly getAttachment: TeamConversationProps['getAttachment']
   readonly reply: TeamConversationProps['reply']
+  readonly editMessage: TeamConversationProps['editMessage']
+  readonly recallMessage: TeamConversationProps['recallMessage']
   readonly changeTask: TeamConversationProps['changeTask']
   readonly promoteThread: TeamConversationProps['promoteThread']
   readonly putAttachment: TeamConversationProps['putAttachment']
@@ -114,7 +117,7 @@ export function TeamThreadPage(props: TeamThreadPageProps) {
   const {
     workspaceId, humanName, humanAvatarUrl, channelRef, taskRef, threadRef, taskNumber, threadOrigin, backFromThread, selectChannel, selectThread, resolveTaskRefs, resolveThreadRefs, openMemberSession, putAttachment,
     loadChannels, readThread, loadThreadHistory, threadObservations, summarizeThread,
-    subscribeChanges, loadMembers, drafts, getAttachment, reply, changeTask, promoteThread, t,
+    subscribeChanges, loadMembers, drafts, getAttachment, reply, editMessage, recallMessage, changeTask, promoteThread, t,
   } = props
   const threadRequest = { threadRef, ...(taskRef === undefined ? {} : { taskRef }) }
   const [projection, setProjection] = useState<ReadProjection>()
@@ -502,6 +505,70 @@ export function TeamThreadPage(props: TeamThreadPageProps) {
     return (ref: AgentTeamMemberId) => rosterMember(members, humanMemberId, humanName, ref)
   }, [rosterKey, humanName])
 
+  // Human correction flows over the Human's own Messages. Both dialogs are
+  // page-scoped: the timeline stays a pure renderer, and each commit rides the
+  // Thread-scope change subscription back into a fresh read.
+  const [editing, setEditing] = useState<{ readonly messageRef: AgentTeamMessageRef; readonly body: string }>()
+  const [editBusy, setEditBusy] = useState(false)
+  const [editError, setEditError] = useState<string>()
+  const [recalling, setRecalling] = useState<{ readonly messageRef: AgentTeamMessageRef; readonly mode: 'retracted' | 'deleted' }>()
+  const [recallBusy, setRecallBusy] = useState(false)
+  const [recallError, setRecallError] = useState<string>()
+  // The Message the composer currently answers: the chip names it above the
+  // draft, and the send prepends the quote so the Agent reads which Message
+  // the answer resolves. Page state — a view switch remounts the page and the
+  // answer dies with it, never leaking into another Thread's draft.
+  const [replyTarget, setReplyTarget] = useState<{ readonly handle: string; readonly summary: string }>()
+
+  const openEditMessage = useCallback((messageRef: AgentTeamMessageRef, body: string) => {
+    setEditError(undefined)
+    setEditing({ messageRef, body })
+  }, [])
+
+  const openRecallMessage = useCallback((messageRef: AgentTeamMessageRef, mode: 'retracted' | 'deleted') => {
+    setRecallError(undefined)
+    setRecalling({ messageRef, mode })
+  }, [])
+
+  // Identity-stable for the memoized rows: the sender's handle resolves from
+  // the loaded roster at pick time, so the quote names who the answer reaches.
+  const openReplyMessage = useCallback((_messageRef: AgentTeamMessageRef, body: string, sender: AgentTeamMemberId) => {
+    const handle = sender === channelView?.humanMemberId ? humanName
+      : sender === TEAM_ASSISTANT_MEMBER_ID ? TEAM_ASSISTANT_NAME
+      : members.find(candidate => candidate.member.memberId === sender)?.member.handle ?? t('memberUnknown')
+    setReplyTarget({ handle, summary: replyQuoteSummary(body) })
+  }, [channelView?.humanMemberId, humanName, members, t])
+
+  const submitEdit = async (): Promise<void> => {
+    if (editing === undefined || editBusy) return
+    setEditBusy(true)
+    setEditError(undefined)
+    try {
+      const result = await editMessage({ requestId: mintRequestId(), workspaceId, messageRef: editing.messageRef, body: editing.body })
+      if (!result.ok) { setEditError(result.error.message); return }
+      setEditing(undefined)
+    } catch (cause) {
+      setEditError(cause instanceof Error ? cause.message : String(cause))
+    } finally {
+      setEditBusy(false)
+    }
+  }
+
+  const submitRecall = async (): Promise<void> => {
+    if (recalling === undefined || recallBusy) return
+    setRecallBusy(true)
+    setRecallError(undefined)
+    try {
+      const result = await recallMessage({ requestId: mintRequestId(), workspaceId, messageRef: recalling.messageRef, mode: recalling.mode })
+      if (!result.ok) { setRecallError(result.error.message); return }
+      setRecalling(undefined)
+    } catch (cause) {
+      setRecallError(cause instanceof Error ? cause.message : String(cause))
+    } finally {
+      setRecallBusy(false)
+    }
+  }
+
   const renderFact = (fact: AgentTeamThreadFact, grouped = false) => {
     if (fact.kind === 'message') {
       const sender = memberName(fact.message.sender)
@@ -526,6 +593,13 @@ export function TeamThreadPage(props: TeamThreadPageProps) {
         memberOf={memberOf}
         onOpenMemberSession={openMemberSession}
         grouped={grouped}
+        messageRef={fact.message.messageRef}
+        editable={human && fact.message.recalledAt === undefined}
+        replyable={!human && fact.message.recalledAt === undefined}
+        onEditMessage={openEditMessage}
+        onRecallMessage={openRecallMessage}
+        onReplyMessage={openReplyMessage}
+        recalled={fact.message.recalledAt !== undefined}
         {...(senderStatus === undefined ? {} : { senderTitle: senderStatus.member.description })}
       />
     }
@@ -679,6 +753,10 @@ export function TeamThreadPage(props: TeamThreadPageProps) {
     // captured render value would be stale after the composer's own edits.
     const { draft, recipients } = drafts.getSnapshot(draftKey)
     if (pending || thread === undefined || draft.trim() === '') return
+    // The quoted target travels inside the body, so the Host's own mention
+    // scan resolves the answer to the Agent that wrote the quoted Message.
+    const replyPrefix = replyTarget === undefined ? '' : t('replyQuotePrefix', { handle: replyTarget.handle, summary: replyTarget.summary })
+    const body = `${replyPrefix}${draft.trim()}`
     const id = replyRequestId ?? mintRequestId()
     setReplyRequestId(id)
     setPending(true)
@@ -692,7 +770,7 @@ export function TeamThreadPage(props: TeamThreadPageProps) {
         return
       }
       const attachmentIds = upload.attachmentIds
-      const result = await reply({ requestId: id, workspaceId, threadRef, ...(task === undefined ? {} : { taskRef: task.taskRef }), body: draft.trim(), baseRevision: thread.revision, recipients: [...recipients].sort(), ...(attachmentIds.length === 0 ? {} : { attachments: attachmentIds }), ...(confirmation === undefined ? {} : { confirmationToken: confirmation }) })
+      const result = await reply({ requestId: id, workspaceId, threadRef, ...(task === undefined ? {} : { taskRef: task.taskRef }), body, baseRevision: thread.revision, recipients: [...recipients].sort(), ...(attachmentIds.length === 0 ? {} : { attachments: attachmentIds }), ...(confirmation === undefined ? {} : { confirmationToken: confirmation }) })
       if (!result.ok) {
         setError(result.error.message)
         return
@@ -701,8 +779,9 @@ export function TeamThreadPage(props: TeamThreadPageProps) {
         const committed = result.value as Extract<typeof result.value, { kind: 'committed' }>
         // The optimistic row chips what the Host is about to report: a
         // hand-typed `@Handle` delivers exactly like a picked recipient, and the
-        // committed facts replace this row as soon as they arrive.
-        const optimisticMentions = [...new Set([...recipients, ...mentionedMemberIds(draft, channelMembers)])].sort()
+        // committed facts replace this row as soon as they arrive. The quoted
+        // prefix is part of the body, so its handle counts here too.
+        const optimisticMentions = [...new Set([...recipients, ...mentionedMemberIds(body, channelMembers)])].sort()
         setCurrentFacts(current => {
           const merged = mergeFacts(current, [{ kind: 'message', sequence: committed.message.sequence, message: committed.message, mentions: optimisticMentions, occurredAt: committed.receipt.occurredAt }])
           currentFactsRef.current = merged
@@ -711,6 +790,7 @@ export function TeamThreadPage(props: TeamThreadPageProps) {
         setProjection(current => current === undefined ? current : { ...current, ...(committed.task === undefined ? {} : { task: committed.task }), thread: committed.thread })
         drafts.clear(draftKey)
         setPendingFiles([])
+        setReplyTarget(undefined)
         setReplyRequestId(undefined)
         setConfirmation(undefined)
         setStatusMessage(undefined)
@@ -826,6 +906,46 @@ export function TeamThreadPage(props: TeamThreadPageProps) {
           </ul>
         </Modal>
       })()}
+      {/* The Human's edit dialog: one open textarea over the current body; the
+          commit re-delivers the corrected instruction to everyone who read it. */}
+      <Modal
+        open={editing !== undefined}
+        onClose={() => { if (!editBusy) setEditing(undefined) }}
+        title={t('editMessageTitle')}
+        closeLabel={t('cancel')}
+        footer={<>
+          <Button variant="outline" disabled={editBusy} onClick={() => { setEditing(undefined) }}>{t('cancel')}</Button>
+          <Button variant="primary" disabled={editBusy || editing === undefined || editing.body.trim() === ''} onClick={() => { void submitEdit() }}>{editBusy ? t('editMessageSaving') : t('editMessageSave')}</Button>
+        </>}
+      >
+        <textarea
+          className={css.messageEditArea}
+          value={editing?.body ?? ''}
+          rows={5}
+          aria-label={t('editMessageTitle')}
+          disabled={editBusy}
+          onChange={event => { setEditError(undefined); setEditing(current => current === undefined ? current : { ...current, body: event.target.value }) }}
+        />
+        {editError !== undefined && <p className={css.confirmBody} role="alert">{editError}</p>}
+      </Modal>
+      {/* The withdraw/delete confirmation: both stop the instruction's running
+          executors immediately; deletion additionally removes the row. */}
+      <Modal
+        open={recalling !== undefined}
+        onClose={() => { if (!recallBusy) setRecalling(undefined) }}
+        title={recalling?.mode === 'deleted' ? t('deleteMessageTitle') : t('recallMessageTitle')}
+        closeLabel={t('cancel')}
+        footer={<>
+          <Button variant="outline" disabled={recallBusy} onClick={() => { setRecalling(undefined) }}>{t('cancel')}</Button>
+          <Button variant="primary" disabled={recallBusy} onClick={() => { void submitRecall() }}>
+            {recallBusy ? (recalling?.mode === 'deleted' ? t('deleteMessageDeleting') : t('recallMessageRecalling'))
+              : recalling?.mode === 'deleted' ? t('deleteMessageConfirm') : t('recallMessageConfirm')}
+          </Button>
+        </>}
+      >
+        <p className={css.confirmBody}>{recalling?.mode === 'deleted' ? t('deleteMessageBody') : t('recallMessageBody')}</p>
+        {recallError !== undefined && <p className={css.confirmBody} role="alert">{recallError}</p>}
+      </Modal>
       {task !== undefined && thread !== undefined && <section className={threadCss.workSection} aria-label={t('claims')}>
         <DisclosureRow
           expandOnRowClick
@@ -905,6 +1025,8 @@ export function TeamThreadPage(props: TeamThreadPageProps) {
       onEdit={clearSendState}
       onSubmit={() => { void sendReply() }}
       placeholder={t('replyPlaceholder')}
+      {...(replyTarget === undefined ? {} : { replyTarget })}
+      onCancelReplyTarget={() => { setReplyTarget(undefined) }}
       pendingFiles={pendingFiles}
       onFilesChange={setPendingFiles}
       t={t}

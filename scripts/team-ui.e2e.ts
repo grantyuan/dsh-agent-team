@@ -1458,6 +1458,80 @@ it('drives the complete opt-in Agent Team journey in real Web', async () => {
   await expect.poll(() => page.getByText('thread-evidence.png', { exact: true }).count()).toBe(0)
   await page.screenshot({ path: join(UI04_SHOTS, 'thread-reply-attachment.png'), fullPage: true })
 
+  // The Human's own instruction is corrigible in place: the row carries
+  // 修改/撤回/删除 (revealed on hover or keyboard focus), the edit dialog
+  // re-stamps the body, and withdrawing replaces the message with the shared
+  // tombstone for every reader.
+  await page.getByRole('textbox', { name: '消息内容' }).fill('撤回演练消息')
+  await page.getByRole('button', { name: '发送' }).click()
+  const drillRow = page.locator('article').filter({ hasText: '撤回演练消息' })
+  await drillRow.waitFor()
+  await drillRow.hover()
+  await drillRow.getByRole('button', { name: '修改' }).click()
+  const editDialog = page.getByRole('dialog', { name: '修改这条消息' })
+  await editDialog.waitFor()
+  await editDialog.getByRole('textbox').fill('撤回演练消息（已更正）')
+  await settleAnimations(page)
+  await page.screenshot({ path: join(UI04_SHOTS, 'message-edit-modal.png') })
+  await editDialog.getByRole('button', { name: '保存修改' }).click()
+  const correctedRow = page.locator('article').filter({ hasText: '撤回演练消息（已更正）' })
+  await correctedRow.waitFor()
+  await correctedRow.hover()
+  await correctedRow.getByRole('button', { name: '撤回' }).click()
+  const recallDialog = page.getByRole('dialog', { name: '撤回这条指令？' })
+  await recallDialog.waitFor()
+  await settleAnimations(page)
+  await page.screenshot({ path: join(UI04_SHOTS, 'message-recall-confirm.png') })
+  await recallDialog.getByRole('button', { name: '撤回' }).click()
+  await page.getByText('该指令已被用户撤回').waitFor()
+  await expect.poll(async () => await page.getByText('撤回演练消息').count()).toBe(0)
+  await page.screenshot({ path: join(UI04_SHOTS, 'message-recalled-tombstone.png'), fullPage: true })
+  await page.setViewportSize({ width: 390, height: 844 })
+  await page.getByText('该指令已被用户撤回').scrollIntoViewIfNeeded()
+  expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(390)
+  await page.screenshot({ path: join(UI04_SHOTS, 'message-recalled-tombstone-narrow.png'), fullPage: true })
+  await page.setViewportSize({ width: 1440, height: 960 })
+
+  // Replying to one Agent Message: the row's hover 回复 quotes the target into
+  // the composer (cancellable until send), and the committed reply carries the
+  // quote prefix in its body, so the Host's own mention scan resolves the
+  // answer to the Agent that wrote the quoted Message.
+  const quoteAnchorRead = await scaffold.ctx.agentTeam.readThreadForAgent(reviewerAgent, {
+    requestId: 'm2-quote-reply-read' as never, workspaceId: workspace.id, taskRef: task.taskRef,
+  })
+  const quoteAnchorReply = await scaffold.ctx.agentTeam.replyForAgent(reviewerAgent, {
+    requestId: 'm2-quote-reply-anchor' as never,
+    workspaceId: workspace.id, taskRef: task.taskRef,
+    body: '引用回复演练：这是 reviewer 的一条汇报消息',
+    baseRevision: quoteAnchorRead.thread.revision,
+  })
+  if (quoteAnchorReply.kind !== 'committed') throw new Error(`quote anchor rejected: ${quoteAnchorReply.kind}`)
+  const quoteAnchorRow = page.locator('article').filter({ hasText: '引用回复演练：这是 reviewer 的一条汇报消息' })
+  await quoteAnchorRow.waitFor()
+  await quoteAnchorRow.hover()
+  await quoteAnchorRow.getByRole('button', { name: '回复' }).click()
+  const quoteChip = page.locator('[data-team-reply-target]')
+  await quoteChip.waitFor()
+  expect(await quoteChip.textContent()).toContain('回复 @reviewer：引用回复演练：这是 reviewer 的一条汇报消息')
+  await page.screenshot({ path: join(UI04_SHOTS, 'message-reply-quote-chip.png') })
+  // Cancelling clears the target; picking it again restores the chip before send.
+  await quoteChip.getByRole('button', { name: '取消回复' }).click()
+  await expect.poll(async () => await page.locator('[data-team-reply-target]').count()).toBe(0)
+  await quoteAnchorRow.hover()
+  await quoteAnchorRow.getByRole('button', { name: '回复' }).click()
+  await quoteChip.waitFor()
+  await page.getByRole('textbox', { name: '消息内容' }).fill('同意，请继续下一步')
+  await page.getByRole('button', { name: '发送' }).click()
+  const quotedReply = page.locator('article').filter({ hasText: '回复 @reviewer 的消息「引用回复演练：这是 reviewer 的一条汇报消息」：同意，请继续下一步' })
+  await quotedReply.waitFor()
+  await expect.poll(async () => await page.locator('[data-team-reply-target]').count()).toBe(0)
+  await page.screenshot({ path: join(UI04_SHOTS, 'message-reply-quote-sent.png'), fullPage: true })
+  await page.setViewportSize({ width: 390, height: 844 })
+  await quotedReply.scrollIntoViewIfNeeded()
+  expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(390)
+  await page.screenshot({ path: join(UI04_SHOTS, 'message-reply-quote-narrow.png'), fullPage: true })
+  await page.setViewportSize({ width: 1440, height: 960 })
+
   await page.getByRole('button', { name: '返回频道' }).click()
   await page.getByRole('button', { name: /Task #1/ }).waitFor()
   await page.reload()
@@ -1474,11 +1548,30 @@ it('drives the complete opt-in Agent Team journey in real Web', async () => {
   // rendered as information, and leave no unread remainder in the ledger.
   await page.getByRole('button', { name: '返回频道' }).click()
   await page.getByRole('heading', { name: '# delivery' }).waitFor()
+  // Real @mention wakes drive the mentioned Member's own Session, and this
+  // credential-free scaffold fails every such model turn; the supervision
+  // chain answers repeated consecutive failures with a fresh-context reset
+  // that rebinds the Member onto a new Session and disposes the previously
+  // captured Agent. Scripted phases therefore resolve the Member's live
+  // generation at each boundary instead of trusting the early capture.
+  const liveReviewerAgent = async () => {
+    const ctx = scaffold!.ctx
+    const currentSession = () => ctx.agentTeam.members({ workspaceId: workspace.id })
+      .find((status: { member: { handle: string } }) => status.member.handle === 'reviewer')?.member.sessionId
+    let live = currentSession() !== undefined ? ctx.agents.get(currentSession()!) : undefined
+    for (let index = 0; index < 80 && live === undefined; index += 1) {
+      await page.waitForTimeout(250)
+      live = currentSession() !== undefined ? ctx.agents.get(currentSession()!) : undefined
+    }
+    expect(live).toBeDefined()
+    return live!
+  }
   const backlogBatch = async (label: string): Promise<void> => {
-    const backlogRead = await scaffold.ctx.agentTeam.readThreadForAgent(reviewerAgent, {
+    const batchAgent = await liveReviewerAgent()
+    const backlogRead = await scaffold.ctx.agentTeam.readThreadForAgent(batchAgent, {
       requestId: `m2-open-unread-${label}-read` as never, workspaceId: workspace.id, taskRef: task.taskRef,
     })
-    const backlogReply = await scaffold.ctx.agentTeam.replyForAgent(reviewerAgent, {
+    const backlogReply = await scaffold.ctx.agentTeam.replyForAgent(batchAgent, {
       requestId: `m2-open-unread-${label}-reply` as never,
       workspaceId: workspace.id, taskRef: task.taskRef,
       body: `离线期间的批量更新 ${label}`,

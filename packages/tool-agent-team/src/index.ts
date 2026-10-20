@@ -1,5 +1,5 @@
 import type { Context } from '@deepseek-ai/cordis'
-import AgentTeam, { AGENT_TEAM_ASSISTANT_HANDLE, AGENT_TEAM_ASSISTANT_MEMBER_ID, AgentTeamDmDeliveryError, markAgentTeamPreset } from '@wowyuarm/dsh-agent-team/host'
+import AgentTeam, { AGENT_TEAM_ASSISTANT_HANDLE, AGENT_TEAM_ASSISTANT_MEMBER_ID, AGENT_TEAM_RECALLED_BODY_TOMBSTONE, AgentTeamDmDeliveryError, markAgentTeamPreset } from '@wowyuarm/dsh-agent-team/host'
 import { formatTeamTimestamp } from '@wowyuarm/dsh-agent-team/time-format'
 import { registerContextTools } from './context-tools.ts'
 import { service, workspaceOf, workspaceParam } from './host-access.ts'
@@ -121,6 +121,11 @@ function factMarkers(fact: FactView): string {
   if (fact.direct === true) return ' [direct]'
   if (fact.unread === true) return ' [unread]'
   return ''
+}
+
+/** The model-facing body of one possibly-recalled Message: a recalled instruction renders as the shared tombstone, never its withdrawn text. */
+function messageBodyOf(message: { readonly body: string; readonly recalledAt?: string | undefined }): string {
+  return message.recalledAt === undefined ? message.body : AGENT_TEAM_RECALLED_BODY_TOMBSTONE
 }
 
 /** Render one structured activity fact as a self-describing decision-surface line. */
@@ -366,13 +371,13 @@ const teamThread = defineTool({
       const history = host.threadHistoryForAgent(agent, { ...base, ...(args.beforeSequence === undefined ? {} : { beforeSequence: args.beforeSequence }), ...(args.limit === undefined ? {} : { limit: args.limit }) })
       const status = host.attentionStatusForAgent(agent, base)
       return threadResult('history', base.workspaceId, history, status.attention, history.facts.map(fact => fact.kind === 'message'
-          ? { sequence: fact.sequence, kind: 'message', body: fact.message.body, sender: fact.message.sender, mentions: [...fact.mentions], occurredAt: fact.occurredAt }
+          ? { sequence: fact.sequence, kind: 'message', body: messageBodyOf(fact.message), sender: fact.message.sender, mentions: [...fact.mentions], occurredAt: fact.occurredAt }
           : activityFactView(fact.sequence, fact.activity, undefined, fact.occurredAt)), { cursor: history.cursor, hasMore: history.hasMore, ...taskNumberOf(history.task) })
     }
     if (args.beforeSequence !== undefined || args.limit !== undefined) throw new Error('read does not accept history arguments')
     const read = await host.readThreadForAgent(agent, { requestId: requestId(agent.id, exec.callId), ...base })
     return threadResult('read', base.workspaceId, read, read.attention, read.facts.map(entry => entry.fact.kind === 'message'
-        ? { sequence: entry.fact.sequence, kind: 'message', body: entry.fact.message.body, sender: entry.fact.message.sender, mentions: [...entry.fact.mentions], unread: entry.unread, direct: entry.direct, occurredAt: entry.fact.occurredAt }
+        ? { sequence: entry.fact.sequence, kind: 'message', body: messageBodyOf(entry.fact.message), sender: entry.fact.message.sender, mentions: [...entry.fact.mentions], unread: entry.unread, direct: entry.direct, occurredAt: entry.fact.occurredAt }
         : activityFactView(entry.fact.sequence, entry.fact.activity, { unread: entry.unread, direct: entry.direct }, entry.fact.occurredAt)), { readThroughSequence: read.readThroughSequence, remainingUnreadCount: read.remainingUnreadCount, ...(read.earlierFactCount === undefined ? {} : { earlierFactCount: read.earlierFactCount }), ...(read.contextAdvice === undefined ? {} : { contextAdvice: adviceView(read.contextAdvice) }), ...taskNumberOf(read.task) })
   },
 })
@@ -406,7 +411,7 @@ function threadResult(
     following: attention !== undefined,
     ...extra,
     ...(attention === undefined || extra.readThroughSequence !== undefined ? {} : { readThroughSequence: attention.readThroughSequence }),
-    anchor: { messageRef: snapshot.anchor.messageRef, sender: snapshot.anchor.sender, body: snapshot.anchor.body, sequence: snapshot.anchor.sequence, occurredAt: snapshot.anchor.occurredAt },
+    anchor: { messageRef: snapshot.anchor.messageRef, sender: snapshot.anchor.sender, body: messageBodyOf(snapshot.anchor), sequence: snapshot.anchor.sequence, occurredAt: snapshot.anchor.occurredAt },
     claims: snapshot.claims.map(claimView),
     facts,
   }
@@ -702,7 +707,7 @@ const teamView = defineTool({
         const thread = item.thread
         const task = item.task
         return { threadRef: thread.threadRef, channelRef: item.message.channelRef, revision: thread.revision, messageCount: item.messageCount,
-          subject: boundedSubject(item.message.body), lastActivityAt: item.lastActivityAt,
+          subject: boundedSubject(messageBodyOf(item.message)), lastActivityAt: item.lastActivityAt,
           ...(task === undefined ? {} : { taskRef: task.taskRef, status: task.status, ...(item.taskNumber === undefined ? {} : { taskNumber: item.taskNumber }) }) }
       }),
       // A Task's revision is its Thread's; it is omitted rather than reported as

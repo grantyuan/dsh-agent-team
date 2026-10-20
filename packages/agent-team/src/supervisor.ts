@@ -359,7 +359,7 @@ export interface SupervisionSessionRecap {
 /**
  * The structured retirement notice posted into the affected business Channel
  * when a Member is archived and replaced. It is a plain-text headed block — the
- * Human admin's voice renders literally in the Client, so the body carries no
+ * Team Assistant's voice renders literally in the Client, so the body carries no
  * Markdown — listing the retirement cause, the work the Member finished in
  * service (from the ledger projection), the work left unclaimed again (the
  * released Claims), and the succession line.

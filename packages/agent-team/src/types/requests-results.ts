@@ -20,6 +20,7 @@ import type {
   AgentTeamMemberId,
   AgentTeamMemberPromptProfile,
   AgentTeamMessage,
+  AgentTeamMessageRef,
   AgentTeamModelSelection,
   AgentTeamOperationId,
   AgentTeamRequestId,
@@ -819,6 +820,52 @@ export type AgentTeamReplyResult =
   | AgentTeamUnreadRequired
   | AgentTeamStaleRevision
   | AgentTeamMemberNotFollowing
+
+/** Human intent to correct the body of one Human-sent Message. */
+export interface AgentTeamEditMessageRequest {
+  readonly requestId: AgentTeamRequestId
+  readonly workspaceId: WorkspaceId
+  readonly messageRef: AgentTeamMessageRef
+  readonly body: string
+}
+
+export interface AgentTeamEditMessageResult {
+  readonly kind: 'committed'
+  readonly receipt: AgentTeamOperationReceipt
+  /** The updated Message snapshot; identity facts and the original instant are unchanged. */
+  readonly message: AgentTeamMessage
+  readonly thread: AgentTeamThread
+  /**
+   * Members whose in-flight turn the Host force-stopped because it could have
+   * been executing the edited instruction. Ledger results omit it — stopping a
+   * turn is Host runtime work — and the Host fills it before answering; empty
+   * on an idempotent retry, where the stops happened on the first commit.
+   */
+  readonly stoppedMembers?: readonly AgentTeamMemberId[]
+}
+
+/** Human intent to retract or delete one Human-sent Message. */
+export interface AgentTeamRecallMessageRequest {
+  readonly requestId: AgentTeamRequestId
+  readonly workspaceId: WorkspaceId
+  readonly messageRef: AgentTeamMessageRef
+  readonly mode: 'retracted' | 'deleted'
+}
+
+export interface AgentTeamRecallMessageResult {
+  readonly kind: 'committed'
+  readonly receipt: AgentTeamOperationReceipt
+  /** The recalled Message snapshot with `recalledAt` stamped; tombstone rendering keys off it. */
+  readonly message: AgentTeamMessage
+  readonly thread: AgentTeamThread
+  /**
+   * Members whose in-flight turn the Host force-stopped because it could have
+   * been executing the recalled instruction. Ledger results omit it — stopping
+   * a turn is Host runtime work — and the Host fills it before answering;
+   * empty on an idempotent retry, where the stops happened on the first commit.
+   */
+  readonly stoppedMembers?: readonly AgentTeamMemberId[]
+}
 
 /** Human Task resolution intent. */
 export interface AgentTeamTaskRequest {

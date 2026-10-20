@@ -378,6 +378,36 @@
   padding: 0 16px;
 }
 
+/* Quoted reply target: which Message this draft answers. One quiet chip above
+   the draft, cancellable until send — the page prepends the quote itself. */
+.replyTarget {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  align-self: stretch;
+  margin: 0 16px;
+  padding: 4px 10px;
+  border: 1px solid var(--dsw-alias-border-l1, var(--dsw-alias-border-l2));
+  border-radius: 8px;
+  color: var(--dsw-alias-label-secondary);
+  font-size: 12px;
+  line-height: 18px;
+  overflow-wrap: anywhere;
+}
+.replyTargetText {
+  min-width: 0;
+}
+.replyTargetCancel {
+  background: transparent;
+  border: 0;
+  color: var(--dsw-alias-label-tertiary);
+  cursor: pointer;
+  flex: none;
+  font-size: 14px;
+  line-height: 18px;
+  padding: 0 2px;
+}
+
 .error {
   align-self: stretch;
   color: var(--dsw-alias-state-error-primary);

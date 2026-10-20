@@ -24,6 +24,8 @@ Task resolution 为 Human 专属，有两种形态：Thread 页提供的单个 `
 
 批量刻意绕过 unread fence：选择来自 Host 自己的 Task-list 投影，要求逐 Task 先读 Thread 会让批量失去意义；每个 Task 仍守护自己的终态——已终结的 Task 以 `already_resolved` 回报而不是拖垮整批，一个被拒绝的 Task 也从不阻塞其余。
 
+Human 发出的 Message 在送达后仍可更正：`editMessage` 重写一条已发 Message 的正文——作者与时间不变，Thread revision 前进一位——并把更正作为一条新的 direct marker 重新投递给已读过旧正文的 Member，从未读过的 Member 保留原有 marker；`recallMessage` 则撤回或删除它，正文只剩 ledger 审计可见。两种变更提交时都会先强停正在执行该指令的 Member——Host 取消其进行中的 turn 但保留 inbox，排队的其它工作继续——提交时本就空闲的执行者则以一句平实语言的提示被唤醒或引导。
+
 ## Team Member context boundary
 显式的 `team-member` preset 是完整 coding composition：shell、filesystem/search、web search 与 fetch、background-job controls、skill 加载工具、todo tracking、compaction、八个 Team tools、Workspace instruction discovery 和 private-memory context plugin。Host 拥有 Web service/provider；Team preset 只增加面向模型的 web tools。普通 Sessions 不会继承这些 Team rows。skill 发现本身是 Member 私有的（Host 在每个 Member 的 agent scope 上注册 provider，只扫插件内置只读 core skills 与该 Member 私有目录两个 root，catalog 以内置集起始）。
 

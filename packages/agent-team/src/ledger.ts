@@ -79,6 +79,12 @@ import type {
   AgentTeamMessage,
   AgentTeamMessageRef,
   AgentTeamMessageSentOperation,
+  AgentTeamMessageEditedOperation,
+  AgentTeamMessageRecalledOperation,
+  AgentTeamEditMessageRequest,
+  AgentTeamEditMessageResult,
+  AgentTeamRecallMessageRequest,
+  AgentTeamRecallMessageResult,
   AgentTeamOperation,
   AgentTeamOperationId,
   AgentTeamOperationReceipt,
@@ -355,6 +361,14 @@ export interface AgentTeamAuthorizedThreadReadRequest extends AgentTeamThreadRea
   readonly actor: AgentTeamHumanActor | AgentTeamMemberActor
 }
 
+export interface AgentTeamAuthorizedEditMessageRequest extends AgentTeamEditMessageRequest {
+  readonly actor: AgentTeamHumanActor
+}
+
+export interface AgentTeamAuthorizedRecallMessageRequest extends AgentTeamRecallMessageRequest {
+  readonly actor: AgentTeamHumanActor
+}
+
 export interface AgentTeamAuthorizedRemoveMemberRequest extends AgentTeamRemoveMemberRequest {
   readonly actor: AgentTeamHumanActor
 }
@@ -540,6 +554,20 @@ function assertUnhandledKind(operation: never): never {
 function boundedInboxPreview(body: string): string {
   const firstLine = body.split('\n', 1)[0]?.trim() ?? ''
   return firstLine.length > 120 ? `${firstLine.slice(0, 119)}…` : firstLine
+}
+
+/**
+ * The one tombstone behind every recalled-instruction render: after a recall the
+ * body survives in the ledger for audit only, so every derived surface —
+ * directory subjects, inbox gists, model-facing fact lines — shows this instead
+ * of the withdrawn text. Exported because the model-facing tool renders from the
+ * same constant rather than coining its own.
+ */
+export const AGENT_TEAM_RECALLED_BODY_TOMBSTONE = '[instruction withdrawn by the user]'
+
+/** Bounded preview of a Thread anchor's body, collapsing to the tombstone once the Human recalled that anchor. */
+function boundedAnchorPreview(anchor: AgentTeamMessage): string {
+  return anchor.recalledAt === undefined ? boundedInboxPreview(anchor.body) : AGENT_TEAM_RECALLED_BODY_TOMBSTONE
 }
 
 /**
@@ -1234,7 +1262,7 @@ export class AgentTeamLedger {
       threads.add(claim.threadRef)
       if (claim.state !== 'done') continue
       const task = this.state.tasks.get(claim.taskRef)
-      const subject = task === undefined ? '' : boundedInboxPreview(this.threadAnchor(task.threadRef).body)
+      const subject = task === undefined ? '' : boundedAnchorPreview(this.threadAnchor(task.threadRef))
       finishedDirections.push(Object.freeze({
         direction: claim.direction,
         taskRef: claim.taskRef,
@@ -1626,6 +1654,86 @@ export class AgentTeamLedger {
       await this.table.put(operation.operationId, operation)
       this.apply(operation)
       return this.committed(this.replyResult(operation, undelivered))
+    })
+  }
+
+  /**
+   * Human correction of one Human-sent Message. The Message identity never
+   * moves; the body is replaced and every mentioned Member who already read
+   * the old body gets a fresh direct marker, so the corrected instruction is
+   * re-delivered as unread work instead of diverging silently from what the
+   * Members saw.
+   */
+  editMessage(request: AgentTeamAuthorizedEditMessageRequest): Promise<AgentTeamLedgerResult<AgentTeamEditMessageResult>> {
+    return this.enqueue(async () => {
+      const existing = this.state.byRequest.get(request.requestId)
+      if (existing !== undefined) {
+        this.assertSameMessageEdit(existing, request)
+        return this.resolved(this.messageEditResult(existing))
+      }
+      this.assertHumanActor(request.actor)
+      const prior = this.state.messagesByRef.get(request.messageRef)
+      if (prior === undefined) throw new Error(`unknown Message '${request.messageRef}'`)
+      this.assertThreadChannelActive(prior.channelRef)
+      if (prior.sender !== this.initialization().data.humanMemberId) throw new Error('only your own Messages can be edited')
+      if (prior.recalledAt !== undefined) throw new Error('a recalled Message cannot be edited')
+      const body = request.body.trim()
+      if (body === '') throw new Error('message body must not be empty')
+      if (body === prior.body) throw new Error('the edited body is identical to the current body')
+      const sequence = this.nextSequence()
+      const message: AgentTeamMessage = Object.freeze({ ...prior, body })
+      const threadPrior = this.requireThread(prior.threadRef)
+      const thread: AgentTeamThread = Object.freeze({ ...threadPrior, revision: sequence })
+      const inbox = this.editRedeliveryDeltaFrom(this.state, prior)
+      const operation: AgentTeamMessageEditedOperation = Object.freeze({
+        ...this.operationBase(request, sequence), kind: 'team/message-edited',
+        data: Object.freeze({ workspaceId: request.workspaceId, message, thread, inbox }),
+      })
+      await this.table.put(operation.operationId, operation)
+      this.apply(operation)
+      return this.committed(this.messageEditResult(operation))
+    })
+  }
+
+  /**
+   * Human retraction or deletion of one Human-sent Message. Both modes stamp
+   * `recalledAt`, remove every direct marker the Message still holds, and
+   * advance the Thread revision; `deleted` additionally removes the fact from
+   * every timeline surface. The Thread anchor is undeletable — it defines the
+   * Thread's identity on every projection that reads it, and retraction hides
+   * its body while keeping the Thread meaningful.
+   */
+  recallMessage(request: AgentTeamAuthorizedRecallMessageRequest): Promise<AgentTeamLedgerResult<AgentTeamRecallMessageResult>> {
+    return this.enqueue(async () => {
+      const existing = this.state.byRequest.get(request.requestId)
+      if (existing !== undefined) {
+        this.assertSameMessageRecall(existing, request)
+        return this.resolved(this.messageRecallResult(existing))
+      }
+      this.assertHumanActor(request.actor)
+      const prior = this.state.messagesByRef.get(request.messageRef)
+      if (prior === undefined) throw new Error(`unknown Message '${request.messageRef}'`)
+      this.assertThreadChannelActive(prior.channelRef)
+      if (prior.sender !== this.initialization().data.humanMemberId) throw new Error('only your own Messages can be recalled')
+      if (prior.recalledAt !== undefined) throw new Error(`Message '${request.messageRef}' is already recalled`)
+      if (request.mode === 'deleted' && this.state.anchorByThread.get(prior.threadRef)?.messageRef === prior.messageRef) {
+        throw new Error('the anchor Message of a Thread cannot be deleted; retract it instead')
+      }
+      const sequence = this.nextSequence()
+      const base = this.operationBase(request, sequence)
+      // The recall stamp is the operation's own instant, so replay validation
+      // can re-derive the snapshot exactly instead of trusting a free field.
+      const message: AgentTeamMessage = Object.freeze({ ...prior, recalledAt: base.occurredAt })
+      const threadPrior = this.requireThread(prior.threadRef)
+      const thread: AgentTeamThread = Object.freeze({ ...threadPrior, revision: sequence })
+      const inbox = this.recallCleanupDeltaFrom(this.state, prior)
+      const operation: AgentTeamMessageRecalledOperation = Object.freeze({
+        ...base, kind: 'team/message-recalled',
+        data: Object.freeze({ workspaceId: request.workspaceId, mode: request.mode, message, thread, inbox }),
+      })
+      await this.table.put(operation.operationId, operation)
+      this.apply(operation)
+      return this.committed(this.messageRecallResult(operation))
     })
   }
 
@@ -2171,7 +2279,7 @@ export class AgentTeamLedger {
         channelName: this.state.channels.get(channelRef)?.name ?? '',
         ...(task === undefined ? {} : { task }), ...(taskNumber === undefined ? {} : { taskNumber }), thread,
         unreadCount: unread.length, directCount,
-        previewText: boundedInboxPreview(this.threadAnchor(thread.threadRef).body),
+        previewText: boundedAnchorPreview(this.threadAnchor(thread.threadRef)),
         ...this.inboxThreadClock(thread.threadRef, task),
         newestSequence: newest.sequence, newestOccurredAt: newest.occurredAt,
         newestActor: this.inboxActorFor(newest), claimOwners: this.liveClaimOwners(task),
@@ -2398,7 +2506,7 @@ export class AgentTeamLedger {
         channelName: this.state.channels.get(channelRef)?.name ?? '',
         ...(task === undefined ? {} : { task }), ...(taskNumber === undefined ? {} : { taskNumber }), thread,
         unreadCount: 0, directCount: 0,
-        previewText: boundedInboxPreview(this.threadAnchor(thread.threadRef).body),
+        previewText: boundedAnchorPreview(this.threadAnchor(thread.threadRef)),
         ...this.inboxThreadClock(thread.threadRef, task),
         newestSequence: newest.sequence, newestOccurredAt: newest.occurredAt,
         newestActor: this.inboxActorFor(newest), claimOwners: this.liveClaimOwners(task) }))
@@ -2620,7 +2728,7 @@ export class AgentTeamLedger {
       taskNumber: numbers.get(task.taskRef) ?? 0,
       status: this.deriveResolvedTaskStatus(task, this.state.claims.values()),
       resolution: task.resolution,
-      subject: boundedInboxPreview(this.threadAnchor(task.threadRef).body),
+      subject: boundedAnchorPreview(this.threadAnchor(task.threadRef)),
       ...(task.parentTaskRef === undefined ? {} : { parentTaskRef: task.parentTaskRef }),
       claimOwners: this.liveClaimOwners(task),
       lastActivityAt: newest?.occurredAt ?? '',
@@ -2880,6 +2988,9 @@ export class AgentTeamLedger {
       case 'team/message-sent':
       case 'team/thread-replied':
         return [{ kind: 'channel', channelRef: operation.data.message.channelRef }, { kind: 'thread', threadRef: operation.data.message.threadRef }]
+      case 'team/message-edited':
+      case 'team/message-recalled':
+        return [{ kind: 'channel', channelRef: operation.data.message.channelRef }, { kind: 'thread', threadRef: operation.data.message.threadRef }]
       case 'team/thread-promoted':
         return [{ kind: 'channel', channelRef: operation.data.task.channelRef }, { kind: 'thread', threadRef: operation.data.thread.threadRef }]
       case 'team/claim-created':
@@ -2922,10 +3033,29 @@ export class AgentTeamLedger {
     return [...members]
   }
 
+  /**
+   * Members that may be executing a Human Message right now: mentioned by it
+   * and having read through it, so its body has already reached them. The Host
+   * force-stops the running subset before an edit or recall emits its wake;
+   * mention-less readers cannot be told apart from other followers, and the
+   * Human itself never executes.
+   */
+  executorsOfMessage(messageRef: AgentTeamMessageRef): readonly AgentTeamMemberId[] {
+    const message = this.state.messagesByRef.get(messageRef)
+    if (message === undefined) return []
+    return (this.state.mentionsByMessage.get(messageRef) ?? []).filter(memberId => {
+      if (memberId === AGENT_TEAM_HUMAN_MEMBER_ID) return false
+      const attention = this.attentionForFrom(this.state, memberId, message.threadRef)
+      return attention !== undefined && attention.readThroughSequence >= message.sequence
+    })
+  }
+
   private touchedThreadRefs(operation: AgentTeamOperation): readonly AgentTeamThreadRef[] {
     switch (operation.kind) {
       case 'team/message-sent':
       case 'team/thread-replied':
+      case 'team/message-edited':
+      case 'team/message-recalled':
         return [operation.data.message.threadRef]
       case 'team/thread-promoted':
         return [operation.data.activity.threadRef]
@@ -3336,6 +3466,35 @@ export class AgentTeamLedger {
       this.validateMentions(operation.data.mentions, message, projection)
       this.validateInboxDelta(operation.data.inbox, projection, refs, [thread.threadRef], [message])
       this.validateMessageInbox(operation, projection)
+      return
+    }
+    if (operation.kind === 'team/message-edited' || operation.kind === 'team/message-recalled') {
+      assertHuman()
+      const { message, thread, inbox } = operation.data
+      const recalled = operation.kind === 'team/message-recalled'
+      const prior = projection.messagesByRef.get(message.messageRef)
+      const priorThread = projection.threads.get(thread.threadRef)
+      const channel = projection.channels.get(message.channelRef)
+      if (prior === undefined || priorThread === undefined || channel === undefined) {
+        throw new Error(recalled ? 'invalid Message recall' : 'invalid Message edit')
+      }
+      // The snapshot must be exactly the prior Message with only the Human
+      // correction applied — the new body for an edit, the recall stamp (the
+      // operation's own instant) for a recall. Anything else that moved is a
+      // forged or drifted record, and no new entity refs are minted here.
+      const expectedMessage = recalled ? { ...prior, recalledAt: operation.occurredAt } : { ...prior, body: message.body }
+      if (channel.workspaceId !== operation.data.workspaceId || channel.state === 'archived'
+        || prior.sender !== humanMemberId || prior.recalledAt !== undefined
+        || !isDeepStrictEqual(message, expectedMessage)
+        || (recalled ? message.body !== prior.body : message.body === prior.body)
+        || thread.threadRef !== prior.threadRef || !isDeepStrictEqual(thread, { ...priorThread, revision: operation.sequence })
+        || (recalled && operation.data.mode === 'deleted'
+          && projection.anchorByThread.get(prior.threadRef)?.messageRef === prior.messageRef)) {
+        throw new Error(recalled ? 'invalid Message recall' : 'invalid Message edit')
+      }
+      const expectedInbox = recalled ? this.recallCleanupDeltaFrom(projection, prior) : this.editRedeliveryDeltaFrom(projection, prior)
+      if (!isDeepStrictEqual(inbox, expectedInbox)) throw new Error(recalled ? 'invalid recall inbox projection' : 'invalid edit inbox projection')
+      this.validateInboxDelta(inbox, projection, refs)
       return
     }
     if (operation.kind === 'team/claim-created' || operation.kind === 'team/claim-done' || operation.kind === 'team/claim-released') {
@@ -3815,6 +3974,23 @@ export class AgentTeamLedger {
       this.applyInboxDelta(target, operation.data.inbox)
       return
     }
+    if (operation.kind === 'team/message-edited' || operation.kind === 'team/message-recalled') {
+      if (operation.kind === 'team/message-recalled' && operation.data.mode === 'deleted') {
+        this.removeMessageFact(target, operation.data.message)
+      } else {
+        // An edit rewrites the fact body in place; a retraction keeps the fact
+        // for audit and stamps the tombstone. Either way a Thread anchor keeps
+        // its seat, now showing the corrected body or the tombstone.
+        this.replaceMessageFact(target, operation.data.message)
+        if (target.anchorByThread.get(operation.data.message.threadRef)?.messageRef === operation.data.message.messageRef) {
+          target.anchorByThread.set(operation.data.message.threadRef, operation.data.message)
+        }
+      }
+      target.threads.set(operation.data.thread.threadRef, operation.data.thread)
+      this.recordAttentionObservations(target, operation, operation.data.inbox)
+      this.applyInboxDelta(target, operation.data.inbox)
+      return
+    }
     if (operation.kind === 'team/claim-created' || operation.kind === 'team/claim-done' || operation.kind === 'team/claim-released') {
       target.claims.set(operation.data.claim.claimRef, operation.data.claim)
       this.appendActivityFact(target, operation.data.activity, operation.occurredAt)
@@ -3902,6 +4078,45 @@ export class AgentTeamLedger {
     const facts = target.factsByThread.get(activity.threadRef) ?? []
     facts.push(fact)
     target.factsByThread.set(activity.threadRef, facts)
+  }
+
+  /** In-place swap of one Message fact: the identity and sequence never move, so list order survives. */
+  private replaceMessageFact(
+    target: Pick<Projection, 'orderedFacts' | 'factsByThread' | 'messagesByRef'>,
+    message: AgentTeamMessage,
+  ): void {
+    const facts = target.factsByThread.get(message.threadRef)
+    const fact = facts?.find(candidate => candidate.kind === 'message' && candidate.message.messageRef === message.messageRef)
+    if (facts === undefined || fact === undefined || fact.kind !== 'message') {
+      throw new Error(`Message '${message.messageRef}' is missing from the projection`)
+    }
+    const next: AgentTeamThreadFact = Object.freeze({ ...fact, message })
+    const orderedIndex = target.orderedFacts.indexOf(fact)
+    if (orderedIndex < 0) throw new Error(`Message '${message.messageRef}' is missing from the ledger fact order`)
+    target.orderedFacts[orderedIndex] = next
+    facts[facts.indexOf(fact)] = next
+    target.messagesByRef.set(message.messageRef, message)
+  }
+
+  /** Erase one Message fact from every timeline surface; the ledger record itself stays for audit. */
+  private removeMessageFact(
+    target: Pick<Projection, 'orderedFacts' | 'factsByThread' | 'messageCountByThread' | 'messagesByRef' | 'mentionsByMessage'>,
+    message: AgentTeamMessage,
+  ): void {
+    const facts = target.factsByThread.get(message.threadRef) ?? []
+    const index = facts.findIndex(candidate => candidate.kind === 'message' && candidate.message.messageRef === message.messageRef)
+    const fact = facts[index]
+    if (fact === undefined || fact.kind !== 'message') {
+      throw new Error(`Message '${message.messageRef}' is missing from the projection`)
+    }
+    facts.splice(index, 1)
+    if (facts.length === 0) target.factsByThread.delete(message.threadRef)
+    const orderedIndex = target.orderedFacts.indexOf(fact)
+    if (orderedIndex < 0) throw new Error(`Message '${message.messageRef}' is missing from the ledger fact order`)
+    target.orderedFacts.splice(orderedIndex, 1)
+    target.messageCountByThread.set(message.threadRef, Math.max(0, (target.messageCountByThread.get(message.threadRef) ?? 1) - 1))
+    target.messagesByRef.delete(message.messageRef)
+    target.mentionsByMessage.delete(message.messageRef)
   }
 
   /** Display ordinals are a per-Channel creation counter; the workspace filter happens at read time. */
@@ -4137,6 +4352,9 @@ export class AgentTeamLedger {
     directKeys: ReadonlySet<string>,
     activityKeys: ReadonlySet<string>,
   ): boolean {
+    // A recalled instruction is dead: its fact may remain for audit, but it is
+    // never unread work again, whatever stale markers it still carries.
+    if (fact.kind === 'message' && fact.message.recalledAt !== undefined) return false
     const marker = fact.kind === 'message' && directKeys.has(this.directMarkerKey({ memberId, threadRef,
       messageRef: fact.message.messageRef, sequence: fact.sequence }))
     const activityMarker = fact.kind === 'activity' && activityKeys.has(this.activityMarkerKey({ memberId, threadRef,
@@ -4209,6 +4427,32 @@ export class AgentTeamLedger {
     const markers = mentions.map(memberId => Object.freeze({ memberId, threadRef: message.threadRef,
       messageRef: message.messageRef, sequence: message.sequence }))
     return this.inboxDelta(attention, [], markers)
+  }
+
+  /**
+   * The edit re-delivery delta: direct markers re-added exactly for the
+   * mentioned Members who have already read through the Message. Members who
+   * never read it keep their original marker and will simply read the new
+   * body; re-adding for them would collide with the live marker.
+   */
+  private editRedeliveryDeltaFrom(projection: Projection, message: AgentTeamMessage): AgentTeamInboxDelta {
+    const readThrough = (memberId: AgentTeamMemberId): boolean => {
+      const attention = this.attentionForFrom(projection, memberId, message.threadRef)
+      return attention !== undefined && attention.readThroughSequence >= message.sequence
+    }
+    const readded = (projection.mentionsByMessage.get(message.messageRef) ?? [])
+      .filter(memberId => readThrough(memberId))
+      .map(memberId => Object.freeze({ memberId, threadRef: message.threadRef,
+        messageRef: message.messageRef, sequence: message.sequence }))
+    return this.inboxDelta([], [], readded)
+  }
+
+  /** The recall cleanup delta: every direct marker still held on the Message, removed. */
+  private recallCleanupDeltaFrom(projection: Projection, message: AgentTeamMessage): AgentTeamInboxDelta {
+    const removed = [...projection.directMarkers.values()]
+      .filter(marker => marker.messageRef === message.messageRef)
+      .map(marker => Object.freeze({ ...marker }))
+    return this.inboxDelta([], [], [], removed)
   }
 
   private closeThreadInbox(activity: AgentTeamTaskActivity, threadRef: AgentTeamThreadRef): AgentTeamInboxDelta {
@@ -4482,7 +4726,7 @@ export class AgentTeamLedger {
       rows.push({
         row: Object.freeze({ taskRef: task.taskRef, threadRef: thread.threadRef, channelRef: task.channelRef,
           ...(taskNumber === undefined ? {} : { taskNumber }), status: task.status,
-          subject: boundedInboxPreview(this.threadAnchor(thread.threadRef).body),
+          subject: boundedAnchorPreview(this.threadAnchor(thread.threadRef)),
           members: this.liveClaimOwners(task), lastActivityAt: newest.occurredAt }),
         sequence: newest.sequence,
       })
@@ -5161,6 +5405,18 @@ export class AgentTeamLedger {
       || operation.data.task?.parentTaskRef !== parentTaskRef) this.throwRequestCollision(request.requestId)
   }
 
+  private assertSameMessageEdit(operation: AgentTeamOperation, request: AgentTeamAuthorizedEditMessageRequest): asserts operation is AgentTeamMessageEditedOperation {
+    if (operation.kind !== 'team/message-edited' || !this.sameActor(operation.actor, request.actor)
+      || operation.data.workspaceId !== request.workspaceId || operation.data.message.messageRef !== request.messageRef
+      || operation.data.message.body !== request.body.trim()) this.throwRequestCollision(request.requestId)
+  }
+
+  private assertSameMessageRecall(operation: AgentTeamOperation, request: AgentTeamAuthorizedRecallMessageRequest): asserts operation is AgentTeamMessageRecalledOperation {
+    if (operation.kind !== 'team/message-recalled' || !this.sameActor(operation.actor, request.actor)
+      || operation.data.workspaceId !== request.workspaceId || operation.data.message.messageRef !== request.messageRef
+      || operation.data.mode !== request.mode) this.throwRequestCollision(request.requestId)
+  }
+
   /**
    * Resolve the optional sub-task parent of a Task creation: full or
    * unambiguous abbreviated ref, in this Workspace, same Channel as the new
@@ -5371,6 +5627,15 @@ export class AgentTeamLedger {
 
   private replyResult(operation: AgentTeamThreadRepliedOperation, undelivered: readonly AgentTeamMemberId[] = []): Extract<AgentTeamReplyResult, { kind: 'committed' }> {
     return Object.freeze(this.committedMessageResult(operation, undelivered))
+  }
+
+  /** Ledger-side results stop short of `stoppedMembers`: the Host force-stop loop owns that field. */
+  private messageEditResult(operation: AgentTeamMessageEditedOperation): AgentTeamEditMessageResult {
+    return Object.freeze({ kind: 'committed', receipt: this.receipt(operation), message: operation.data.message, thread: operation.data.thread })
+  }
+
+  private messageRecallResult(operation: AgentTeamMessageRecalledOperation): AgentTeamRecallMessageResult {
+    return Object.freeze({ kind: 'committed', receipt: this.receipt(operation), message: operation.data.message, thread: operation.data.thread })
   }
 
   private claimResult(operation: AgentTeamClaimChangedOperation): Extract<AgentTeamClaimResult, { kind: 'committed' }> {

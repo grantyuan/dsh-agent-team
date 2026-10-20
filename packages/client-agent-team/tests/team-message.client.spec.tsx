@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { afterEach, describe, expect, it } from 'vitest'
 import { cleanup, fireEvent, render } from '@testing-library/react'
-import type { AgentTeamChannelRef, AgentTeamMemberId, AgentTeamThreadRef } from '@wowyuarm/dsh-agent-team/types'
+import type { AgentTeamChannelRef, AgentTeamMemberId, AgentTeamMessageRef, AgentTeamThreadRef } from '@wowyuarm/dsh-agent-team/types'
 import { zh } from '../src/client/locales.ts'
 import type { TeamConversationProps } from '../src/client/slots.ts'
 import { rememberResolvedThreadRef, type ResolvedThreadRef } from '../src/client/refs.ts'
@@ -327,5 +327,119 @@ describe('TeamMessage long-body clamp', () => {
     expect(chipCount()).toBe(1)
     fireEvent.click(getByRole('button', { name: '收起' }))
     expect(chipCount()).toBe(1)
+  })
+})
+
+describe('TeamMessage recall tombstone and Human actions', () => {
+  const messageRef = 'message:11111111-2222-4333-8333-111111111111' as AgentTeamMessageRef
+
+  it('renders the withdrawal tombstone instead of the body once recalled', () => {
+    const { container } = render(
+      <TeamMessage
+        senderName="human"
+        memberId={'member:human' as AgentTeamMemberId}
+        human
+        body="secret instruction for @builder"
+        mentionNames={['builder']}
+        messageRef={messageRef}
+        recalled
+        t={t}
+      />,
+    )
+    // Every reader sees one tombstone; the withdrawn text never reaches the DOM.
+    expect(container.textContent).toContain('该指令已被用户撤回')
+    expect(container.textContent).not.toContain('secret instruction')
+    // The page withholds editable on recalled rows, so no action row exists here.
+    expect(container.querySelector('[class*="messageActions"]')).toBeNull()
+  })
+
+  it('offers edit, withdraw, and delete actions on the Human’s own Messages', () => {
+    const edits: Array<[AgentTeamMessageRef, string]> = []
+    const recalls: Array<[AgentTeamMessageRef, 'retracted' | 'deleted']> = []
+    const { getByRole } = render(
+      <TeamMessage
+        senderName="human"
+        memberId={'member:human' as AgentTeamMemberId}
+        human
+        body="draft the incident report @builder"
+        mentionNames={['builder']}
+        messageRef={messageRef}
+        editable
+        onEditMessage={(ref, body) => { edits.push([ref, body]) }}
+        onRecallMessage={(ref, mode) => { recalls.push([ref, mode]) }}
+        t={t}
+      />,
+    )
+    fireEvent.click(getByRole('button', { name: '修改' }))
+    expect(edits).toEqual([[messageRef, 'draft the incident report @builder']])
+    fireEvent.click(getByRole('button', { name: '撤回' }))
+    fireEvent.click(getByRole('button', { name: '删除' }))
+    expect(recalls).toEqual([[messageRef, 'retracted'], [messageRef, 'deleted']])
+  })
+
+  it('keeps action buttons off rows the Human cannot manage', () => {
+    const { container } = render(
+      <TeamMessage senderName="Builder" memberId={'member:builder' as AgentTeamMemberId} human={false} body="agent output" t={t} />,
+    )
+    expect(container.querySelector('[class*="messageActions"]')).toBeNull()
+    expect(container.querySelectorAll('button')).toHaveLength(0)
+  })
+})
+
+describe('TeamMessage reply action', () => {
+  const messageRef = 'message:11111111-2222-4333-8333-111111111111' as AgentTeamMessageRef
+
+  it('offers a reply action on Agent Messages and reports the quoted Message with its sender', () => {
+    const replies: Array<[AgentTeamMessageRef, string, AgentTeamMemberId]> = []
+    const { getByRole } = render(
+      <TeamMessage
+        senderName="Builder"
+        memberId={'member:builder' as AgentTeamMemberId}
+        human={false}
+        body="我已完成第一步，请确认下一批输入"
+        messageRef={messageRef}
+        replyable
+        onReplyMessage={(ref, body, sender) => { replies.push([ref, body, sender]) }}
+        t={t}
+      />,
+    )
+    fireEvent.click(getByRole('button', { name: '回复' }))
+    expect(replies).toEqual([[messageRef, '我已完成第一步，请确认下一批输入', 'member:builder']])
+  })
+
+  it('keeps the reply action off Human rows and recalled tombstones', () => {
+    const human = render(
+      <TeamMessage
+        senderName="human"
+        memberId={'member:human' as AgentTeamMemberId}
+        human
+        body="我自己的指令"
+        messageRef={messageRef}
+        editable
+        onEditMessage={() => {}}
+        onRecallMessage={() => {}}
+        onReplyMessage={() => {}}
+        t={t}
+      />,
+    )
+    // Human rows keep only their own management actions; the quote answers Agents.
+    expect(human.getByRole('button', { name: '修改' })).toBeTruthy()
+    expect(human.queryByRole('button', { name: '回复' })).toBeNull()
+    human.unmount()
+    const recalled = render(
+      <TeamMessage
+        senderName="Builder"
+        memberId={'member:builder' as AgentTeamMemberId}
+        human={false}
+        body="agent output"
+        messageRef={messageRef}
+        replyable
+        recalled
+        onReplyMessage={() => {}}
+        t={t}
+      />,
+    )
+    expect(recalled.queryByRole('button', { name: '回复' })).toBeNull()
+    recalled.unmount()
   })
 })

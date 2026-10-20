@@ -463,6 +463,7 @@ export function TeamChannelPage({ workspaceId, channelRef, humanName, humanAvata
                 onOpenMemberSession={openMemberSession}
                 grouped={index > 0}
                 showGroupedTime={item.message.topLevel === true && !turnGap}
+                recalled={item.message.recalledAt !== undefined}
                 {...(senderStatus === undefined ? {} : { senderTitle: senderStatus.member.description })}
               >
                 {item.message.topLevel && <ThreadEntryRow
