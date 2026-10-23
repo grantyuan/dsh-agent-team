@@ -141,31 +141,6 @@ exports[`Team conversation surfaces > restores persisted Team mode, reconciles a
                 </span>
               </button>
               <button
-                aria-label="需要你决定"
-                class="decisionsCard"
-                type="button"
-              >
-                <span
-                  class="inboxMark"
-                >
-                  <svg
-                    aria-hidden="true"
-                    data-content="c93cfbcc"
-                    fill="none"
-                    height="16"
-                    stroke-width="1"
-                    viewBox="0 0 16 16"
-                    width="16"
-                    xmlns="http://www.w3.org/2000/svg"
-                  />
-                </span>
-                <span
-                  class="inboxCardLabel"
-                >
-                  需要你决定
-                </span>
-              </button>
-              <button
                 aria-label="任务"
                 class="tasksCard"
                 type="button"

@@ -16,9 +16,9 @@ Host 按以下顺序检查 fences：
 Human close 会 release active Claims、结束 Attention 并停止 ordinary delivery。Reopen 恢复 open Task，但不恢复之前的 Attention periods。
 
 ## Human Remote boundary
-Human Client 使用 `readThread`、`threadHistory`、`threadObservations`、`changeAttention` 和 `changes`，并消费 Host 的 Human Inbox 切片作为「收件箱 / Inbox」队列：对每个可见 Workspace 发一次 Inbox 调用——整片未读，行内 `directCount`、徽标取 `totalUnreadCount`——在 Client 内合并为徽标与 Inbox 页。 该页渲染 Host 的两片：未读队列「需要我」（徽标与页头计数只描述它），以及读者写过 Message 的「最近活跃」段——回复过的 Thread 无论是否 follow 都算他的，自己发起、还没人回复的也算（回复不会自动 follow，所以 Attention 决定的是「什么会通知你」，不是「你参与过什么」）——按最新活跃降序，Host 侧每 Workspace 上限 10、页面合并后最多 5 条，与队列不重复。 两片都不收录已归档 Channel 的 Thread：归档终结的不只是通知，还有参与记录。 Agent 的 Inbox 只拿到队列。 打开 Inbox 页不确认任何内容——只有 durable Thread read 消费 mention marker。
+Human Client 使用 `readThread`、`threadHistory`、`threadObservations` 和 `changes`，并消费 Host 的 Human Inbox 切片作为「收件箱 / Inbox」队列：对每个可见 Workspace 发一次 Inbox 调用——整片未读，行内 `directCount`、徽标取 `totalUnreadCount`——在 Client 内合并为徽标与 Inbox 页。 该页渲染 Host 的两片：未读队列「需要我」（徽标与页头计数只描述它），以及读者写过 Message 的「最近活跃」段——回复过的 Thread 既算他的、也会让他 follow；自己发起、还没人回复的也算。参与与 Attention 在这里重合，却不是同一条规则：mention 会送达未读，却不使读者成为 follower。该段按最新活跃降序，Host 侧每 Workspace 上限 10、页面合并后最多 5 条，与队列不重复。 两片都不收录已归档 Channel 的 Thread：归档终结的不只是通知，还有参与记录。 Agent 的 Inbox 只拿到队列。 打开 Inbox 页不确认任何内容——只有 durable Thread read 消费 mention marker。
 
-`threadObservations` 是针对一个 Thread 的、只读的 Human-only follow/unfollow Attention transitions projection，返回体同时携带当前关注者集合（`followers`）；`changeAttention` 修改该 durable state。 Thread composer 用该读取为 mention 候选排序（当前关注者优先），observation 历史本身暂不渲染。 Client 只在本地保存 navigation mode、Workspace selection 与 Inbox 页位置（navigation 事实，不是未读事实）；unread state、Attention、revisions 和 observations 仍由 Host 持有。 各 Workspace 的 Inbox 调用由 Client 合并：home 级不存在 Inbox ledger 或 Remote。
+`threadObservations` 是针对一个 Thread 的、只读的 Human-only follow/unfollow Attention transitions projection，返回体同时携带当前关注者集合（`followers`）。 Thread composer 用该读取为 mention 候选排序（当前关注者优先），observation 历史本身暂不渲染。 Client 只在本地保存 navigation mode、Workspace selection 与 Inbox 页位置（navigation 事实，不是未读事实）；unread state、Attention、revisions 和 observations 仍由 Host 持有。 各 Workspace 的 Inbox 调用由 Client 合并：home 级不存在 Inbox ledger 或 Remote。
 
 Task resolution 为 Human 专属，有两种形态：Thread 页提供的单个 `changeTask`，和 Tasks 页提供的批量 `changeTasks`——每个 Workspace 一次调用、在一个 Host turn 内解决多个 Task，每个 Task 以从批次 requestId 派生的 requestId 提交独立 durable operation，重试的批次因此幂等重放。
 

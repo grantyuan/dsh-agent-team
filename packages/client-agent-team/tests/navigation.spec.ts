@@ -153,7 +153,6 @@ describe('TeamNavigation', () => {
       // The Inbox entry is Team navigation too, and the one face an Agent
       // overlay can be opened from: asking for the page closes the overlay.
       navigation => { navigation.actions().selectInbox() },
-      navigation => { navigation.actions().selectDecisions() },
       navigation => { navigation.actions().backToChannels() },
       navigation => { navigation.actions().backFromThread() },
       navigation => { navigation.actions().enterTeam() },
@@ -205,34 +204,6 @@ describe('TeamNavigation', () => {
     navigation.actions().selectInbox()
     navigation.actions().selectWorkspace('workspace:two' as never)
     expect(navigation.getSnapshot()).toEqual({ mode: 'team', workspaceId: 'workspace:two' })
-  })
-
-  it('opens the decision queue as a durable location and returns a Thread entered there', () => {
-    const navigation = new TeamNavigation()
-    navigation.actions().selectWorkspace('workspace:one' as never)
-    navigation.actions().enterTeam()
-    navigation.actions().selectDecisions()
-    expect(navigation.getSnapshot()).toEqual({ mode: 'team', workspaceId: 'workspace:one', decisions: true })
-    // Where the reader stands is a navigation fact, not a waiting count: a
-    // reload reopens the queue it was left on.
-    expect(JSON.parse(localStorage.getItem(STORAGE_KEY) ?? '')).toEqual({ mode: 'team', workspaceId: 'workspace:one', decisions: true })
-    expect(new TeamNavigation().getSnapshot()).toEqual({ mode: 'team', workspaceId: 'workspace:one', decisions: true })
-    navigation.actions().selectDecisions()
-    expect(navigation.getSnapshot()).toEqual({ mode: 'team', workspaceId: 'workspace:one', decisions: true })
-
-    // A row's Thread keeps the queue as its origin, so Back returns to the
-    // queue rather than to the Channel behind it.
-    navigation.actions().selectThread('thread:1' as never, 'channel:1' as never, undefined, undefined, 'decisions')
-    expect(navigation.getSnapshot()).toEqual({ mode: 'team', workspaceId: 'workspace:one', channelRef: 'channel:1', threadRef: 'thread:1', threadOrigin: 'decisions' })
-    navigation.actions().backFromThread()
-    expect(navigation.getSnapshot()).toEqual({ mode: 'team', workspaceId: 'workspace:one', decisions: true })
-
-    // Any other face takes the seat back.
-    navigation.actions().selectInbox()
-    expect(navigation.getSnapshot()).toEqual({ mode: 'team', workspaceId: 'workspace:one', inbox: true })
-    navigation.actions().selectDecisions()
-    navigation.actions().selectChannel('channel:1' as never)
-    expect(navigation.getSnapshot()).toEqual({ mode: 'team', workspaceId: 'workspace:one', channelRef: 'channel:1' })
   })
 
   it('restores the Thread origin across a reload and lets a Tasks origin own Back', () => {

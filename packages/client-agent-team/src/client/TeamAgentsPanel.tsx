@@ -144,18 +144,9 @@ export function TeamAgentsPanel({ workspaceId, loadMembers, loadMemberTasks, sub
   // Only the first refresh owns the loading surface; presence wakes (Agent
   // running/idle) ride the dedicated scope and refresh rows in place.
   const loadedRef = useRef(false)
-  // Per-Member working queues behind the rows' current-task line and the
-  // queue dialog. A failed queue read hides the lines but never the roster:
-  // the dialog re-reads on open and reports there.
-  const [queues, setQueues] = useState<readonly AgentTeamMemberTaskQueue[]>([])
   const refresh = useCallback(async () => {
     if (!loadedRef.current) setLoading(true)
-    const [result, tasksResult] = await Promise.all([
-      loadMembers({ workspaceId }),
-      loadMemberTasks({ workspaceId }),
-    ])
-    if (tasksResult.ok) setQueues(tasksResult.value.queues)
-    else setQueues([])
+    const result = await loadMembers({ workspaceId })
     if (result.ok) {
       // Archived Members are hidden from every surface; the row disappears
       // the moment the workspace-scope wake delivers the archived state.
@@ -168,7 +159,7 @@ export function TeamAgentsPanel({ workspaceId, loadMembers, loadMemberTasks, sub
       setError(result.error.message)
     }
     setLoading(false)
-  }, [loadMembers, loadMemberTasks, workspaceId, followRollover])
+  }, [loadMembers, workspaceId, followRollover])
 
   useEffect(() => { void refresh() }, [refresh])
   // Warm the Host model catalog while the roster loads, so the create and
@@ -338,7 +329,7 @@ export function TeamAgentsPanel({ workspaceId, loadMembers, loadMemberTasks, sub
         <div className={css.agentList}>
           {orderedMembers.map(status => (
             <SortableRow key={status.member.memberId} drag={drag} orderKey={status.member.memberId}>
-              <AgentRow workspaceId={workspaceId} leaveWorkspace={leaveWorkspace} status={status} {...(memberSessionId === undefined ? {} : { current: status.member.sessionId === memberSessionId })} updateMember={updateMember} loadPromptView={loadPromptView} curateMemberPrompt={curateMemberPrompt} recoverMember={recoverMember} clearMemberContext={clearMemberContext} compactMemberContext={compactMemberContext} loadMemberInterrupts={loadMemberInterrupts} releaseMemberInterrupt={releaseMemberInterrupt} selectSessionHistory={selectSessionHistory} diagnoseMember={diagnoseMember} archiveMember={archiveMember} loadChannels={loadChannels} loadModels={loadModels} openMemberSession={openMemberSession} members={members} {...(queues.find(queue => queue.memberId === status.member.memberId) !== undefined ? { queue: queues.find(queue => queue.memberId === status.member.memberId) } : {})} loadMemberTasks={loadMemberTasks} sendMessage={sendMessage} selectThread={selectThread} onUpdated={refresh} t={t} />
+              <AgentRow workspaceId={workspaceId} leaveWorkspace={leaveWorkspace} status={status} {...(memberSessionId === undefined ? {} : { current: status.member.sessionId === memberSessionId })} updateMember={updateMember} loadPromptView={loadPromptView} curateMemberPrompt={curateMemberPrompt} recoverMember={recoverMember} clearMemberContext={clearMemberContext} compactMemberContext={compactMemberContext} loadMemberInterrupts={loadMemberInterrupts} releaseMemberInterrupt={releaseMemberInterrupt} selectSessionHistory={selectSessionHistory} diagnoseMember={diagnoseMember} archiveMember={archiveMember} loadChannels={loadChannels} loadModels={loadModels} openMemberSession={openMemberSession} members={members} loadMemberTasks={loadMemberTasks} sendMessage={sendMessage} selectThread={selectThread} onUpdated={refresh} t={t} />
             </SortableRow>
           ))}
         </div>
@@ -356,13 +347,11 @@ export function TeamAgentsPanel({ workspaceId, loadMembers, loadMemberTasks, sub
 /**
  * One sidebar Agent row: the select button opens the Member's own Session
  * conversation page, the avatar carries identity plus the presence badge, and
- * the row menu opens the editor. The row also surfaces the Member's working
- * queue: the newest Task it holds a Claim on renders as a second line on the
- * row, and the row menu's Task-queue entry opens the full queue — current
- * Claims and unclaimed Channel work, each row opening its Thread, each row
- * asking the Team leader to reassign it.
+ * the row menu opens the editor. The row menu's Task-queue entry opens the
+ * Member's working queue — current Claims and unclaimed Channel work, each
+ * row opening its Thread, each row asking the Team leader to reassign it.
  */
-function AgentRow({ workspaceId, leaveWorkspace, status, current, updateMember, loadPromptView, curateMemberPrompt, recoverMember, clearMemberContext, compactMemberContext, loadMemberInterrupts, releaseMemberInterrupt, selectSessionHistory, diagnoseMember, archiveMember, loadChannels, loadModels, openMemberSession, members, queue, loadMemberTasks, sendMessage, selectThread, onUpdated, t }: {
+function AgentRow({ workspaceId, leaveWorkspace, status, current, updateMember, loadPromptView, curateMemberPrompt, recoverMember, clearMemberContext, compactMemberContext, loadMemberInterrupts, releaseMemberInterrupt, selectSessionHistory, diagnoseMember, archiveMember, loadChannels, loadModels, openMemberSession, members, loadMemberTasks, sendMessage, selectThread, onUpdated, t }: {
   readonly workspaceId: WorkspaceId
   readonly leaveWorkspace: TeamSidebarProps['leaveWorkspace']
   readonly status: AgentTeamClientMemberStatus
@@ -384,8 +373,6 @@ function AgentRow({ workspaceId, leaveWorkspace, status, current, updateMember, 
   readonly openMemberSession: TeamSidebarProps['openMemberSession']
   /** The Workspace roster, behind the reassign dialog's taker picker. */
   readonly members: readonly AgentTeamClientMemberStatus[]
-  /** This Member's working queue, as the last panel refresh read it. */
-  readonly queue?: AgentTeamMemberTaskQueue | undefined
   readonly loadMemberTasks: TeamSidebarProps['loadMemberTasks']
   readonly sendMessage: TeamSidebarProps['sendMessage']
   readonly selectThread: TeamSidebarProps['selectThread']
@@ -572,17 +559,6 @@ function AgentRow({ workspaceId, leaveWorkspace, status, current, updateMember, 
           />
         </span>
       </div>
-      {/* The newest current Task rides the row itself: one quiet line naming
-          what the Member is on, opening the same queue dialog the menu entry
-          opens. A queue read failure leaves no line and no error — the row is
-          a convenience, the dialog reports for itself. */}
-      {queue?.current[0] !== undefined && (
-        <button type="button" className={css.agentTaskLine} title={`${t('taskLabel', { number: queue.current[0].taskNumber })} · ${queue.current[0].subject}`} onClick={() => { setTasksOpen(true) }}>
-          <TeamStateDot state={taskStatusDot(queue.current[0].status)} />
-          <span className={css.agentTaskSubject}>{t('taskLabel', { number: queue.current[0].taskNumber })} · {queue.current[0].subject}</span>
-          {queue.current.length > 1 && <small className={css.agentTaskMore}>{t('agentTasksCount', { count: queue.current.length - 1 })}</small>}
-        </button>
-      )}
       {!archiving && !resetting && !compacting && rowAlert !== undefined && <div className={css.rowAlert} role="alert">{rowAlert}</div>}
       {resetting && (
         <Modal

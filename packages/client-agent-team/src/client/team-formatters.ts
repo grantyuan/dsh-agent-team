@@ -300,7 +300,7 @@ export interface TeamThreadWorkspaceGroup<Row> {
 
 /**
  * Partition one already-ordered Team list into Workspace → Channel groups: the
- * shape every cross-Workspace Team list page (Inbox, decisions) now speaks, so
+ * shape the cross-Workspace Team list pages speak, so
  * 「which Workspace, which Channel」 is answered by a heading instead of being
  * repeated down every row.
  *

@@ -30,9 +30,9 @@ Every row additionally carries 历史会话: it takes over the conversation seat
 
 Every row also carries 已暂停任务: a dialog over the Member's durable pending-interrupt stack through `memberInterrupts` — newest-first entries with the Host's restorable verdict (an anchor the lineage walk cannot prove today reads as unverified, never as optimistically returnable) and a 释放 control per entry through `resolveMemberInterrupt`. The stack reads for every lifecycle state because it is a ledger read; `resumed` closes stay the Host's own and are never offered here.
 
-The narrow rail's five icon buttons read top-down Inbox (`IconQueueOutline14` at 16px) → Decisions (`IconQuestionOutlineRegular`) → Tasks (`IconChecklistOutlineRegular`) → Channels (`IconListPenOutline16`) → Agents (`IconAgentPresetOutline16`); none reuse the checklist (Task) or member icons.
+The narrow rail's four icon buttons read top-down Inbox (`IconQueueOutline14` at 16px) → Tasks (`IconChecklistOutlineRegular`) → Channels (`IconListPenOutline16`) → Agents (`IconAgentPresetOutline16`); none reuse the checklist (Task) or member icons.
 
-The Inbox icon is a destination: clicking it opens the Inbox page and expands the sidebar; the Decisions icon opens the decision queue and expands it the same way; the Tasks icon opens the Tasks page; the Channels/Agents icons expand the sidebar and focus their section header.
+The Inbox icon is a destination: clicking it opens the Inbox page and expands the sidebar; the Tasks icon opens the Tasks page; the Channels/Agents icons expand the sidebar and focus their section header.
 
 Agent creation carries no Channel page and the Agent editor carries no membership section: Channel membership is managed from the Channel side (create-dialog initial members, Channel editor member rows, and the member-management dialog); a Channel-less Member stays reachable through its DM view.
 
@@ -51,9 +51,7 @@ SlotCore cannot withdraw another plugin's list row and the entry's label is loca
 ## Inbox (收件箱)
 The Inbox entry is one card on the wide rail above the Workspace selector — its total sums the unread of every visible Workspace, so it is the one destination that outlives the scope the selector names, and it leads the sidebar instead of standing inside that scope — and the rail's first icon on the narrow rail, where no selector exists to lead.
 
-The decision queue's entry sits directly under it, the second card on the wide rail and the second icon on the narrow one: 需要你决定, counting the Threads that still wait on the reader across every visible Workspace. Its total comes from the same Client-wide projection the arrival cue is raised from — the one place that answers both "how much waits" and "did something new arrive" — so the entry starts no poll of its own and its mark can never disagree with the queue page it opens.
-
-Both entries mark their own fact the same way — a dot on the icon's top-left corner, standing for the sum of each visible Workspace's slice with mentions counted inside the Inbox total rather than alone, and rendering nothing at zero: nothing waiting is the absence of the mark, not an empty dot.
+The entry marks its own fact the same way — a dot on the icon's top-left corner, standing for the sum of each visible Workspace's slice with mentions counted inside the Inbox total rather than alone, and rendering nothing at zero: nothing waiting is the absence of the mark, not an empty dot.
 
 The dot is 8px of `--dsw-alias-state-business-primary` — the solid ink the queue gives a Thread that named this reader, so one colour still means "this needs you" wherever it appears — ringed by 2px of whatever surface carries it — `--team-mark-ring`, which every surface that fills hands the fill it is actually on (the card on hover and as the current page, the rail button on hover, focus, and as the current page).
 
@@ -63,11 +61,11 @@ The avatar stack keeps the same rule (`avatar-stack.module.css`), and each side 
 
 It hangs off the icon's own wrapper (`.inboxMark`: `position: relative`, `flex: 0 0 16px`) at `-2px` on both axes, which is what puts the same dot on the same corner of the same glyph whether that icon sits in the 34px card or in the 36px rail button; on the narrow rail the mark thus stays inside the control box that the rail region clips its overflow to.
 
-The number lives in the control's accessible name on both rails (`收件箱，6 条未读`, `需要你决定，2 件事在等你`) and the rail's hover hint — one hover away, never printed in the sidebar.
+The number lives in the control's accessible name on both rails (`收件箱，6 条未读`) and the rail's hover hint — one hover away, never printed in the sidebar.
 
 While the Inbox page stands, the card/icon carries `aria-current="page"` — and the rail icon wears the card's own current-page fill, because the icon-only rail has no label and the fill is the only thing that can say where the reader is.
 
-`TeamConversation` renders the same faces under one owner: Thread | Channel | Inbox | Tasks | Decisions | welcome. Selecting Inbox, Tasks, or Decisions clears the Channel/Thread faces and each other; selecting a Workspace, Channel, or Thread clears all three. A Thread opened from an Inbox, Tasks, or Decisions row remembers that list as its origin: Back reads 返回收件箱列表, 返回任务列表, or 返回待决定列表 and returns there, while a Thread entered from its Channel keeps Back on the Channel timeline. The origin is durable, so a reload keeps the right Back target.
+`TeamConversation` renders the same faces under one owner: Thread | Channel | Inbox | Tasks | welcome. Selecting Inbox or Tasks clears the Channel/Thread faces and each other; selecting a Workspace, Channel, or Thread clears both. A Thread opened from an Inbox or Tasks row remembers that list as its origin: Back reads 返回收件箱列表 or 返回任务列表 and returns there, while a Thread entered from its Channel keeps Back on the Channel timeline. The origin is durable, so a reload keeps the right Back target.
 
 The Tasks page keeps the same global-position discipline as the Inbox: a durable navigation face, merged across Workspaces, with a scope-less subscription; a row click lands on that Task's Thread through the same select-Thread path the Inbox row uses.
 

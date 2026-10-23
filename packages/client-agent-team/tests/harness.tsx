@@ -494,41 +494,9 @@ export async function runtimeWithTeam(options?: { mode?: 'team'; workspaceId?: s
   }))
   /** Seed the per-Member working queues every Workspace read answers with. */
   const seedMemberTasks = (rows: ReadonlyArray<{ workspaceId?: string; queue: Record<string, unknown> }>): void => {
-    memberTaskQueues = rows.map(row => ({ workspaceId: row.workspaceId, queue: row.queue }))
+    memberTaskQueues = rows.map(({ workspaceId, queue }) => (workspaceId === undefined ? { queue } : { workspaceId, queue }))
     wakeAll()
   }
-  // The decision-queue double: one `pendingDecisions` call per visible
-  // Workspace reads the seeded rows, and `seedDecisions` republishes them the
-  // way a fresh ask would — so the queue page, the sidebar count, and the chime
-  // all read the same seeded facts.
-  let decisionRows: Array<{ readonly workspaceId: string; item: Record<string, unknown> }> = []
-  const pendingDecisions = vi.fn(async ({ workspaceId }: { workspaceId: string }) => ({
-    ok: true as const,
-    value: { humanMemberId: 'member:human', items: decisionRows.filter(entry => entry.workspaceId === workspaceId).map(entry => entry.item) },
-  }))
-  /** Seed the decision queue every Workspace read answers with. */
-  const seedDecisions = (rows: ReadonlyArray<{ readonly workspaceId: string } & Record<string, unknown>>): void => {
-    decisionRows = rows.map(row => ({ workspaceId: row.workspaceId, item: row as Record<string, unknown> }))
-    wakeAll()
-  }
-  // The personal follow toggle: the Host records Attention on the Thread the
-  // reader names, so the double moves the seeded row's own `attention` the way
-  // a real follow/unfollow would — and refuses when the Thread is unknown, the
-  // same shape the Host's refusal takes.
-  const changeAttention = vi.fn(async (request: { requestId?: string; workspaceId: string; threadRef?: string; taskRef?: string; action: 'follow' | 'unfollow' }) => {
-    const threadRef = request.threadRef ?? request.taskRef ?? 'thread:1'
-    const entry = decisionRows.find(candidate => candidate.workspaceId === request.workspaceId
-      && (candidate.item.thread as { threadRef?: string } | undefined)?.threadRef === threadRef)
-    if (entry === undefined) return { ok: false as const, error: { message: `unknown Thread '${threadRef}'` } }
-    const attention = { memberId: 'member:human', threadRef, startSequence: 1, readThroughSequence: 1 }
-    if (request.action === 'follow') entry.item = { ...entry.item, attention }
-    else {
-      const { attention: _attention, ...rest } = entry.item as { attention?: unknown }
-      entry.item = rest
-    }
-    wakeAll()
-    return { ok: true as const, value: { receipt: {}, thread: entry.item.thread, ...(request.action === 'follow' ? { attention } : {}) } }
-  })
   const changes = vi.fn(async function* (request: AgentTeamChangesRequest, signal?: AbortSignal) {
     let pending = false
     let resume: (() => void) | undefined
@@ -659,7 +627,7 @@ export async function runtimeWithTeam(options?: { mode?: 'team'; workspaceId?: s
   // refuses by contract.
   runtime.remote.provideNamespaces({
     session: { modelCatalog },
-    agentTeam: { members, joinWorkspace, leaveWorkspace, addMember, view: viewChannels, inbox, tasks, memberTasks, pendingDecisions, readThread, changeAttention, threadHistory: loadThreadHistory, threadObservations, summarizeThread, putAttachment, getAttachment, createChannel, updateChannel, archiveChannel, updateMember, recoverMember, clearMemberContext, compactMemberContext, memberSessions, memberSessionTranscript, archiveMember, joinChannel, removeChannelMember, sendMessage, reply, changeTask, changeTasks, promoteThread, resolveTaskRefs, changes, environment, humanProfile, setHumanProfile, putHumanAvatar, getHumanAvatar, removeHumanAvatar },
+    agentTeam: { members, joinWorkspace, leaveWorkspace, addMember, view: viewChannels, inbox, tasks, memberTasks, readThread, threadHistory: loadThreadHistory, threadObservations, summarizeThread, putAttachment, getAttachment, createChannel, updateChannel, archiveChannel, updateMember, recoverMember, clearMemberContext, compactMemberContext, memberSessions, memberSessionTranscript, archiveMember, joinChannel, removeChannelMember, sendMessage, reply, changeTask, changeTasks, promoteThread, resolveTaskRefs, changes, environment, humanProfile, setHumanProfile, putHumanAvatar, getHumanAvatar, removeHumanAvatar },
   })
   Object.assign(runtime.remote, {
     $stream: <T,>(options: ConstructorParameters<typeof RemoteStream<T>>[1]) => new RemoteStream(connection, options),
@@ -691,5 +659,5 @@ export async function runtimeWithTeam(options?: { mode?: 'team'; workspaceId?: s
   const disposeSettings = runtime.slots.register({ name: 'sidebar.settings', priority: 0 }, BaselineSettings as never)
   const team = await runtime.mount({ inject: [...inject], apply })
   const view = runtime.renderRoot()
-  return { runtime, team, view, disposeWorkspace, disposeSettings, members, humanProfile, setHumanProfile, getHumanAvatar, putHumanAvatar, removeHumanAvatar, seedHumanProfile, failHumanProfile, failHumanProfileWrite, environment, seedEnvironment, failEnvironment, joinWorkspace, leaveWorkspace, addMember, status, viewChannels, createChannel, updateChannel, archiveChannel, putAttachment, getAttachment, updateMember, recoverMember, clearMemberContext, compactMemberContext, memberSessions, memberSessionTranscript, archiveMember, modelCatalog, joinChannel, removeChannelMember, sendMessage, reply, changeTask, changeTasks, promoteThread, resolveTaskRefs, publishAgentReply, publishPresence, seedChannel, publishChannelUpdate, failChanges, recoverChanges, readThread, loadThreadHistory, threadObservations, changes, inbox, seedInbox, tasks, seedTasks, memberTasks, seedMemberTasks, pendingDecisions, seedDecisions, changeAttention, openSession, summarizeThread, seedDigest, failDigest }
+  return { runtime, team, view, disposeWorkspace, disposeSettings, members, humanProfile, setHumanProfile, getHumanAvatar, putHumanAvatar, removeHumanAvatar, seedHumanProfile, failHumanProfile, failHumanProfileWrite, environment, seedEnvironment, failEnvironment, joinWorkspace, leaveWorkspace, addMember, status, viewChannels, createChannel, updateChannel, archiveChannel, putAttachment, getAttachment, updateMember, recoverMember, clearMemberContext, compactMemberContext, memberSessions, memberSessionTranscript, archiveMember, modelCatalog, joinChannel, removeChannelMember, sendMessage, reply, changeTask, changeTasks, promoteThread, resolveTaskRefs, publishAgentReply, publishPresence, seedChannel, publishChannelUpdate, failChanges, recoverChanges, readThread, loadThreadHistory, threadObservations, changes, inbox, seedInbox, tasks, seedTasks, memberTasks, seedMemberTasks, openSession, summarizeThread, seedDigest, failDigest }
 }

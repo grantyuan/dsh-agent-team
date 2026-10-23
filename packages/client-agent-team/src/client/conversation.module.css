@@ -53,9 +53,7 @@
 
 /* The ordering of a cross-Workspace Team list is the reader's own taste, not a
    Team fact, so it is a labeled native select in the header band beside the
-   totals it reads — the control rhythm the shipped surfaces already keep. One
-   declaration set serves the Inbox and the decision queue because the two pages
-   offer the same kind of control about the same kind of list. */
+   totals it reads — the control rhythm the shipped surfaces already keep. */
 .sortControl {
   align-items: center;
   display: flex;

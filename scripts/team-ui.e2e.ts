@@ -27,7 +27,6 @@ const UI08_SHOTS = join(BROWSER_ARTIFACTS, 'ui-08')
 const UI09_SHOTS = join(BROWSER_ARTIFACTS, 'ui-09')
 const UI10_SHOTS = join(BROWSER_ARTIFACTS, 'ui-10')
 const UI11_SHOTS = join(BROWSER_ARTIFACTS, 'ui-11')
-const UI12_SHOTS = join(BROWSER_ARTIFACTS, 'ui-12')
 let scaffold: WebScaffold | undefined
 let browser: Browser | undefined
 
@@ -267,7 +266,6 @@ async function installLocalBundle(clearArtifacts = true): Promise<void> {
   await mkdir(UI09_SHOTS, { recursive: true })
   await mkdir(UI10_SHOTS, { recursive: true })
   await mkdir(UI11_SHOTS, { recursive: true })
-  await mkdir(UI12_SHOTS, { recursive: true })
 }
 
 it('drives the complete opt-in Agent Team journey in real Web', async () => {
@@ -2079,21 +2077,16 @@ it('drives the complete opt-in Agent Team journey in real Web', async () => {
   expect(scaffold.ctx.agentTeam.inbox({ workspaceId: inboxWorkspace.id }).totalUnreadCount).toBe(baseUnread + 3)
   await expectSidebarUnread(String(baseUnread + 3))
 
-  // Narrow rail: 收件箱 → 需要你决定 → 任务 → Channels → Agents, the unread dot
-  // marked on the first icon and the waiting-on-Human count on the second; the
-  // first icon is a destination that opens its own page and expands the sidebar,
-  // and that behaviour is asserted for the Inbox icon below.
+  // Narrow rail: 收件箱 → 任务 → Channels → Agents, the unread dot marked on the
+  // first icon; the first icon is a destination that opens its own page and
+  // expands the sidebar, and that behaviour is asserted for the Inbox icon below.
   await page.setViewportSize({ width: 390, height: 844 })
   const inboxRail = page.locator('nav[class*="railWorkspace"]')
   await inboxRail.waitFor()
   const railLabels = await inboxRail.locator('button').evaluateAll(buttons => buttons.map(button => button.getAttribute('aria-label')))
-  expect(railLabels).toHaveLength(5)
+  expect(railLabels).toHaveLength(4)
   expect(railLabels![0]).toBe(`收件箱，${baseUnread + 3} 条未读`)
-  // The decision count is the Client's own read of the Host's `pendingDecisions`
-  // queue, so the journey pins the order and the shape rather than a literal
-  // number that this journey's own writing could move.
-  expect(railLabels![1]).toMatch(/^需要你决定，\d+ 件事在等你$/)
-  expect(railLabels!.slice(2)).toEqual(['任务', '频道', 'Agents'])
+  expect(railLabels!.slice(1)).toEqual(['任务', '频道', 'Agents'])
   await expectSidebarUnread(String(baseUnread + 3))
   // The dot replaced the number on the surface, so the rail's hover hint is where
   // a reader still meets the quantity without opening the page: the same name the
@@ -2611,62 +2604,6 @@ it('drives the complete opt-in Agent Team journey in real Web', async () => {
   expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(390)
   await settleAnimations(page)
   await page.screenshot({ path: join(UI10_SHOTS, 'tasks-page-narrow.png'), fullPage: true })
-  await page.setViewportSize({ width: 1440, height: 960 })
-
-  // 需要你决定 is the same queue the Inbox chip reads, through its own page: every
-  // visible Workspace's Threads that still wait on the Human, partitioned by
-  // Workspace and then by Channel instead of merged into one flat list, with the
-  // reader's own sort key re-laying only the rows inside a group. The ask this
-  // journey planted — the delivery Thread's 「需要 Human 拍板」 mention, never
-  // answered — is what the page has to show, and it stays in the queue after the
-  // reader read the Thread: a read acknowledges unread, it does not answer.
-  await page.locator('button[class*="decisionsCard"]').click()
-  await page.locator('[data-team-decisions]').waitFor()
-  await expect.poll(async () => await page.locator('button[class*="decisionsCard"]').getAttribute('aria-current')).toBe('page')
-  const decisionRows = page.locator('[data-team-decision-row]')
-  await expect.poll(async () => await decisionRows.count(), { timeout: 30_000 }).toBeGreaterThanOrEqual(1)
-  // Two levels, both headings: the Workspace named once, then the Channel the
-  // Thread sits in, with the ask filed under them rather than carrying its own
-  // 「Workspace / #Channel」 crumb the way a merged list would.
-  const decisionGroups = page.locator('[data-team-decision-group]')
-  await expect.poll(async () => await decisionGroups.count()).toBeGreaterThanOrEqual(1)
-  await expect.poll(async () => await decisionGroups.first().locator('h2').count()).toBe(1)
-  const askedRow = decisionRows.filter({ hasText: '需要 Human 拍板' })
-  await expect.poll(async () => await askedRow.count()).toBe(1)
-  // The Channel membership is read off the group the row sits under — the
-  // heading and its rows share one `channelGroup` container — rather than off
-  // the row's own text, which no longer prints a crumb.
-  await expect.poll(async () => await page.locator('[data-team-decisions] div[class*="channelGroup"]')
-    .filter({ hasText: '#delivery' })
-    .locator('[data-team-decision-row]').filter({ hasText: '需要 Human 拍板' }).count()).toBe(1)
-  // The queue's axis is the Inbox's own control, defaulting to newest reply
-  // first, and the two personal marks sit beside the answers: 「已读」 drains the
-  // reader's own unread on this Thread without removing the row, and the follow
-  // toggle reads the Thread's Attention — which is the only thing that gives a
-  // Thread an unread count for this reader at all.
-  const decisionSort = page.locator('#team-decisions-sort')
-  await expect.poll(async () => await decisionSort.count()).toBe(1)
-  expect(await decisionSort.inputValue()).toBe('latestReply')
-  expect(await askedRow.getByRole('button', { name: /^已读$/ }).count()).toBe(1)
-  expect(await askedRow.getByRole('button', { name: /^(关注|取消关注)$/ }).count()).toBe(1)
-  // The page-wide action belongs to the header rather than to a row: 「全部已读」
-  // acts on the queue the reader is looking at, so it stands beside the sort the
-  // same way — one control over the whole page, and each row keeps its own 「已读」.
-  const decisionsMarkAll = page.locator('[data-team-decisions]').getByRole('button', { name: '全部已读' })
-  await expect.poll(async () => await decisionsMarkAll.count()).toBe(1)
-  expect(await decisionsMarkAll.evaluate(button => button.closest('[class*="headerActions"]') !== null)).toBe(true)
-  await settleAnimations(page)
-  await page.screenshot({ path: join(UI12_SHOTS, 'decisions-page-desktop.png'), fullPage: true })
-  // Narrow: the queue is the rail's second entry, and the page it opens keeps
-  // every row inside the 390px frame.
-  await page.setViewportSize({ width: 390, height: 844 })
-  const decisionsRailButton = page.getByRole('button', { name: /^需要你决定/ })
-  await decisionsRailButton.click()
-  await page.locator('[data-team-decisions]').waitFor()
-  await page.mouse.move(300, 600)
-  expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(390)
-  await settleAnimations(page)
-  await page.screenshot({ path: join(UI12_SHOTS, 'decisions-page-narrow.png'), fullPage: true })
   await page.setViewportSize({ width: 1440, height: 960 })
 
   // Losing the Host connection surfaces the failure in two places, and both

@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, useSyncExternalStore } from 'react'
-import { IconAgentPresetOutlineRegular, IconChecklistOutlineRegular, IconListPenOutlineRegular, IconQuestionOutlineRegular, IconQueueOutlineRegular, Tooltip } from '@deepseek-ai/dsh-client-ui-primitives'
+import { IconAgentPresetOutlineRegular, IconChecklistOutlineRegular, IconListPenOutlineRegular, IconQueueOutlineRegular, Tooltip } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { AgentTeamAddMemberRequest } from '@wowyuarm/dsh-agent-team/types'
 import type { TeamSidebarProps } from './slots.ts'
 import { TeamWorkspaceSelector } from './TeamWorkspaceSelector.tsx'
@@ -24,20 +24,7 @@ function InboxMark({ unread }: { readonly unread: number }) {
   </span>
 }
 
-/**
- * The decision queue's entry glyph with the same unread mark. The queue's own
- * mark answers 「有东西在等我吗」, which is what makes a reader look; the exact
- * quantity stays in the control's accessible name, as on the Inbox entry, so
- * the sidebar does not become a second dashboard of counts.
- */
-function DecisionsMark({ waiting }: { readonly waiting: number }) {
-  return <span className={css.inboxMark}>
-    <IconQuestionOutlineRegular size={16} />
-    {waiting > 0 && <span className={css.inboxDot} data-team-decisions-dot aria-hidden="true" />}
-  </span>
-}
-
-export function TeamWorkspaceBrowser({ wide, expandSidebar, navigation, selectWorkspace, selectChannel, selectThread, selectInbox, selectTasks, selectDecisions, selectSessionHistory, t, useWorkspaces, loadMembers, loadMemberTasks, loadInbox, decisionAlerts, subscribeChanges, subscribeReads, addMember, loadChannels, createChannel, updateChannel, archiveChannel, updateMember, loadPromptView, curateMemberPrompt, recoverMember, clearMemberContext, compactMemberContext, loadMemberInterrupts, releaseMemberInterrupt, diagnoseMember, archiveMember, joinWorkspace, leaveWorkspace, joinChannel, removeChannelMember, loadModels, openMemberSession, sendMessage }: TeamSidebarProps) {
+export function TeamWorkspaceBrowser({ wide, expandSidebar, navigation, selectWorkspace, selectChannel, selectThread, selectInbox, selectTasks, selectSessionHistory, t, useWorkspaces, loadMembers, loadMemberTasks, loadInbox, subscribeChanges, subscribeReads, addMember, loadChannels, createChannel, updateChannel, archiveChannel, updateMember, loadPromptView, curateMemberPrompt, recoverMember, clearMemberContext, compactMemberContext, loadMemberInterrupts, releaseMemberInterrupt, diagnoseMember, archiveMember, joinWorkspace, leaveWorkspace, joinChannel, removeChannelMember, loadModels, openMemberSession, sendMessage }: TeamSidebarProps) {
   const navigationState = useSyncExternalStore(navigation.subscribe, navigation.getSnapshot, navigation.getSnapshot)
   const workspaces = useWorkspaces(state => state.items)
   const selected = navigationState.workspaceId
@@ -51,10 +38,9 @@ export function TeamWorkspaceBrowser({ wide, expandSidebar, navigation, selectWo
   // embedded Member Session covers that page: the Inbox stays the remembered
   // face underneath — closing the overlay returns to it, marker included —
   // but the card is not a second current page while an Agent holds the seat.
-  const overviewIsCurrent = navigationState.channelRef === undefined && navigationState.memberSessionId === undefined && navigationState.inbox !== true && navigationState.tasks !== true && navigationState.decisions !== true && navigationState.sessionHistory === undefined
+  const overviewIsCurrent = navigationState.channelRef === undefined && navigationState.memberSessionId === undefined && navigationState.inbox !== true && navigationState.tasks !== true && navigationState.sessionHistory === undefined
   const inboxIsCurrent = navigationState.inbox === true && navigationState.memberSessionId === undefined
   const tasksIsCurrent = navigationState.tasks === true && navigationState.memberSessionId === undefined
-  const decisionsIsCurrent = navigationState.decisions === true && navigationState.memberSessionId === undefined
   const [creatingAgents, setCreatingAgents] = useState<readonly AgentTeamAddMemberRequest[]>([])
   // Rail icons request expansion and name the section to reveal once wide.
   const [pendingSection, setPendingSection] = useState<SidebarSection>()
@@ -70,11 +56,6 @@ export function TeamWorkspaceBrowser({ wide, expandSidebar, navigation, selectWo
   // it. The rail repeats it as its hover hint, which is the only place a reader
   // still meets the quantity without opening the page.
   const inboxLabel = inboxTotal > 0 ? t('inboxTitleWithCount', { count: inboxTotal }) : t('inboxTitle')
-  // The decision queue's mark reads the one Client-wide projection of what
-  // waits on the Human — the same source the arrival cue is raised from — so
-  // this entry starts no poll of its own and can never disagree with the page.
-  const decisionsTotal = useSyncExternalStore(decisionAlerts.subscribe, decisionAlerts.getSnapshot, decisionAlerts.getSnapshot)
-  const decisionsLabel = decisionsTotal > 0 ? t('decisionsTitleWithCount', { count: decisionsTotal }) : t('decisionsTitle')
   useEffect(() => {
     let disposed = false
     let scheduled: ReturnType<typeof setTimeout> | undefined
@@ -104,14 +85,14 @@ export function TeamWorkspaceBrowser({ wide, expandSidebar, navigation, selectWo
   }, [loadInbox, subscribeChanges, subscribeReads, workspaces])
 
   useEffect(() => {
-    // The Inbox, Tasks, decision-queue, and session-history pages are global
-    // faces and need no selected Workspace, so the auto-select must not yank the
-    // seat back to a Workspace overview.
-    if (navigationState.inbox === true || navigationState.tasks === true || navigationState.decisions === true || navigationState.sessionHistory !== undefined) return
+    // The Inbox, Tasks, and session-history pages are global faces and need no
+    // selected Workspace, so the auto-select must not yank the seat back to a
+    // Workspace overview.
+    if (navigationState.inbox === true || navigationState.tasks === true || navigationState.sessionHistory !== undefined) return
     if (navigationState.mode === 'team' && selectedId !== undefined && selectedId !== selected) {
       selectWorkspace(selectedId)
     }
-  }, [navigationState.inbox, navigationState.tasks, navigationState.decisions, navigationState.sessionHistory, navigationState.mode, selected, selectedId, selectWorkspace])
+  }, [navigationState.inbox, navigationState.tasks, navigationState.sessionHistory, navigationState.mode, selected, selectedId, selectWorkspace])
 
   useEffect(() => {
     if (!wide || pendingSection === undefined) return
@@ -125,11 +106,6 @@ export function TeamWorkspaceBrowser({ wide, expandSidebar, navigation, selectWo
       <Tooltip label={inboxLabel} side="right">
         <button type="button" className={css.railButton} aria-label={inboxLabel} aria-current={inboxIsCurrent ? 'page' : undefined} onClick={() => { selectInbox(); expandSidebar() }}>
           <InboxMark unread={inboxTotal} />
-        </button>
-      </Tooltip>
-      <Tooltip label={decisionsLabel} side="right">
-        <button type="button" className={css.railButton} aria-label={decisionsLabel} aria-current={decisionsIsCurrent ? 'page' : undefined} onClick={() => { selectDecisions(); expandSidebar() }}>
-          <DecisionsMark waiting={decisionsTotal} />
         </button>
       </Tooltip>
       <Tooltip label={t('tasksTitle')} side="right">
@@ -157,10 +133,6 @@ export function TeamWorkspaceBrowser({ wide, expandSidebar, navigation, selectWo
     <button type="button" className={css.inboxCard} aria-label={inboxLabel} aria-current={inboxIsCurrent ? 'page' : undefined} onClick={selectInbox}>
       <InboxMark unread={inboxTotal} />
       <span className={css.inboxCardLabel}>{t('inboxTitle')}</span>
-    </button>
-    <button type="button" className={css.decisionsCard} aria-label={decisionsLabel} aria-current={decisionsIsCurrent ? 'page' : undefined} onClick={selectDecisions}>
-      <DecisionsMark waiting={decisionsTotal} />
-      <span className={css.inboxCardLabel}>{t('decisionsTitle')}</span>
     </button>
     <button type="button" className={css.tasksCard} aria-label={t('tasksTitle')} aria-current={tasksIsCurrent ? 'page' : undefined} onClick={selectTasks}>
       <IconChecklistOutlineRegular size={16} />

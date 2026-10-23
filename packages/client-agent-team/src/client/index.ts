@@ -9,7 +9,6 @@ import type {
   AgentTeamSendMessageRequest,
   AgentTeamSummarizeThreadRequest,
   AgentTeamThreadHistoryRequest,
-  AgentTeamThreadAttentionRequest,
   AgentTeamThreadObservationsRequest,
   AgentTeamThreadReadRequest,
   AgentTeamCreateChannelRequest,
@@ -19,7 +18,6 @@ import type {
   AgentTeamJoinChannelRequest,
   AgentTeamMembersRequest,
   AgentTeamMemberPromptViewRequest,
-  AgentTeamPendingDecisionsRequest,
   AgentTeamPromoteThreadRequest,
   AgentTeamPutAttachmentRequest,
   AgentTeamRecoverMemberRequest,
@@ -62,7 +60,6 @@ import { TeamEnvironmentCheck } from './environment-check.ts'
 import { bytesToBase64 } from './attachment-preview.ts'
 import { TeamNavigation } from './navigation.ts'
 import { TeamChangeStream, TeamReadStream, type TeamChangeListener, type TeamChangeScope } from './team-changes.ts'
-import { TeamDecisionAlerts } from './decision-alerts.ts'
 import { TeamDraftStore } from './drafts.ts'
 import { TeamFooterAction } from './TeamFooterAction.tsx'
 import { TeamMembersAction } from './TeamMembersAction.tsx'
@@ -211,8 +208,6 @@ function registerModeShadow<T extends object>(
                 return result
               },
               loadThreadHistory: (request: AgentTeamThreadHistoryRequest) => ctx.remote.agentTeam.threadHistory(request),
-              loadPendingDecisions: (request: AgentTeamPendingDecisionsRequest) => ctx.remote.agentTeam.pendingDecisions(request),
-              changeAttention: (request: AgentTeamThreadAttentionRequest) => ctx.remote.agentTeam.changeAttention(request),
               threadObservations: (request: AgentTeamThreadObservationsRequest) => ctx.remote.agentTeam.threadObservations(request),
               summarizeThread: (request: AgentTeamSummarizeThreadRequest, signal?: AbortSignal) => ctx.remote.agentTeam.summarizeThread(request, signal),
               sendMessage: (request: AgentTeamSendMessageRequest) => ctx.remote.agentTeam.sendMessage(request),
@@ -318,22 +313,6 @@ function applyUi(ctx: ClientContext): void {
   // is the one moment the scope it was waiting for can be there again.
   ctx.on('connection/reset', () => { changes.recover() })
   const reads = new TeamReadStream()
-  // One cross-Workspace view of what still waits on the Human: the sidebar
-  // entry's mark and the arrival cue both come from it, so neither poll is
-  // doubled. The sidebar inject carries it; the cue rides the same instance and
-  // therefore the same reads.
-  const decisionAlerts = new TeamDecisionAlerts({
-    workspaceIds: () => ctx.workspaces.list.getSnapshot().items.map(workspace => workspace.workspaceId),
-    loadPendingDecisions: (request: AgentTeamPendingDecisionsRequest) => ctx.remote.agentTeam.pendingDecisions(request),
-    subscribeChanges: listener => changes.subscribe(undefined, listener),
-  })
-  // The cue is the one Team surface that deliberately stands outside Team mode:
-  // an Agent waiting on the Human is exactly the news a reader who stepped away
-  // to an ordinary conversation must not miss.
-  ctx.effect(() => {
-    decisionAlerts.start()
-    return () => { decisionAlerts.dispose() }
-  }, 'agent-team: decision alerts')
 
   const loadMemberGroups = async () => {
     const workspaces = ctx.workspaces.list.getSnapshot().items
@@ -367,7 +346,7 @@ function applyUi(ctx: ClientContext): void {
     }),
   }, TeamFooterAction as never))
 
-  registerModeShadow(ctx, navigation, changes, reads, drafts, humanIdentity, 'sidebar.workspaces', TeamWorkspaceBrowser as never, () => ({ decisionAlerts }))
+  registerModeShadow(ctx, navigation, changes, reads, drafts, humanIdentity, 'sidebar.workspaces', TeamWorkspaceBrowser as never, undefined)
   registerModeShadow(ctx, navigation, changes, reads, drafts, humanIdentity, 'main', TeamConversation as never, undefined, 'conversation')
   registerModeShadow(ctx, navigation, changes, reads, drafts, humanIdentity, 'sidebar.settings', TeamMembersAction as never, () => ({ loadMemberGroups }))
 

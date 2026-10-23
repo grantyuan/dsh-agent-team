@@ -36,7 +36,7 @@ Agent 卡片会话视图：Agent 行的头像与文案整体是选择按钮（`�
 
 Member 经 `context_rollover` 换新上下文时，Agents 面板观察该 Member 的旧→新 Session 绑定，仅在嵌入页正是被观察的旧 live Session id 时恰好跟随一次，归档视图不跳转。
 
-窄屏 rail 五个图标按钮自上而下：收件箱（`IconQueueOutline14`，16px）→ 决策（`IconQuestionOutlineRegular`）→ 任务（`IconChecklistOutlineRegular`）→ 频道（`IconListPenOutline16`）→ Agents（`IconAgentPresetOutline16`）；不复用 checklist（任务）或 user（成员）图标。收件箱图标是目的地：点击打开 Inbox 页并请求展开侧栏；决策图标以同样方式打开决策队列；任务图标打开 Tasks 页；频道/Agents 图标点击请求展开侧栏并聚焦对应分区头部。
+窄屏 rail 四个图标按钮自上而下：收件箱（`IconQueueOutline14`，16px）→ 任务（`IconChecklistOutlineRegular`）→ 频道（`IconListPenOutline16`）→ Agents（`IconAgentPresetOutline16`）；不复用 checklist（任务）或 user（成员）图标。收件箱图标是目的地：点击打开 Inbox 页并请求展开侧栏；任务图标打开 Tasks 页；频道/Agents 图标点击请求展开侧栏并聚焦对应分区头部。
 
 Agent 创建流程没有频道选择页，Agent 编辑器没有成员区块——频道成员只在频道侧管理（创建对话框初始成员、频道编辑器成员行、成员管理对话框）；未入频道的 Member 仍可经 DM 触达。
 
@@ -56,19 +56,17 @@ slot 选举摘不掉别的插件注册的列表行、入口文案又是本地化
 
 「收件箱」入口：宽栏是工作区选择器**之上**的一张卡片——它的合计取自每个可见 Workspace，是选择器所命名的那个范围之外、唯一跨范围的目的地，所以由它领起侧栏，而不是站在那个范围里面；窄轨没有选择器可领起，它就是 rail 第一枚图标。
 
-决策队列的入口紧接着它，是宽栏的第二张卡片、窄轨的第二枚图标：「需要你决定」，统计每个可见 Workspace 里仍在等这位读者的 Thread。它的合计取自**同一个** Client 级投影——也就是新到提示音取音的那一个：唯一一处同时回答「还有多少在等」和「有没有新来的」的地方，因此这个入口自己不起轮询，它的记号也不可能和它打开的队列页对不上。
-
-两个入口用同一套方式标记各自的事实——图标**左上角一个点**，数值取各可见 Workspace 的切片合计（mention 只在 Inbox 合计里计数），为 0 时不渲染：没有在等的东西就是没有这个记号，而不是画一个空点。点是 8px 的 `--dsw-alias-state-business-primary`——队列给「点名了这位读者」的 Thread 用的同一种实心墨，于是同一个颜色走到哪里都还是「这需要你」——外加 2px 所在表面的描边（`--team-mark-ring`：凡是自己上底色的表面都把当下这层底色交出来——卡片在悬停与当前页时、rail 按钮在悬停、聚焦与当前页时）。
+这个入口用同一套方式标记自己的事实——图标**左上角一个点**，数值取各可见 Workspace 的切片合计（mention 只在 Inbox 合计里计数），为 0 时不渲染：没有在等的东西就是没有这个记号，而不是画一个空点。点是 8px 的 `--dsw-alias-state-business-primary`——队列给「点名了这位读者」的 Thread 用的同一种实心墨，于是同一个颜色走到哪里都还是「这需要你」——外加 2px 所在表面的描边（`--team-mark-ring`：凡是自己上底色的表面都把当下这层底色交出来——卡片在悬停与当前页时、rail 按钮在悬停、聚焦与当前页时）。
 
 这层底色是半透明的，所以环画两层，上=这层底色、下=该表面**不透明**的底色，叠加结果正好等于控件此刻的真实表面；只画上面那层，等于在已经加深过一次的底上再加深一次，读者看到的是一圈晕而不是描边。叠放胶囊守同一条规则（`avatar-stack.module.css`），两边各自报上自己所在的表面：侧栏的点是 `--dsw-specific-sidebar-fill`（与 Agent 角标同色），Inbox 页行与 Channel feed 入口行的胶囊是页面底色 `--dsw-alias-bg-base`；没有底色可交时两层同色，等于什么都没画。因此它读起来是压在图标笔画上的一个记号，而不是与笔画糊在一起——卡片有底色时也一样。
 
 点挂在图标自己的包裹层（`.inboxMark`：`position: relative`、`flex: 0 0 16px`）上、两轴各 `-2px`，因此无论那枚图标坐在 34px 卡片里还是 36px rail 按钮里，点都落在同一个字形的同一个角上；在窄轨上它也始终留在 rail 区域会裁剪到的那个 36px 控件盒内部。
 
-数字住在宽窄两处的可访问名（`收件箱，6 条未读`、`需要你决定，2 件事在等你`）与窄轨悬停提示里——一次 hover 即得，侧栏本体永远不印数字。
+数字住在宽窄两处的可访问名（`收件箱，6 条未读`）与窄轨悬停提示里——一次 hover 即得，侧栏本体永远不印数字。
 
 Inbox 页作为屏上面孔时卡片/图标携带 `aria-current='page'`，窄轨那枚图标还带上卡片同款当前页底色——rail 没有文字，底色是它唯一能说「你在这」的东西；被嵌入的成员会话覆盖期间它只是被记住的位置，不携带高亮。
 
-`TeamConversation` 由同一个 owner 渲染同一组面：Thread | Channel | Inbox | Tasks | 决策 | welcome。选 Inbox、Tasks 或决策清掉 Channel/Thread 面并三者互斥；选 Workspace、Channel 或 Thread 清掉三个。从 Inbox、Tasks 或决策行进入的 Thread 记住来处：Back 读作「返回收件箱列表」「返回任务列表」或「返回待决定列表」并回到那张列表，从 Channel 进入的 Thread 则保持 Back 落在频道时间线。来处是持久的，刷新后 Back 仍指向正确目标。
+`TeamConversation` 由同一个 owner 渲染同一组面：Thread | Channel | Inbox | Tasks | welcome。选 Inbox 或 Tasks 清掉 Channel/Thread 面并两者互斥；选 Workspace、Channel 或 Thread 清掉两个。从 Inbox 或 Tasks 行进入的 Thread 记住来处：Back 读作「返回收件箱列表」或「返回任务列表」并回到那张列表，从 Channel 进入的 Thread 则保持 Back 落在频道时间线。来处是持久的，刷新后 Back 仍指向正确目标。
 
 Tasks 页保持与 Inbox 相同的全局位置纪律：持久的导航 face、跨 Workspace 合并、无 scope 订阅；行点击经与 Inbox 行相同的 select-Thread 路径落到该 Task 的 Thread。
 

@@ -37,23 +37,6 @@ const leaderRow = {
 }
 
 describe('Member working queue', () => {
-  it('rides the newest current Task on the Agent row and opens the queue dialog from the line', async () => {
-    const b = await runtimeWithTeam({ mode: 'team', workspaceId: 'w1' })
-    b.seedMemberTasks([{ queue: {
-      memberId: 'member:builder',
-      current: [queueRow('task:7', 7, '叠放校验'), queueRow('task:8', 8, '冒烟清单')],
-      queued: [],
-    } }])
-    const line = await b.view.findByRole('button', { name: /Task #7 · 叠放校验/ })
-    expect(within(line).getByText('+1 项')).toBeTruthy()
-    fireEvent.click(line)
-    const dialog = await b.view.findByRole('dialog', { name: '任务队列：builder' })
-    expect(within(dialog).getByRole('heading', { name: '正在处理' })).toBeTruthy()
-    expect(within(dialog).getByTitle('叠放校验')).toBeTruthy()
-    expect(within(dialog).getByTitle('冒烟清单')).toBeTruthy()
-    await b.runtime.dispose()
-  })
-
   it('lists current and queued work, and a row click follows the Task into its Thread', async () => {
     const b = await runtimeWithTeam({ mode: 'team', workspaceId: 'w1' })
     b.seedMemberTasks([{ queue: {

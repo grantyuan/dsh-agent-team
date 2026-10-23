@@ -100,8 +100,6 @@ import type {
   AgentTeamRemoveHumanAvatarResult,
   AgentTeamInbox,
   AgentTeamInboxRequest,
-  AgentTeamPendingDecisions,
-  AgentTeamPendingDecisionsRequest,
   AgentTeamJoinChannelRequest,
   AgentTeamJoinChannelResult,
   AgentTeamJoinWorkspaceRequest,
@@ -3351,9 +3349,13 @@ export default class AgentTeam extends TypertRemoteService {
    * back and put a same-role generation in its place.
    *
    * Every fact this writes is an ordinary ledger operation committed under the
-   * Host's Human authority — the same shape an operator's own archive-then-add
-   * would write — inside one serialized lifecycle step, so no Remote call
-   * interleaves with the handover. What the replacement inherits is the role
+   * Host's Human authority, inside one serialized lifecycle step, so no Remote
+   * call interleaves with the handover. The successor is added and activated
+   * first, and the predecessor is archived only once that activation is real;
+   * a successor that cannot come up is rolled back and the failure rethrown, so
+   * the escalation stays open and the next pass retries the same step rather
+   * than leaving the Team with an archived Member and no live replacement. What
+   * the replacement inherits is the role
    * (preset, description, pinned model, capabilities), the private memory, and
    * the Channel reach of its predecessor; never its Session log. The abandoned
    * work itself becomes durable Team facts through archival's own
@@ -3401,10 +3403,6 @@ export default class AgentTeam extends TypertRemoteService {
         privateMemoryPath: dshHomePath('agent-team', 'members', memberMemoryDirectoryName(replacementId)),
         state: 'enabled',
       })
-      const archived = await ledger.archiveMember({ requestId: randomUUID() as AgentTeamRequestId, memberId, actor: agentTeamHumanActor() })
-      this.emitCommitted(archived.value.receipt)
-      await this.disposeMemberSession(memberId, archived.value.member)
-      await this.ctx.workspaceRegistry.archiveSession(archived.value.member.sessionId)
       const added = await ledger.addMember({
         requestId: randomUUID() as AgentTeamRequestId,
         actor: agentTeamHumanActor(),
@@ -3422,13 +3420,30 @@ export default class AgentTeam extends TypertRemoteService {
       })
       if (!added.committed) throw new Error(`supervision could not commit a replacement Member for '${failed.handle}'`)
       const stored = added.value.member
-      this.ctx.logger.warn(`agent-team: supervision replaced member '${failed.handle}' with '${stored.handle}' after ${trigger} and a forced reset that did not heal it`)
+      this.emitCommitted(added.value.receipt)
       // The inherited index has to be in place before the first activation:
       // provisioning only writes a missing `memory.md`, so the copy wins and the
       // replacement's first turn already reads what its predecessor knew.
-      const inheritance = await this.memberRuntime.inheritPrivateMemory(archived.value.member, memberMemoryDirectoryPath(stored))
+      const inheritance = await this.memberRuntime.inheritPrivateMemory(failed, memberMemoryDirectoryPath(stored))
       if (inheritance === 'refused-foreign-home') this.ctx.logger.warn(`agent-team: supervision refused to inherit private memory from '${failed.privateMemoryPath}': it names a directory outside this DSH home`)
       await this.activateMember(stored, this.requireWorkspace(failed.workspaceId).path)
+      // The predecessor stays live and enabled until its replacement is proven:
+      // activation swallows its own failure, so a replacement that never came up
+      // must be rolled back rather than left as the only roster row. Archiving
+      // first would strand the Team on a tombstone with no successor to hand the
+      // work to — the exact "reset deleted the Member" outcome this guards.
+      if (!this.handles.has(stored.memberId)) {
+        const dropped = await ledger.removeMember({ requestId: randomUUID() as AgentTeamRequestId, memberId: stored.memberId, actor: agentTeamHumanActor() })
+        if (dropped.committed) this.emitCommitted(dropped.value.receipt)
+        await this.disposeMemberSession(stored.memberId, dropped.value.member)
+        await this.memberRuntime.cleanupRemovedMember(dropped.value.member)
+        throw new Error(`supervision could not activate a replacement Member for '${failed.handle}'; the predecessor stays enabled and the pass retries`)
+      }
+      const archived = await ledger.archiveMember({ requestId: randomUUID() as AgentTeamRequestId, memberId, actor: agentTeamHumanActor() })
+      this.emitCommitted(archived.value.receipt)
+      await this.disposeMemberSession(memberId, archived.value.member)
+      await this.ctx.workspaceRegistry.archiveSession(archived.value.member.sessionId)
+      this.ctx.logger.warn(`agent-team: supervision replaced member '${failed.handle}' with '${stored.handle}' after ${trigger} and a forced reset that did not heal it`)
       for (const workspaceId of otherWorkspaces) {
         const joined = await ledger.joinWorkspace({ requestId: randomUUID() as AgentTeamRequestId, workspaceId, memberId: stored.memberId, actor: agentTeamHumanActor() })
         this.emitCommitted(joined.value.receipt)
@@ -3984,19 +3999,8 @@ export default class AgentTeam extends TypertRemoteService {
   }
 
   /**
-   * Human decision queue: every Thread in one Workspace that still waits on
-   * the Human — a decision ask named at them, or an open Task awaiting
-   * acceptance — with the full ask material so the Client can answer from
-   * one surface instead of visiting each Thread. Propose-and-read only: it
-   * commits nothing and consumes nothing.
+   * Human's cross-Channel Task list: every Task with its sub-task linkage and live progress.
    */
-  @Remote('pendingDecisions')
-  pendingDecisions(request: AgentTeamPendingDecisionsRequest): AgentTeamPendingDecisions {
-    this.requireWorkspace(request.workspaceId)
-    return this.requireLedger().pendingDecisions(agentTeamHumanActor(), request)
-  }
-
-  /** Human's cross-Channel Task list: every Task with its sub-task linkage and live progress. */
   @Remote('tasks')
   tasks(request: AgentTeamTasksRequest): AgentTeamTasks {
     this.requireWorkspace(request.workspaceId)

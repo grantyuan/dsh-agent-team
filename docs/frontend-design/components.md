@@ -107,31 +107,6 @@ The band's pick mode follows the semantics of the ask, which the digest model re
 
 Sending answers through the ordinary reply path, so a decision lands as one Message: the panel reports 你的决定已发送 as its only feedback and releases the selection. The durable accept and close of an `in_review` Task stay where they were — the header's own actions.
 
-## Human decision queue (需要你决定)
-The queue is a global Team page beside the Inbox and Tasks lists: it takes the same seat — the shared header band, 880px reading column, gutters, and scroller — and reads every visible Workspace's slice, then partitions the result instead of merging it flat: one Workspace heading, a Channel heading nested under it, and the reader's own sort key re-laying only the rows inside a group. Group order is fixed, so re-sorting never moves a group, and the reader meets every Thread that waits on them without chasing a chip through the Inbox into each Thread in turn.
-
-Each waiting decision is a **card, not a row**: the ask is the page's subject, so it gets a line of its own at reading size instead of being clamped behind a pointer into the Thread. The card keeps the Inbox row's scan order — the asking Member's face, then the provenance, the reason chip, the unread capsule, and the instant — so a reader who knows one page reads the other without learning a second grammar. The provenance on the card is the Task chip alone: which Workspace and which Channel it lives in is stated once by the headings above it, never repeated on every card.
-
-The card's clock is the Thread's last message — the newest reply after the anchor, falling back to the anchor's own instant while nobody has replied — the same clock the Inbox row runs on, and the page's default order, newest message first, is that same fact, so what the reader sees is what the list is sorted by. The ask's own instant rides the element's hover title rather than competing with the visible clock.
-
-The three sort keys are the Inbox's own three — 最新回复, 创建时间, 未读数量 — kept in this browser's storage, and the Host's admission order (longest wait first) is the stable tiebreaker, so changing the key re-lays the list without inventing a different one.
-
-The reason chip is the card's one action-hued element, carrying `--dsw-alias-state-business-primary` inside the same hairline shape the neighbouring pages use: 等待你的答复 for a Message that asked the Human, 等待你验收 for work awaiting acceptance. Both ride the Host's own two reasons, so the chip says which answer the card offers before the reader reads the ask.
-
-The ask keeps the author's newlines and wraps anywhere, because a card that pushed past its own edge would hide the very text the reader is there to answer. Newlines are the Member's, not a formatting accident, so the body is drawn `pre-wrap` rather than collapsed.
-
-Three answers sit under the ask in the order a reader is likely to need them — 回复 first, 验收通过 second and only on a Task-awaiting row, 打开讨论 last for anything the ask alone does not settle. 回复 opens an inline composer under the card, and it is deliberately minimal: one field sized to the shared composer, with no recipients, no attachments, and no As-task toggle, since everything else about the answer is already stated by the card above it. The Thread's own auto-acknowledge marks it read on entry, so a card's unread clears through that read too rather than by a second path.
-
-Two personal marks take the card's other edge, because neither is an answer to anybody. 已读 clears the reader's own unread on the Thread through the same durable read an answer performs, so the card stays — the ask is unanswered — and only its unread mark goes; it is unavailable at zero unread.
-
-The header carries the same clearing for the page rather than for a card: 全部已读 stands beside the sort control and reads every card the queue still holds unread through, one durable read each, so the sweep never walks the queue a Thread at a time. It changes what the reader holds, never what the Host asks — a card whose ask nobody answered stays exactly where it was — and it is unavailable while the queue holds no unread at all. One refusal stops the sweep and prints a page-level line — 没能清除未读，请重试 — because that refusal belongs to the sweep rather than to any single card.
-
-关注/取消关注 toggles the Thread's Attention, which is the only thing that gives a Thread an unread count for this reader at all, so an unfollowed card reads no unread and offers only the follow. The Host refuses a no-op either way and that refusal is English technical prose a reader must not be shown: the card re-reads the queue instead — which corrects a label that had already moved on — and says 没能更新关注状态，请重试.
-
-A refusal belongs to the card that raised it, printed under the answer it refused rather than on a page-level line far from what it is about: the Host's fence (请先读取 N 条未读更新 when unread work still stands behind the writer, Thread 已发生变化 when the Thread moved under the read) and a transport failure both render there. No rendered cost is ever optimistic — the card waits for the Host's own verdict before it clears a draft or closes the composer.
-
-The empty state speaks the shared empty-state language — the same 13px `strong` title and 12px hint pair the Inbox uses — reading 暂时没有需要你决定的事 with the hint that new asks appear here as Agents keep working, which is what makes the page safe to leave standing.
-
 ## Thread header band and the Claim panel
 The Thread's header band carries the back row, the Task identity, the runtime-risk section, and the Claims section, and it closes with the one rule `.surfaceHeader` draws. The two sections inside it therefore separate by **space alone** — a section-level `border-top` would draw a second line around nothing, since the band's own rule already ends the group above.
 

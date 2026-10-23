@@ -1112,62 +1112,6 @@ export interface AgentTeamInbox {
   readonly totalDirectCount: number
 }
 
-/** Read-only decision-queue projection for one Workspace. */
-export interface AgentTeamPendingDecisionsRequest {
-  readonly workspaceId: WorkspaceId
-}
-
-/** One decision the Human queue holds: a Thread that waits on the Human's answer. */
-export interface AgentTeamPendingDecision {
-  readonly workspaceId: WorkspaceId
-  readonly channelRef: AgentTeamChannelRef
-  readonly channelName: string
-  readonly task?: AgentTeamTask
-  /** The Task's ordinal inside its home Channel; absent on taskless Threads. */
-  readonly taskNumber?: number
-  /** The Thread the Human answers; its revision fences a direct reply. */
-  readonly thread: AgentTeamThread
-  /**
-   * Why the Thread waits: the newest Message that named the Human asked for a
-   * call and no Human word followed it, or an open Task stands awaiting
-   * acceptance.
-   */
-  readonly reason: 'decision_request' | 'task_review'
-  /**
-   * The ask as its author wrote it: the requesting Message's body, or — for an
-   * awaiting-acceptance Task — the Member's latest report on the Thread (the
-   * Thread anchor when it carries none). Bounded for transport, generously
-   * enough to answer from.
-   */
-  readonly askText: string
-  readonly askOccurredAt: string
-  /** The person waiting on the Human's answer. */
-  readonly askActor: AgentTeamInboxActor
-  /** Instant of the Thread's anchor Message — the row's creation time. */
-  readonly createdOccurredAt: string
-  /**
-   * Instant of the newest reply — the last Message after the anchor, whoever
-   * wrote it. Absent while the Thread has no reply yet, and a row ordering by
-   * 「最后消息」 falls back to {@link createdOccurredAt}. This is the same fact
-   * the Inbox row carries, so the two surfaces order a Thread by one clock.
-   */
-  readonly latestReplyOccurredAt?: string
-  /**
-   * Unread facts this reader holds on the Thread. Unread is derived from Thread
-   * Attention, so a Thread the Human does not follow reads zero here — the row's
-   * 「已读」 action is only meaningful once there is something to consume.
-   */
-  readonly unreadCount: number
-  /** Absent while the Human does not follow this Thread; drives 「关注/取消关注」. */
-  readonly attention?: AgentTeamThreadAttention
-}
-
-export interface AgentTeamPendingDecisions {
-  readonly humanMemberId: AgentTeamMemberId
-  /** Oldest wait first: the ask nobody has answered the longest leads the queue. */
-  readonly items: readonly AgentTeamPendingDecision[]
-}
-
 /** Human intent to read the Workspace's whole Task list with progress facts. */
 export interface AgentTeamTasksRequest {
   readonly workspaceId: WorkspaceId

@@ -21,12 +21,10 @@ async function bench(persisted: string | null = null) {
   const ctx = new Context()
   await ctx.plugin(SlotRegistry).await()
   ctx.provide('locale', new LocaleRuntime(ctx))
-  // The decision queue's arrival cue stands outside Team mode: it opens its own
-  // change stream and reads the queue as soon as the Client mounts, so the
-  // bench supplies the two faces it reaches through `remote`.
+  // The Team change stream the Client opens as soon as it mounts; the bench
+  // never renders, so nothing consumes a change.
   const agentTeamFace = {
     changes: vi.fn(async function* () { /* the bench never renders, so nothing consumes a change */ }),
-    pendingDecisions: vi.fn(async () => ({ ok: true, value: { humanMemberId: 'member:human', items: [] } })),
   }
   ctx.provide('remote', {
     $mount: async () => async () => {},

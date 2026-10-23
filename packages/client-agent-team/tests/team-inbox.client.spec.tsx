@@ -399,7 +399,7 @@ describe('Team Inbox surfaces', () => {
     await b.runtime.dispose()
   })
 
-  it('orders the narrow rail Inbox → Decisions → Tasks → Channels → Agents with the unread dot on the Inbox icon', async () => {
+  it('orders the narrow rail Inbox → Tasks → Channels → Agents with the unread dot on the Inbox icon', async () => {
     const b = await runtimeWithTeam({ mode: 'team', workspaceId: 'w1' })
     // Collapse the fixture sidebar to the narrow rail.
     fireEvent.click(b.view.container.querySelector('[data-test-control]')!)
@@ -409,7 +409,7 @@ describe('Team Inbox surfaces', () => {
       return nav as HTMLElement
     })
     const labels = [...rail.querySelectorAll('button')].map(button => button.getAttribute('aria-label'))
-    expect(labels).toEqual(['收件箱', '需要你决定', '任务', '频道', 'Agents'])
+    expect(labels).toEqual(['收件箱', '任务', '频道', 'Agents'])
     b.seedInbox([inboxRow('w1', 'thread:w1')])
     b.seedInbox([inboxRow('w1', 'thread:w1')])
     const inboxButton = within(rail).getByRole('button', { name: '收件箱' })

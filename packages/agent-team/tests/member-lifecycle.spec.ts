@@ -4802,6 +4802,51 @@ describe('Member supervision handover', () => {
     expect(() => ctx.agentTeam.validateLedger()).not.toThrow()
   })
 
+  it('keeps the predecessor enabled and the escalation open when the replacement cannot activate', async () => {
+    const { ctx, workspaceId, presets } = await realHarness()
+    const { added, memberId } = await setupClaimedMember(ctx, workspaceId, 'supervise-stuck')
+    const agent = ctx.agents.get(added.status.member.sessionId)!
+    presets.orphaned.add(agent.ctx)
+    presets.failingMount = true
+
+    // Spend the bring-up budget, then run the give-up pass and the handover pass
+    // with the broken mount still in place: the successor cannot activate.
+    for (let pass = 0; pass < 3; pass += 1) {
+      await ctx.agentTeam.runSupervisionPass()
+      const rebuilt = ctx.agents.get(added.status.member.sessionId)
+      if (rebuilt !== undefined) await waitForIdle(ctx, rebuilt)
+    }
+    await ctx.agentTeam.runSupervisionPass()
+    await ctx.agentTeam.runSupervisionPass()
+
+    // The failed handover archived nothing and left the successor retired rather
+    // than enabled: no live replacement was invented, and the predecessor stays
+    // enabled so the escalation keeps retrying instead of stranding the Team on
+    // a deleted Member.
+    const statuses = ctx.agentTeam.members()
+    const predecessor = statuses.find(status => status.member.memberId === memberId)!
+    expect(predecessor.member).toMatchObject({ handle: 'builder', state: 'enabled' })
+    expect(predecessor).toMatchObject({ availability: 'unavailable' })
+    const enabled = statuses.filter(status => status.member.state === 'enabled')
+    expect(enabled.map(status => status.member.handle)).toEqual(['builder'])
+    // The rolled-back successor remains only as an ordinary removal record.
+    expect(statuses.find(status => status.member.handle === 'builder-2')?.member.state).toBe('inactive')
+    expect(() => ctx.agentTeam.validateLedger()).not.toThrow()
+
+    // The escalation was not cleared: lifting the mount and running one more pass
+    // completes the very same handover that just failed.
+    presets.failingMount = false
+    await ctx.agentTeam.runSupervisionPass()
+    const after = ctx.agentTeam.members()
+    expect(after.find(status => status.member.memberId === memberId)).toMatchObject({ availability: 'archived' })
+    // The retired rollback row and the fresh successor share the released handle:
+    // it is the enabled one that completes the handover.
+    const successor = after.filter(status => status.member.handle === 'builder-2' && status.member.state === 'enabled')
+    expect(successor).toHaveLength(1)
+    expect(successor[0]).toMatchObject({ availability: 'active' })
+    expect(() => ctx.agentTeam.validateLedger()).not.toThrow()
+  })
+
   /**
    * Spend the bring-up budget on an unreachable Member, run the give-up pass
    * (where the recap call starts) and the handover pass, running a checkpoint

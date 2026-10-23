@@ -3,7 +3,11 @@
 English | [中文](attention-and-messaging.zh.md)
 
 ## Thread Attention and Inbox
-Attention is durable private state for one Member and Thread: current period start and contiguous read watermark. Creating a Thread, creating a Task Claim, explicitly following, or accepting a Human invitation starts it. Taskless Threads can be unfollowed directly; taskful Threads require no active Claim. Unfollow ends the period and discards its unread work; a later follow starts at the current tail.
+Attention is durable private state for one Member and Thread: current period start and contiguous read watermark. Creating a Thread, creating a Task Claim, explicitly following, or accepting a Human invitation starts it.
+
+A Human replying in a Thread starts their own Attention too: writing in a Thread is taking part in it, so an Agent's next word there reaches that Human's Inbox as ordinary unread without needing `@human` on every reply, while the reply itself is never unread for its author. That follow is the replier's alone — an Agent mentioning the Human still does not make the Human a follower.
+
+Taskless Threads can be unfollowed directly; taskful Threads require no active Claim. Unfollow ends the period and discards its unread work; a later follow starts at the current tail.
 
 While active, other Members' Messages—and taskful Claim and Task resolution Activities—become ordinary unread. Mentions create durable direct markers. The sender's own mutation is not unread. Promotion creates a `promote` Activity for current followers. Follow/unfollow/read are private and do not advance Thread revision.
 
@@ -17,24 +21,9 @@ Human navigation is Workspace → Channel → Thread; a Task is an overlay, not 
 
 Inbox rows resolve their own clocks: each row carries the Thread's `createdOccurredAt`, the newest `latestReplyOccurredAt` after the anchor with its `latestReplyActor`, and `needsHumanDecision` — a Thread fact, not a read state — standing while an open Task awaits acceptance or the newest Message naming the Human asks them for a decision and is the last word addressed to them. The Host recomputes these from ledger facts per projection; the row never carries Message bodies beyond its preview and needs no Thread read of its own.
 
-The decision ask is a conservative phrase filter over the Message body — decision nouns and same-sentence request shapes — because naming the Human is not itself a decision: reports and CC-style mentions light the unread badge, never the chip. That filter is also the Host's own admission rule for the decision queue; the semantic judge stays the Thread digest, which reads the whole transcript only when the reader asks it to.
+The decision ask is a conservative phrase filter over the Message body — decision nouns and same-sentence request shapes — because naming the Human is not itself a decision: reports and CC-style mentions light the unread badge, never the chip. That filter is also the Host's own admission rule for the Inbox's `needsHumanDecision` fact; the semantic judge stays the Thread digest, which reads the whole transcript only when the reader asks it to.
 
 Opening a Thread performs durable Human read and scrolls to the latest fact; a bounded result with remaining unread drains automatically through continued reads, so no explicit continuation exists. History does not acknowledge new work. Arrivals while the Thread is open are acknowledged durably regardless of scroll position; a reader away from the bottom sees only a pure jump hint with no read semantics.
-
-## The Human decision queue
-One Host projection answers every "what is waiting on me" question: `pendingDecisions` returns, per Workspace, the Threads that still wait on the Human — an open Task at `in_review` awaiting acceptance, or a Message that asked them for a decision with no Human word after it.
-
-Each row carries the ask in the words its author used, the Channel and Task it belongs to, its actor, its instant, the Thread's own clocks (the anchor's instant, and the newest reply after it while one exists), the reader's unread count on the Thread, and the Thread revision it was read at; every Workspace's slice is bounded to 100 rows, ordered oldest wait first, with each ask clamped to 4000 characters.
-
-Those last facts are what let a caller order the queue by the newest message and offer the reader's own marks without a second read.
-
-It is a pure read that commits nothing, so opening or refreshing the queue never answers a decision by itself: a Thread leaves the queue only when a committed fact stops qualifying it, and a queue left open while Agents keep working stays truthful.
-
-The Client renders that one projection as a single cross-Workspace page — the queue partitioned by Workspace and then by Channel, with the reader's own sort key re-laying only the rows inside a Channel group — and answers from it through the ordinary durable paths: a `reply` for the question, a Task `accept` for acceptance, and the full Thread one click away. The Host requires no unread work to stand behind a writer, so a row drains the reader's own backlog before it commits, and the page holds no parallel authority over either answer.
-
-The page's two personal marks are that projection's own facts rather than a second source. 已读 performs the same durable Human read an answer performs — the row stays while the ask is unanswered, and the Thread's own auto-acknowledge already marks it read on entry — and 关注/取消关注 drives `changeAttention`, which is the only thing that gives a Thread an unread count for this reader at all; a Thread nobody follows reads zero, so the two marks are complements rather than alternatives.
-
-A newly arriving ask announces itself with a two-note cue. The Client raises it from the same projection the queue page and the sidebar entry read, so the sound, the mark, and the page can never disagree, and it stands deliberately outside Team mode: a reader who stepped away to an ordinary conversation still hears that an Agent is waiting on them. The first read establishes the baseline and the backlog already standing never chimes; a Thread the reader answered and an Agent asked about again is a new ask, and sounds again.
 
 ## Mentions
 A Message names its recipients in its own body: writing `@Handle` is what makes a mention, matched against the Channel's addressable names case-insensitively, on Unicode word boundaries, and longest handle first, so a name the Client renders as a chip is the same name that delivers. A bare handle stays ordinary prose, and a handle inside a code block or code span is quoted rather than called. `@all` reaches every Member of the Channel, expanded to the Member set as of that write and snapshotted into the operation.

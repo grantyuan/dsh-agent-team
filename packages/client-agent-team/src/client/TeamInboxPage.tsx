@@ -42,6 +42,15 @@ interface TeamInboxPageProps {
 const RECENT_ROWS_LIMIT = 5
 
 /**
+ * How many times 「全部已读」 may refill the queue after clearing what it can see.
+ * The Host bounds each Workspace slice by `limit` (100), so a backlog larger than
+ * one slice only becomes visible as the rows above it are consumed; each pass
+ * clears the visible slice and asks for the next. The cap keeps a growing feed
+ * from turning the sweep into a permanent job.
+ */
+const MARK_ALL_PASS_LIMIT = 20
+
+/**
  * Queue order, one total order across Workspaces: the Host's own keys —
  * mentions first, then the ledger sequence, then the Thread ref. Each Workspace
  * slice already arrives in this order, and it is also the Host's truncation
@@ -114,8 +123,8 @@ function inboxRowKeys(row: TeamInboxRow): { readonly workspaceId: WorkspaceId; r
  * two slices — the unread queue (「需要我」, mentions counted inside it rather
  * than alone) and the 「最近活跃」 tail of Threads the reader took part in.
  * Both slices take rows from every visible Workspace, and each is partitioned
- * the same way the decision queue is: a Workspace heading, then a Channel
- * heading, with the reader's own sort re-laying only the rows inside a group.
+ * into a Workspace heading, then a Channel heading, with the reader's own sort
+ * re-laying only the rows inside a group.
  * Opening the page never acknowledges anything — only a durable Thread read
  * advances the watermark and consumes a mention marker, so rows and the badge
  * drop after the Thread is opened through the existing auto-ack path. A Thread
@@ -147,8 +156,12 @@ export function TeamInboxPage({ useWorkspaces, loadInbox, subscribeChanges, read
   // ticket, a slow read that started first can land after a fast second and
   // overwrite fresh rows with a stale queue. Only the newest refresh may write.
   const refreshTicket = useRef(0)
+  // The page-wide drain reads the queue it can see, then re-reads it; a change
+  // wake landing mid-sweep would race that read and pull back rows the sweep is
+  // already clearing, so the sweep owns the queue while it runs.
+  const markingRef = useRef(false)
 
-  const refresh = useCallback(async () => {
+  const refresh = useCallback(async (): Promise<readonly TeamInboxRow[] | undefined> => {
     const ticket = ++refreshTicket.current
     if (!loadedRef.current) setLoading(true)
     const results = await Promise.all(workspaces.map(async workspace => {
@@ -157,12 +170,13 @@ export function TeamInboxPage({ useWorkspaces, loadInbox, subscribeChanges, read
         ? { ok: true as const, workspaceId: workspace.workspaceId, workspaceTitle: workspace.title, items: result.value.items, recent: result.value.recent, humanMemberId: result.value.humanMemberId }
         : { ok: false as const, message: result.error.message }
     }))
-    if (ticket !== refreshTicket.current) return
+    if (ticket !== refreshTicket.current) return undefined
     const failure = results.find(result => !result.ok)
     setHumanMemberId(results.find(result => result.ok)?.humanMemberId)
     const asRows = (items: readonly AgentTeamInboxItem[], workspaceId: WorkspaceId, workspaceTitle: string): TeamInboxRow[] =>
       items.map(item => ({ workspaceId, workspaceTitle, item }))
-    setRows(results.flatMap(result => result.ok ? asRows(result.items, result.workspaceId, result.workspaceTitle) : []).sort(compareInboxRows))
+    const queue = results.flatMap(result => result.ok ? asRows(result.items, result.workspaceId, result.workspaceTitle) : []).sort(compareInboxRows)
+    setRows(queue)
     // The tail is one global bound rather than one per Workspace: the reader was
     // promised five Threads to step back into, and every Workspace's slice is
     // already capped on its own, so the merged list is trimmed here.
@@ -171,6 +185,7 @@ export function TeamInboxPage({ useWorkspaces, loadInbox, subscribeChanges, read
     setError(failure?.ok === false ? failure.message : undefined)
     loadedRef.current = true
     setLoading(false)
+    return queue
   }, [loadInbox, workspaces])
 
   useEffect(() => { void refresh() }, [refresh])
@@ -179,6 +194,7 @@ export function TeamInboxPage({ useWorkspaces, loadInbox, subscribeChanges, read
       setError(update.message)
       return
     }
+    if (markingRef.current) return
     void refresh()
   }), [subscribeChanges, refresh])
 
@@ -203,21 +219,47 @@ export function TeamInboxPage({ useWorkspaces, loadInbox, subscribeChanges, read
   // The 「最近活跃」 tail never holds one — the Host keeps a Thread with unread in
   // the queue alone — so the drain is the queue's own backlog and nothing else.
   const rowsWithUnread = (rows ?? []).filter(row => row.item.unreadCount > 0)
+  /**
+   * Clear the whole backlog, one visible slice at a time. A row leaves the
+   * rendered queue the moment its read lands, so the reader watches the list
+   * shrink instead of a button that reports work it cannot show. Each pass then
+   * re-reads the Host's queue: every Workspace slice is bounded, and a backlog
+   * bigger than one slice only surfaces once the rows above it are consumed.
+   * A refusal stops the sweep with one message — the read that failed is the
+   * Host's own verdict, and repeating it would only multiply the same error.
+   */
   const markAllRead = async (): Promise<void> => {
-    if (markingAll || rowsWithUnread.length === 0) return
+    if (markingRef.current) return
+    let queue = (rows ?? []).filter(row => row.item.unreadCount > 0)
+    if (queue.length === 0) return
+    markingRef.current = true
     setMarkingAll(true)
     setMarkAllError(undefined)
     try {
-      for (const row of rowsWithUnread) {
-        const taskRef = row.item.task?.taskRef
-        const drain = await drainThreadUnread(readThread, { workspaceId: row.workspaceId, threadRef: row.item.thread.threadRef, ...(taskRef === undefined ? {} : { taskRef }) })
-        if (drain.kind === 'refused') { setMarkAllError(t('inboxMarkAllReadFailed')); break }
+      for (let pass = 0; pass < MARK_ALL_PASS_LIMIT && queue.length > 0; pass += 1) {
+        for (const row of queue) {
+          const taskRef = row.item.task?.taskRef
+          const drain = await drainThreadUnread(readThread, { workspaceId: row.workspaceId, threadRef: row.item.thread.threadRef, ...(taskRef === undefined ? {} : { taskRef }) })
+          if (drain.kind === 'refused') {
+            setMarkAllError(t('inboxMarkAllReadFailed'))
+            return
+          }
+          // A capped Thread still holds unread: leave its row where it is and
+          // let the next pass pick the rest of it up.
+          if (drain.kind !== 'drained') continue
+          setRows(current => current?.filter(candidate => candidate.workspaceId !== row.workspaceId || candidate.item.thread.threadRef !== row.item.thread.threadRef))
+        }
+        const next = await refresh()
+        // A newer refresh owns the page now; its rows are the truth, not this sweep's.
+        if (next === undefined) return
+        queue = next.filter(row => row.item.unreadCount > 0)
       }
+      if (queue.length > 0) setMarkAllError(t('inboxMarkAllReadFailed'))
     } catch {
       setMarkAllError(t('inboxMarkAllReadFailed'))
     } finally {
+      markingRef.current = false
       setMarkingAll(false)
-      void refresh()
     }
   }
   const human = humanMemberId === undefined

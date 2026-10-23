@@ -124,8 +124,7 @@
    they read as one family, not one control, and a reader addressing one by
    name never lands on the other. */
 .inboxCard,
-.tasksCard,
-.decisionsCard {
+.tasksCard {
   align-items: center;
   background: transparent;
   border: 0;
@@ -146,22 +145,17 @@
 .inboxCard[aria-current='page'],
 .tasksCard:hover,
 .tasksCard:focus-visible,
-.tasksCard[aria-current='page'],
-.decisionsCard:hover,
-.decisionsCard:focus-visible,
-.decisionsCard[aria-current='page'] {
+.tasksCard[aria-current='page'] {
   /* The mark on the card cuts itself out of the card, not out of the page. */
   --team-mark-ring: var(--dsw-alias-interactive-bg-hover);
   background: var(--dsw-alias-interactive-bg-hover);
 }
 .inboxCard:focus-visible,
-.tasksCard:focus-visible,
-.decisionsCard:focus-visible {
+.tasksCard:focus-visible {
   outline: var(--dsw-focus-ring-width, 2px) solid var(--dsw-focus-ring-color, var(--dsw-alias-state-business-primary));
   outline-offset: -2px;
 }
-.inboxCard .inboxMark,
-.decisionsCard .inboxMark {
+.inboxCard .inboxMark {
   color: var(--dsw-alias-label-tertiary);
 }
 .inboxCardLabel {
@@ -522,47 +516,6 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-
-/* The Member's current-task line: a second row under the Agent row naming
-   what it is on. Quieter than the row itself — tertiary ink, full-width but
-   content-height — and the whole line is one hit target opening the queue
-   dialog, the same surface the row menu's Task-queue entry opens. */
-.agentTaskLine {
-  align-items: center;
-  background: transparent;
-  border: 0;
-  border-radius: var(--dsw-radius-sm, 6px);
-  color: var(--dsw-alias-label-tertiary);
-  cursor: pointer;
-  display: flex;
-  gap: 6px;
-  margin: 0 8px 2px;
-  min-width: 0;
-  padding: 2px 0;
-  text-align: left;
-}
-.agentTaskLine:hover,
-.agentTaskLine:focus-visible {
-  color: var(--dsw-alias-label-secondary);
-}
-.agentTaskLine:focus-visible {
-  outline: var(--dsw-focus-ring-width, 2px) solid var(--dsw-focus-ring-color, var(--dsw-alias-state-business-primary));
-  outline-offset: 1px;
-}
-.agentTaskSubject {
-  flex: 1;
-  font-size: 11px;
-  line-height: 15px;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.agentTaskMore {
-  flex: none;
-  font-size: 10px;
-  line-height: 13px;
 }
 
 /* The queue dialog's own grammar: the section heading is the Tasks page's

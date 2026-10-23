@@ -38,8 +38,6 @@ import type {
   AgentTeamMemberSessionSummary,
   AgentTeamMemberSessionTranscript,
   AgentTeamMemberSessionTranscriptRequest,
-  AgentTeamPendingDecisions,
-  AgentTeamPendingDecisionsRequest,
   AgentTeamAddMemberResult,
   AgentTeamRecoverMemberRequest,
   AgentTeamRecoverMemberResult,
@@ -63,8 +61,6 @@ import type {
   AgentTeamSummarizeThreadResult,
   AgentTeamThreadHistory,
   AgentTeamThreadHistoryRequest,
-  AgentTeamThreadAttentionRequest,
-  AgentTeamThreadAttentionResult,
   AgentTeamThreadObservations,
   AgentTeamThreadObservationsRequest,
   AgentTeamThreadReadRequest,
@@ -95,17 +91,6 @@ import type { TeamHumanIdentitySource } from './human-identity.ts'
 
 export interface TeamNavigationSource {
   getSnapshot: () => TeamNavigationSnapshot
-  subscribe: (listener: () => void) => () => void
-}
-
-/**
- * The Client's one cross-Workspace view of the decisions still waiting on the
- * Human: how many are waiting, and the cue that announces new arrivals. Both
- * surfaces that show it — the sidebar entry's mark and the sound — read this
- * one source, so neither polls the Host on its own.
- */
-export interface TeamDecisionAlertSource {
-  getSnapshot: () => number
   subscribe: (listener: () => void) => () => void
 }
 
@@ -158,8 +143,6 @@ export type TeamSidebarProps = PropsRuntime<'sidebar.workspaces'>
     sendMessage: (request: AgentTeamSendMessageRequest) => Promise<RemoteResult<AgentTeamSendMessageResult>>
     /** Human direct-only Inbox slice; the badge sums each visible Workspace's total. */
     loadInbox: (request: AgentTeamInboxRequest) => Promise<RemoteResult<AgentTeamInbox>>
-    /** The waiting-decision total plus the new-decision cue, read once for both surfaces. */
-    decisionAlerts: TeamDecisionAlertSource
     /** Fired after every committed durable Thread read; the badge refreshes without waiting for a changes wake. */
     subscribeReads: (listener: () => void) => () => void
     subscribeChanges: SubscribeTeamChanges
@@ -248,17 +231,8 @@ export type TeamConversationProps = PropsRuntime<'main'> & PropsLocale<'team'> &
   loadInbox: (request: AgentTeamInboxRequest) => Promise<RemoteResult<AgentTeamInbox>>
   /** Human cross-Channel Task list; the Tasks page merges one call per visible Workspace. */
   loadTasks: (request: AgentTeamTasksRequest) => Promise<RemoteResult<AgentTeamTasks>>
-  /** Human decision queue slice: one call per visible Workspace, merged by the queue page. */
-  loadPendingDecisions: (request: AgentTeamPendingDecisionsRequest) => Promise<RemoteResult<AgentTeamPendingDecisions>>
   /** Human-only Thread Attention observations; the Thread composer ranks the returned followers first. */
   threadObservations: (request: AgentTeamThreadObservationsRequest) => Promise<RemoteResult<AgentTeamThreadObservations>>
-  /**
-   * Human follow/unfollow of one Thread. Personal, exempt from the public
-   * mutation fences, and idempotent-hostile: the Host refuses a follow of an
-   * already-followed Thread and an unfollow of one that is not followed, so a
-   * caller must decide from the row's own `attention` and never retry blindly.
-   */
-  changeAttention: (request: AgentTeamThreadAttentionRequest) => Promise<RemoteResult<AgentTeamThreadAttentionResult>>
   /** Human one-shot plain-language Thread digest: propose-only, commits nothing. */
   summarizeThread: (request: AgentTeamSummarizeThreadRequest, signal?: AbortSignal) => Promise<RemoteResult<AgentTeamSummarizeThreadResult>>
   /** Agent-card session jump, shared by every slot; message member chips reuse it. */
