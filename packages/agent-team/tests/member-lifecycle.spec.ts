@@ -1697,7 +1697,7 @@ describe('Agent Team Member lifecycle', () => {
   })
 
   it('validates the final Team tool marker during unpublished setup', async () => {
-    expect(AGENT_TEAM_TOOL_NAMES).toEqual(['team_inbox', 'team_thread', 'team_message', 'team_claim', 'team_view', 'team_supervise', 'context_rollover', 'context_checkpoint', 'context_timeline', 'context_interrupt'])
+    expect(AGENT_TEAM_TOOL_NAMES).toEqual(['team_inbox', 'team_thread', 'team_message', 'team_claim', 'team_view', 'team_supervise', 'team_watch', 'context_rollover', 'context_checkpoint', 'context_timeline', 'context_interrupt'])
     const definition = markAgentTeamPreset({ name: 'team_message' })
     expect(Reflect.get(definition, Symbol.for('@wowyuarm/dsh-agent-team.preset'))).toBe(true)
   })
@@ -5810,6 +5810,77 @@ describe('Agent Team member context control (ticket 01)', () => {
     await new Promise(resolve => setTimeout(resolve, 300))
     expect(bodies().filter(body => body.includes('Task push (no Team leader designated):'))).toHaveLength(1)
     expect(bodies().filter(body => body.includes('Task push declined:'))).toHaveLength(1)
+    expect(() => ctx.agentTeam.validateLedger()).not.toThrow()
+  })
+
+  it('samples a leader watch and reports the baseline, a stall, and a transition into the leader Inbox', async () => {
+    const adapter = new ScriptedAdapter()
+    const { ctx, workspaceId } = await realHarness(adapter)
+    const channel = await ctx.agentTeam.createChannel({ requestId: requestId('watch-channel'), workspaceId, name: 'engineering', description: 'Engineering work' })
+    const chief = await ctx.agentTeam.addMember({ requestId: requestId('watch-chief'), workspaceId, handle: 'chief', description: 'Leads the team', presetId: 'team-member', channelRefs: [channel.channel.channelRef] })
+    const worker = await ctx.agentTeam.addMember({ requestId: requestId('watch-worker'), workspaceId, handle: 'builder', description: 'Builds the work', presetId: 'team-member', channelRefs: [channel.channel.channelRef] })
+    await ctx.agentTeam.updateMember({ requestId: requestId('watch-leader'), memberId: chief.status.member.memberId, handle: 'chief', description: 'Leads the team', leader: true })
+    const leader = ctx.agents.get(chief.status.member.sessionId)!
+    const workerAgent = ctx.agents.get(worker.status.member.sessionId)!
+    const workerId = worker.status.member.memberId
+    // Every notice wakes the leader for one scripted round.
+    for (let turn = 0; turn < 8; turn += 1) adapter.enqueue(textResponse('Acknowledged.'))
+    let callNumber = 0
+    const call = async (name: string, args: unknown) => {
+      const result = await ctx.tools.execute({ signal: new AbortController().signal, callId: ToolCallId(`watch-${++callNumber}`), name, arguments: args, agent: leader })
+      expect(result.isError).toBe(false)
+      if (result.isError) throw new Error(result.error.message)
+      return result.value as Record<string, any>
+    }
+
+    const started = await call('team_watch', { action: 'start', memberRef: workerId, intervalMinutes: 1, stalledMinutes: 1 })
+    expect(started).toMatchObject({ action: 'start', memberId: workerId, handle: 'builder', intervalMinutes: 1, stalledMinutes: 1 })
+    expect(started.watchRef).toMatch(/^watch:/)
+
+    // Only the designated leader may watch: a fellow Member is refused by the ledger.
+    const refused = await ctx.tools.execute({ signal: new AbortController().signal, callId: ToolCallId('watch-refused'), name: 'team_watch', arguments: { action: 'start', memberRef: chief.status.member.memberId }, agent: workerAgent })
+    expect(refused.isError).toBe(true)
+    expect(refused.error?.message ?? '').toMatch(/Leader/)
+
+    const listed = await call('team_watch', { action: 'list' })
+    expect(listed.watches).toHaveLength(1)
+    expect(listed.watches[0]).toMatchObject({ watchRef: started.watchRef, memberId: workerId, handle: 'builder', intervalMinutes: 1, stalledMinutes: 1 })
+    const status = await call('team_watch', { action: 'status', memberRef: workerId })
+    expect(status).toMatchObject({ action: 'status', watch: expect.objectContaining({ watchRef: started.watchRef, memberId: workerId, handle: 'builder', state: 'healthy', presence: 'available' }) })
+    expect(status.watch.turns).toBe(0)
+
+    // First sample of the process: the baseline notice, addressed to the leader.
+    const bodies = () => ctx.agentTeam.view({ workspaceId }).items.map(item => item.message.body)
+    const notices = () => bodies().filter(body => body.includes('Team watch:'))
+    const clock = Date.now()
+    await ctx.agentTeam.runMemberWatchPass(clock)
+    await waitFor(() => notices().length > 0 ? true : undefined)
+    expect(notices()).toHaveLength(1)
+    expect(notices()[0]).toContain('@chief')
+    expect(notices()[0]).toContain('builder is healthy (available)')
+    expect(notices()[0]).toContain('this is the baseline for your watch')
+    expect(notices()[0]).toContain('completed turn(s)')
+
+    // The unchanged state crosses the one-minute stall threshold: exactly one stall notice.
+    await ctx.agentTeam.runMemberWatchPass(clock + 2 * 60_000)
+    await waitFor(() => notices().length > 1 ? true : undefined)
+    expect(notices()).toHaveLength(2)
+    expect(notices()[1]).toContain('past the 1-minute stall threshold')
+
+    // A runtime failure moves the observed state: one transition notice carrying the diagnostic.
+    ctx.agentTeam['setMemberFailure'](workerId, 'runtime', 'the worker exploded')
+    await ctx.agentTeam.runMemberWatchPass(clock + 3 * 60_000)
+    await waitFor(() => notices().length > 2 ? true : undefined)
+    expect(notices()).toHaveLength(3)
+    expect(notices()[2]).toContain('builder moved to stopped (error)')
+    expect(notices()[2]).toContain('Diagnostic: the worker exploded')
+
+    // Cancelling the watch stops the notices and empties the list.
+    const stopped = await call('team_watch', { action: 'stop', watchRef: started.watchRef })
+    expect(stopped).toMatchObject({ action: 'stop', watchRef: started.watchRef, memberId: workerId, handle: 'builder' })
+    expect((await call('team_watch', { action: 'list' })).watches).toEqual([])
+    await ctx.agentTeam.runMemberWatchPass(clock + 10 * 60_000)
+    expect(notices()).toHaveLength(3)
     expect(() => ctx.agentTeam.validateLedger()).not.toThrow()
   })
 })

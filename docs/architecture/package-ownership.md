@@ -7,7 +7,8 @@ packages/agent-team
   Host service + operation ledger + projections + Agent lifecycle + Remote declarations
         │
         ├── packages/tool-agent-team
-        │     model-facing team_inbox / team_thread / team_message / team_claim / team_view
+        │     model-facing team_inbox / team_thread / team_message / team_claim /
+        │     team_view / team_supervise / team_watch
         │
         └── packages/client-agent-team
               typed Remote client + Team mode + browser presentation

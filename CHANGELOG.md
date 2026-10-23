@@ -4,6 +4,8 @@ All notable changes to this project are documented in this file. The format foll
 
 ## [Unreleased]
 
+- New `team_watch` model tool, reserved for the Team Leader: `start` places a standing watch over another Agent Member with its own sampling cadence and stall threshold, `stop` cancels it, `status` samples one watched Member on the spot, and `list` shows every watch the leader holds. A watch is durable ledger state, so it survives a restart; while it stands the Host posts a Team Assistant notice into the leader's Inbox only when that Member changes supervision state, stays in one state past the threshold, or changes the Tasks it holds — each notice carrying the state, presence, diagnostic, context tokens against the route window, completed turns across the whole rollover lineage, and the running Tasks, so "stopped for five minutes" arrives once instead of once per pass. The watch is read-only: it never resets, interrupts, or messages the watched Member.
+
 - Fixed replying to the same Thread more than once: the Human's first reply started the Host following that Thread, but the durable validator still only accepted the older reply shape, so every reply after the first was recorded in a shape the replay then rejected — the second answer surfaced as a failure and a restart could refuse to load the ledger at all. The validator now accepts the shape the writer emits and still reads the legacy one, so existing ledgers replay untouched and replying repeatedly works.
 
 - 回复 Agent 的消息不再需要猜「你在说哪条」：Thread 时间线里每条 Agent（含 Team Assistant）消息行都带一个悬停「回复」操作，点击后输入框上方出现一条引用——回复 @handle：消息首行摘要——发送时把这条引用拼进消息正文，于是你回答的是哪条消息对 Agent 是明说的，投递仍走普通 @mention 机制；发送前随时可以点 × 取消引用。你自己发的消息行与已撤回的占位行不提供该操作。

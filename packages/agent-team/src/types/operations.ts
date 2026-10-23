@@ -8,6 +8,8 @@ import type {
   AgentTeamInterruptRef,
   AgentTeamInterruptResolution,
   AgentTeamMemberInterrupt,
+  AgentTeamMemberWatch,
+  AgentTeamMemberWatchRef,
   AgentTeamOperationBase,
   AgentTeamClaim,
   AgentTeamClaimActivity,
@@ -523,6 +525,33 @@ export interface AgentTeamMemberInterruptResolvedOperation extends AgentTeamOper
   }
 }
 
+/**
+ * Durable start (or retune) of one leader's standing watch over a Member.
+ * The watch is leader-authored coordination state, so the actor must be the
+ * Workspace's leader; the Host's later observations are ordinary Messages.
+ */
+export interface AgentTeamMemberWatchStartedOperation extends AgentTeamOperationBase {
+  readonly kind: 'team/member-watch-started'
+  readonly data: {
+    readonly workspaceId: WorkspaceId
+    /** The full watch entry, sequence- and instant-stamped by this operation. */
+    readonly watch: AgentTeamMemberWatch
+  }
+}
+
+/** Durable end of one standing watch; the record stays for replay. */
+export interface AgentTeamMemberWatchStoppedOperation extends AgentTeamOperationBase {
+  readonly kind: 'team/member-watch-stopped'
+  readonly data: {
+    readonly workspaceId: WorkspaceId
+    readonly watchRef: AgentTeamMemberWatchRef
+    readonly leaderMemberId: AgentTeamMemberId
+    readonly memberId: AgentTeamMemberId
+    /** Bounded one-line reason shown with the audit trail. */
+    readonly reason?: string
+  }
+}
+
 /** Closed union of durable Agent Team operations. */
 export type AgentTeamOperation =
   | AgentTeamInitializedOperation
@@ -557,4 +586,6 @@ export type AgentTeamOperation =
   | AgentTeamDmSentOperation
   | AgentTeamMemberInterruptRecordedOperation
   | AgentTeamMemberInterruptResolvedOperation
+  | AgentTeamMemberWatchStartedOperation
+  | AgentTeamMemberWatchStoppedOperation
 

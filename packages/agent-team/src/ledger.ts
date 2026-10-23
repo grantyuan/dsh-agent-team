@@ -74,6 +74,14 @@ import type {
   AgentTeamMemberTasks,
   AgentTeamMemberTasksRequest,
   AgentTeamMemberUpdatedOperation,
+  AgentTeamMemberWatch,
+  AgentTeamMemberWatchRef,
+  AgentTeamMemberWatchStartedOperation,
+  AgentTeamMemberWatchStoppedOperation,
+  AgentTeamUnwatchMemberRequest,
+  AgentTeamUnwatchMemberResult,
+  AgentTeamWatchMemberRequest,
+  AgentTeamWatchMemberResult,
   AgentTeamMemberWorkspaceJoinedOperation,
   AgentTeamMemberWorkspaceLeftOperation,
   AgentTeamMessage,
@@ -276,6 +284,21 @@ export const MAX_PENDING_INTERRUPTS = 8
 
 /** Label and incomplete-state bounds: resume pointers stay compact, notes live in the Member's own memory. */
 export const INTERRUPT_LABEL_MAX_CHARS = 120
+
+/**
+ * Watch cadence bounds. A watch is a leader's standing instruction, not a
+ * polling loop the target can feel: sampling below one minute would cost more
+ * than the state it observes, and a cadence above four hours would outlive the
+ * turn it was meant to cover.
+ */
+export const MEMBER_WATCH_DEFAULT_INTERVAL_MINUTES = 10
+export const MEMBER_WATCH_MIN_INTERVAL_MINUTES = 1
+export const MEMBER_WATCH_MAX_INTERVAL_MINUTES = 240
+
+/** Stall bounds: how long one unchanged state must last before the leader is told it stalled. */
+export const MEMBER_WATCH_DEFAULT_STALLED_MINUTES = 5
+export const MEMBER_WATCH_MIN_STALLED_MINUTES = 1
+export const MEMBER_WATCH_MAX_STALLED_MINUTES = 240
 export const INTERRUPT_STATE_MAX_CHARS = 2000
 
 /** Member-authored intent to pin an unfinished session onto a restorable checkpoint. */
@@ -393,11 +416,19 @@ export interface AgentTeamAuthorizedDmRequest extends AgentTeamDmRequest {
   readonly actor: AgentTeamMemberActor
 }
 
+export interface AgentTeamAuthorizedWatchMemberRequest extends AgentTeamWatchMemberRequest {
+  readonly actor: AgentTeamMemberActor
+}
+
+export interface AgentTeamAuthorizedUnwatchMemberRequest extends AgentTeamUnwatchMemberRequest {
+  readonly actor: AgentTeamMemberActor
+}
+
 /** Construction hooks used to make durable operation creation deterministic in tests. */
 export interface AgentTeamLedgerOptions {
   readonly operationId?: () => AgentTeamOperationId
   readonly occurredAt?: () => string
-  readonly ref?: (kind: 'channel' | 'message' | 'task' | 'thread' | 'claim' | 'activity' | 'interrupt') => string
+  readonly ref?: (kind: 'channel' | 'message' | 'task' | 'thread' | 'claim' | 'activity' | 'interrupt' | 'watch') => string
   /**
    * Single-writer fence (see ledger-fence.ts): consulted before every queued
    * ledger call. A false answer means another host claimed the ledger's write
@@ -519,6 +550,10 @@ interface Projection {
   readonly activityMarkersByMember: Map<AgentTeamMemberId, Map<AgentTeamThreadRef, AgentTeamActivityMarker[]>>
   /** Replay-order Attention observations per Thread, appended by committed Inbox deltas only. */
   readonly observationsByThread: Map<AgentTeamThreadRef, AgentTeamAttentionObservation[]>
+  /** Active leader watches, keyed by watch ref; the pair index below enforces one watch per leader/target pair. */
+  readonly watches: Map<AgentTeamMemberWatchRef, AgentTeamMemberWatch>
+  /** One watch per (leader, target, Workspace): the pair index a second start retunes instead of duplicating. */
+  readonly watchByPair: Map<string, AgentTeamMemberWatchRef>
 }
 
 /** Minimal replay-time Attention observation; the read projection adds the current Task ref. */
@@ -537,7 +572,17 @@ function emptyProjection(): Projection {
     interrupts: new Map(), interruptsByMember: new Map(),
     anchorByThread: new Map(), taskNumberByTask: new Map(), taskCountByChannel: new Map(), attentionThreadsByMember: new Map(),
     threadsByWriter: new Map(),
-    directMarkersByMember: new Map(), activityMarkersByMember: new Map(), observationsByThread: new Map() }
+    directMarkersByMember: new Map(), activityMarkersByMember: new Map(), observationsByThread: new Map(),
+    watches: new Map(), watchByPair: new Map() }
+}
+
+/**
+ * Identity of one leader/target/Workspace watch slot. A leader retunes its
+ * standing watch through the same slot rather than stacking a second one, so
+ * the pair — not the watch ref — is what the projection indexes.
+ */
+function memberWatchPairKey(leaderMemberId: AgentTeamMemberId, memberId: AgentTeamMemberId, workspaceId: WorkspaceId): string {
+  return `${leaderMemberId}\u0000${memberId}\u0000${workspaceId}`
 }
 
 /** Exhaustiveness guard for the closed operation union: adding a kind must update every dispatch. */
@@ -709,7 +754,7 @@ export class AgentTeamLedger {
   private readonly confirmations = new Map<AgentTeamConfirmationToken, Confirmation>()
   private readonly createOperationId: () => AgentTeamOperationId
   private readonly createOccurredAt: () => string
-  private readonly createRef: (kind: 'channel' | 'message' | 'task' | 'thread' | 'claim' | 'activity' | 'interrupt') => string
+  private readonly createRef: (kind: 'channel' | 'message' | 'task' | 'thread' | 'claim' | 'activity' | 'interrupt' | 'watch') => string
   private operationTail: Promise<void> = Promise.resolve()
   /**
    * Runtime human display name. Durable identity stays `member:human`; only
@@ -2112,6 +2157,93 @@ export class AgentTeamLedger {
   }
 
   /**
+   * Place or retune one leader's standing watch over another Member.
+   *
+   * The watch is durable Team coordination state, so it is an ordinary ledger
+   * operation: a restart re-reads who is watching whom instead of forgetting
+   * the leader's standing instruction. Retuning an existing watch for the same
+   * pair replaces it in place, which keeps one slot per pair no matter how
+   * often a leader adjusts the cadence.
+   */
+  watchMember(request: AgentTeamAuthorizedWatchMemberRequest): Promise<AgentTeamLedgerResult<AgentTeamWatchMemberResult>> {
+    return this.enqueue(async () => {
+      const existing = this.state.byRequest.get(request.requestId)
+      if (existing !== undefined) {
+        this.assertSameWatchStart(existing, request)
+        return this.resolved(this.watchResult(existing))
+      }
+      const leader = this.assertWatchLeader(request.actor, request.workspaceId)
+      // The Human is not addressable through the Agent Member ref shape, so it is
+      // refused before the lookup: the caller's mistake is the target kind, not
+      // a malformed ref.
+      if (request.memberId === AGENT_TEAM_HUMAN_MEMBER_ID) throw new Error('watch target must be an Agent Member')
+      const target = this.requireMember(request.memberId)
+      if (!target.sessionId) throw new Error('watch target must be an Agent Member')
+      if (target.memberId === leader.memberId) throw new Error('the Leader cannot watch itself')
+      if (!this.participatesIn(target.memberId, request.workspaceId)) throw new Error(`Agent Member '${target.memberId}' is not in Workspace '${request.workspaceId}'`)
+      if (target.state !== 'enabled') throw new Error(`Agent Member '${target.memberId}' is ${target.state}; watching requires an enabled Member`)
+      const intervalMinutes = this.watchMinutes(request.intervalMinutes, MEMBER_WATCH_DEFAULT_INTERVAL_MINUTES, MEMBER_WATCH_MIN_INTERVAL_MINUTES, MEMBER_WATCH_MAX_INTERVAL_MINUTES, 'intervalMinutes')
+      const stalledMinutes = this.watchMinutes(request.stalledMinutes, MEMBER_WATCH_DEFAULT_STALLED_MINUTES, MEMBER_WATCH_MIN_STALLED_MINUTES, MEMBER_WATCH_MAX_STALLED_MINUTES, 'stalledMinutes')
+      // The entity carries the operation's own sequence and timestamp, so it is
+      // built from the operation base rather than minted separately: replay
+      // validates that the stamping matches the recording operation.
+      const operationBase = this.operationBase(request, this.nextSequence())
+      const watch: AgentTeamMemberWatch = Object.freeze({
+        watchRef: this.ref('watch') as AgentTeamMemberWatchRef,
+        leaderMemberId: leader.memberId, memberId: target.memberId, workspaceId: request.workspaceId,
+        intervalMinutes, stalledMinutes, startedSequence: operationBase.sequence, startedAt: operationBase.occurredAt,
+      })
+      const operation: AgentTeamMemberWatchStartedOperation = Object.freeze({
+        ...operationBase, kind: 'team/member-watch-started',
+        data: Object.freeze({ workspaceId: request.workspaceId, watch }),
+      })
+      await this.table.put(operation.operationId, operation)
+      this.apply(operation)
+      return this.committed(this.watchResult(operation))
+    })
+  }
+
+  /** Cancel one leader's watch; only the watch's own leader may stop it. */
+  unwatchMember(request: AgentTeamAuthorizedUnwatchMemberRequest): Promise<AgentTeamLedgerResult<AgentTeamUnwatchMemberResult>> {
+    return this.enqueue(async () => {
+      const existing = this.state.byRequest.get(request.requestId)
+      if (existing !== undefined) {
+        this.assertSameWatchStop(existing, request)
+        return this.resolved(this.unwatchResult(existing))
+      }
+      const watch = this.state.watches.get(request.watchRef)
+      if (watch === undefined) throw new Error(`unknown Member watch '${request.watchRef}'`)
+      this.assertWatchLeader(request.actor, request.workspaceId)
+      if (watch.leaderMemberId !== request.actor.memberId) throw new Error('only the watching Leader can cancel this watch')
+      if (watch.workspaceId !== request.workspaceId) throw new Error(`Member watch '${request.watchRef}' is not in Workspace '${request.workspaceId}'`)
+      const reason = request.reason?.trim()
+      if (request.reason !== undefined && reason === '') throw new Error('watch cancellation reason must not be empty')
+      const operation: AgentTeamMemberWatchStoppedOperation = Object.freeze({
+        ...this.operationBase(request, this.nextSequence()), kind: 'team/member-watch-stopped',
+        data: Object.freeze({
+          workspaceId: request.workspaceId, watchRef: watch.watchRef, leaderMemberId: watch.leaderMemberId, memberId: watch.memberId,
+          ...(reason === undefined ? {} : { reason }),
+        }),
+      })
+      await this.table.put(operation.operationId, operation)
+      this.apply(operation)
+      return this.committed(this.unwatchResult(operation))
+    })
+  }
+
+  /** Active watches one leader placed, newest first; the panel's own read. */
+  watchesForLeader(leaderMemberId: AgentTeamMemberId, workspaceId?: WorkspaceId): readonly AgentTeamMemberWatch[] {
+    return Object.freeze([...this.state.watches.values()]
+      .filter(watch => watch.leaderMemberId === leaderMemberId && (workspaceId === undefined || watch.workspaceId === workspaceId))
+      .sort((left, right) => right.startedSequence - left.startedSequence))
+  }
+
+  /** Every active watch, oldest first: the monitor's per-pass work list. */
+  activeWatches(): readonly AgentTeamMemberWatch[] {
+    return Object.freeze([...this.state.watches.values()].sort((left, right) => left.startedSequence - right.startedSequence))
+  }
+
+  /**
    * Bounded adjacent context for a DM relay: the truncated body of the most
    * recent earlier DM between the two sessions, newest first. Returns
    * undefined when this is their first exchange. `excluding` skips the
@@ -2965,6 +3097,12 @@ export class AgentTeamLedger {
         // A DM changes no shared projection: delivery is a session-level
         // runtime effect, so no change waiter has anything to refetch.
         return []
+      case 'team/member-watch-started':
+      case 'team/member-watch-stopped':
+        // A watch is leader-private coordination state: the Workspace scope is
+        // what lets the leader's own panel refetch it, and no other Member has
+        // anything to re-read.
+        return [{ kind: 'workspace', workspaceId: operation.data.workspaceId }]
       default:
         return assertUnhandledKind(operation)
     }
@@ -2986,6 +3124,14 @@ export class AgentTeamLedger {
       for (const follower of this.state.attentionByThread.get(threadRef) ?? []) members.add(follower)
     }
     if (operation.kind === 'team/member-workspace-joined' || operation.kind === 'team/member-workspace-left') members.add(operation.data.memberId)
+    if (operation.kind === 'team/member-watch-started') {
+      members.add(operation.data.watch.leaderMemberId)
+      members.add(operation.data.watch.memberId)
+    }
+    if (operation.kind === 'team/member-watch-stopped') {
+      members.add(operation.data.leaderMemberId)
+      members.add(operation.data.memberId)
+    }
     if (operation.actor.kind === 'member') members.add(operation.actor.memberId)
     return [...members]
   }
@@ -3045,6 +3191,8 @@ export class AgentTeamLedger {
       case 'team/dm-sent':
       case 'team/member-interrupt-recorded':
       case 'team/member-interrupt-resolved':
+      case 'team/member-watch-started':
+      case 'team/member-watch-stopped':
         return []
       default:
         return assertUnhandledKind(operation)
@@ -3558,6 +3706,41 @@ export class AgentTeamLedger {
       }
       return
     }
+    if (operation.kind === 'team/member-watch-started') {
+      // A watch is leadership authority, not membership authority: only the
+      // Workspace's own leader may place one, and only over an Agent Member it
+      // can actually observe.
+      const leader = assertMember()
+      const { watch } = operation.data
+      if (leader.leader !== true || watch.leaderMemberId !== leader.memberId) throw new Error('invalid Member watch start')
+      const target = projection.members.get(watch.memberId)
+      if (watch.workspaceId !== operation.data.workspaceId
+        || target === undefined || !this.participatesInFrom(projection, target.memberId, watch.workspaceId)
+        || target.state !== 'enabled' || target.memberId === AGENT_TEAM_HUMAN_MEMBER_ID
+        || target.memberId === leader.memberId
+        || watch.startedSequence !== operation.sequence || watch.startedAt !== operation.occurredAt
+        || !Number.isInteger(watch.intervalMinutes) || watch.intervalMinutes < MEMBER_WATCH_MIN_INTERVAL_MINUTES || watch.intervalMinutes > MEMBER_WATCH_MAX_INTERVAL_MINUTES
+        || !Number.isInteger(watch.stalledMinutes) || watch.stalledMinutes < MEMBER_WATCH_MIN_STALLED_MINUTES || watch.stalledMinutes > MEMBER_WATCH_MAX_STALLED_MINUTES) {
+        throw new Error('invalid Member watch start')
+      }
+      // A repeated pair is a retune, not a conflict: the apply step replaces the
+      // slot in place, so one leader holds exactly one watch per target.
+      this.addRef(refs, watch.watchRef)
+      return
+    }
+    if (operation.kind === 'team/member-watch-stopped') {
+      const leader = assertMember()
+      const watch = projection.watches.get(operation.data.watchRef)
+      if (leader.leader !== true || watch === undefined
+        || watch.leaderMemberId !== leader.memberId
+        || operation.data.leaderMemberId !== watch.leaderMemberId
+        || operation.data.memberId !== watch.memberId
+        || operation.data.workspaceId !== watch.workspaceId
+        || (operation.data.reason !== undefined && (operation.data.reason.trim() === '' || operation.data.reason !== operation.data.reason.trim()))) {
+        throw new Error('invalid Member watch stop')
+      }
+      return
+    }
     assertUnhandledKind(operation)
   }
 
@@ -4005,6 +4188,24 @@ export class AgentTeamLedger {
     if (operation.kind === 'team/dm-sent') {
       // Audit-only: delivery is a transient runtime effect, so the durable
       // projection deliberately does not change.
+      return
+    }
+    if (operation.kind === 'team/member-watch-started') {
+      const watch = operation.data.watch
+      const pair = memberWatchPairKey(watch.leaderMemberId, watch.memberId, watch.workspaceId)
+      // Retuning one pair replaces its previous watch in place: a leader holds
+      // one standing instruction per target, never a stack of cadences.
+      const previous = target.watchByPair.get(pair)
+      if (previous !== undefined) target.watches.delete(previous)
+      target.watches.set(watch.watchRef, watch)
+      target.watchByPair.set(pair, watch.watchRef)
+      return
+    }
+    if (operation.kind === 'team/member-watch-stopped') {
+      const watch = target.watches.get(operation.data.watchRef)
+      if (watch === undefined) return
+      target.watches.delete(operation.data.watchRef)
+      target.watchByPair.delete(memberWatchPairKey(watch.leaderMemberId, watch.memberId, watch.workspaceId))
       return
     }
     assertUnhandledKind(operation)
@@ -5384,6 +5585,44 @@ export class AgentTeamLedger {
     return Object.freeze({ receipt: this.receipt(operation), recipient: this.requireMember(operation.data.recipientMemberId) })
   }
 
+  private assertSameWatchStart(operation: AgentTeamOperation, request: AgentTeamAuthorizedWatchMemberRequest): asserts operation is AgentTeamMemberWatchStartedOperation {
+    if (operation.kind !== 'team/member-watch-started' || !this.sameActor(operation.actor, request.actor)
+      || operation.data.workspaceId !== request.workspaceId
+      || operation.data.watch.leaderMemberId !== request.actor.memberId
+      || operation.data.watch.memberId !== request.memberId
+      || operation.data.watch.intervalMinutes !== (request.intervalMinutes ?? MEMBER_WATCH_DEFAULT_INTERVAL_MINUTES)
+      || operation.data.watch.stalledMinutes !== (request.stalledMinutes ?? MEMBER_WATCH_DEFAULT_STALLED_MINUTES)) this.throwRequestCollision(request.requestId)
+  }
+
+  private assertSameWatchStop(operation: AgentTeamOperation, request: AgentTeamAuthorizedUnwatchMemberRequest): asserts operation is AgentTeamMemberWatchStoppedOperation {
+    if (operation.kind !== 'team/member-watch-stopped' || !this.sameActor(operation.actor, request.actor)
+      || operation.data.workspaceId !== request.workspaceId
+      || operation.data.watchRef !== request.watchRef
+      || operation.data.reason !== request.reason?.trim()) this.throwRequestCollision(request.requestId)
+  }
+
+  private watchResult(operation: AgentTeamMemberWatchStartedOperation): AgentTeamWatchMemberResult {
+    return Object.freeze({ receipt: this.receipt(operation), watch: operation.data.watch })
+  }
+
+  private unwatchResult(operation: AgentTeamMemberWatchStoppedOperation): AgentTeamUnwatchMemberResult {
+    return Object.freeze({ receipt: this.receipt(operation), watchRef: operation.data.watchRef, memberId: operation.data.memberId })
+  }
+
+  /** Leadership authority for a watch: an enabled leader of this Workspace, and nobody else. */
+  private assertWatchLeader(actor: AgentTeamMemberActor, workspaceId: WorkspaceId): AgentTeamAgentMember {
+    if (this.assertActorForWorkspace(actor, workspaceId).kind !== 'member') throw new Error('agent-team Member watch requires Member authority')
+    const member = this.requireMember(actor.memberId)
+    if (member.leader !== true) throw new Error('only the Team Leader can watch Members')
+    return member
+  }
+
+  private watchMinutes(value: number | undefined, fallback: number, min: number, max: number, field: string): number {
+    const minutes = value ?? fallback
+    if (!Number.isInteger(minutes) || minutes < min || minutes > max) throw new Error(`${field} must be an integer between ${min} and ${max}`)
+    return minutes
+  }
+
   private assertSameMessage(operation: AgentTeamOperation, request: AgentTeamAuthorizedSendMessageRequest, recipients: readonly AgentTeamMemberId[], parentTaskRef: AgentTeamTaskRef | undefined): asserts operation is AgentTeamMessageSentOperation {
     if (operation.kind !== 'team/message-sent' || !this.sameActor(operation.actor, request.actor)
       || operation.data.workspaceId !== request.workspaceId || operation.data.message.channelRef !== request.channelRef
@@ -5694,7 +5933,8 @@ export class AgentTeamLedger {
   private ref(kind: 'claim'): AgentTeamClaimRef
   private ref(kind: 'activity'): AgentTeamActivityRef
   private ref(kind: 'interrupt'): AgentTeamInterruptRef
-  private ref(kind: 'channel' | 'message' | 'task' | 'thread' | 'claim' | 'activity' | 'interrupt') {
+  private ref(kind: 'watch'): AgentTeamMemberWatchRef
+  private ref(kind: 'channel' | 'message' | 'task' | 'thread' | 'claim' | 'activity' | 'interrupt' | 'watch') {
     return this.createRef(kind)
   }
 

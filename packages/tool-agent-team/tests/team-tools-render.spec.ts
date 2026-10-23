@@ -621,3 +621,64 @@ describe('team tools render absolute event instants in UTC+8', () => {
     expect(reply).not.toContain('+08:00')
   })
 })
+
+describe('team_watch renders the standing watch', () => {
+  const WATCH = 'watch:0c8f5d51-0000-4000-8000-00000000a001'
+  const MEMBER = 'member:6e8a5b10-df16-4ec0-943a-63738010953f'
+  const row = {
+    watchRef: WATCH, memberId: MEMBER, handle: 'Tars', state: 'stopped' as const, presence: 'unavailable' as const,
+    diagnostic: 'runtime failure', stateMinutes: 7, contextTokens: 120000, contextWindow: 200000, turns: 41,
+    tasks: [{ taskRef: TASK, taskNumber: 7, status: 'in_progress', subject: 'Review the render contract' }],
+    intervalMinutes: 10, stalledMinutes: 5,
+  }
+
+  it('start answers with the committed cadence and the cancel handle', () => {
+    const text = renderText(teamTools().get('team_watch')!, { action: 'start', memberRef: MEMBER }, {
+      action: 'start', watchRef: WATCH, memberId: MEMBER, handle: 'Tars', intervalMinutes: 10, stalledMinutes: 5,
+    })
+    expect(text).toContain('Committed — watching @Tars (member:6e8a5b10-df16-4ec0-943a-63738010953f) every 10 minute(s) with a 5-minute stall threshold.')
+    expect(text).toContain(`watchRef: ${WATCH}`)
+    expect(text).toContain('Notices arrive in your Inbox as Team Assistant messages')
+    // The start answer must not claim a state it never sampled.
+    expect(text).not.toContain('stopped')
+    expect(text).not.toContain('completed turn')
+  })
+
+  it('stop answers with the cancelled watch and promises no further notices', () => {
+    const text = renderText(teamTools().get('team_watch')!, { action: 'stop', watchRef: WATCH }, {
+      action: 'stop', watchRef: WATCH, memberId: MEMBER, handle: 'Tars',
+    })
+    expect(text).toContain('Committed — stopped watching @Tars')
+    expect(text).toContain('no further notices will be posted')
+    expect(text).toContain(`watchRef: ${WATCH}`)
+  })
+
+  it('status renders one sampled row with state, presence, context, turns, and held Tasks', () => {
+    const text = renderText(teamTools().get('team_watch')!, { action: 'status', memberRef: MEMBER }, { action: 'status', watch: row })
+    expect(text).toContain('@Tars (member:6e8a5b10-df16-4ec0-943a-63738010953f) — stopped · unavailable for 7 minute(s)')
+    expect(text).toContain('120000/200000 context tokens · 41 completed turn(s) · watching every 10 minute(s), stall threshold 5 minute(s)')
+    expect(text).toContain('Diagnostic: runtime failure')
+    expect(text).toContain(`Running Tasks: ${TASK} (#7) — in_progress — Review the render contract`)
+    expect(text).toContain(`watchRef: ${WATCH}`)
+  })
+
+  it('status names an unmeasured context and an empty Task list plainly', () => {
+    const text = renderText(teamTools().get('team_watch')!, { action: 'status', memberRef: MEMBER }, {
+      action: 'status', watch: { ...row, diagnostic: undefined, contextTokens: undefined, contextWindow: undefined, turns: 0, tasks: [], state: 'healthy' as const, presence: 'available' as const },
+    })
+    expect(text).toContain('context unavailable · 0 completed turn(s)')
+    expect(text).toContain('Running Tasks: none')
+    expect(text).not.toContain('Diagnostic')
+  })
+
+  it('list renders every watch under one heading and teaches the empty case', () => {
+    const list = renderText(teamTools().get('team_watch')!, { action: 'list' }, { action: 'list', watches: [row] })
+    expect(list).toContain('Your standing watches — current')
+    expect(occurrences(list, WATCH)).toBe(1)
+    expect(list).toContain('@Tars')
+    const empty = renderText(teamTools().get('team_watch')!, { action: 'list' }, { action: 'list', watches: [] })
+    expect(empty).toContain('You hold no active watch in this Workspace')
+    expect(empty).toContain('team_watch action=start')
+  })
+})
+

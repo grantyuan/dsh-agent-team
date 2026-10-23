@@ -19,6 +19,8 @@ import type {
   AgentTeamMemberCapabilities,
   AgentTeamMemberId,
   AgentTeamMemberPromptProfile,
+  AgentTeamMemberWatch,
+  AgentTeamMemberWatchRef,
   AgentTeamMessage,
   AgentTeamMessageRef,
   AgentTeamModelSelection,
@@ -967,6 +969,72 @@ export interface AgentTeamDmRequest {
 export interface AgentTeamDmResult {
   readonly receipt: AgentTeamOperationReceipt
   readonly recipient: AgentTeamAgentMember
+}
+
+/**
+ * A leader's request to place one standing watch over another Member. Only the
+ * Team leader of the Workspace may watch, only an enabled Agent Member of the
+ * same Workspace may be watched, and one leader holds at most one watch per
+ * target in a Workspace — a second start retunes the existing watch.
+ */
+export interface AgentTeamWatchMemberRequest {
+  readonly requestId: AgentTeamRequestId
+  readonly workspaceId: WorkspaceId
+  readonly memberId: AgentTeamMemberId
+  /** Sampling cadence in minutes; absent keeps the existing or default cadence. */
+  readonly intervalMinutes?: number
+  /** How long one unchanged state must last before it is reported as a stall. */
+  readonly stalledMinutes?: number
+}
+
+/** The watch row after the start was committed. */
+export interface AgentTeamWatchMemberResult {
+  readonly receipt: AgentTeamOperationReceipt
+  readonly watch: AgentTeamMemberWatch
+}
+
+/** A leader's request to end one standing watch. */
+export interface AgentTeamUnwatchMemberRequest {
+  readonly requestId: AgentTeamRequestId
+  readonly workspaceId: WorkspaceId
+  readonly watchRef: AgentTeamMemberWatchRef
+  readonly reason?: string
+}
+
+export interface AgentTeamUnwatchMemberResult {
+  readonly receipt: AgentTeamOperationReceipt
+  readonly watchRef: AgentTeamMemberWatchRef
+  readonly memberId: AgentTeamMemberId
+}
+
+/**
+ * One sampled observation of a watched Member: what the leader needs in order
+ * to judge whether the target is working, stalled, or broken, without reading
+ * the target's private Session. The state fields mirror team_supervise; the
+ * conversation counters and the state age are the watch's own measurements.
+ */
+export interface AgentTeamMemberWatchSnapshot {
+  readonly watchRef: AgentTeamMemberWatchRef
+  readonly memberId: AgentTeamMemberId
+  readonly handle: string
+  /** The pass state, as team_supervise reports it. */
+  readonly state: 'healthy' | 'settling' | 'stopped'
+  readonly presence: 'available' | 'working' | 'error' | 'unavailable'
+  readonly diagnostic?: string
+  /** How long the current {@link state} has held, in whole minutes. */
+  readonly stateMinutes: number
+  /** Measured context tokens of the target's live Session, when the route discloses it. */
+  readonly contextTokens?: number
+  /** The routed context window the tokens are measured against, when disclosed. */
+  readonly contextWindow?: number
+  /** Completed turns across the target's whole Session lineage. */
+  readonly turns: number
+  /** The Tasks the target is currently claimed to. */
+  readonly tasks: readonly AgentTeamTaskRow[]
+  readonly intervalMinutes: number
+  readonly stalledMinutes: number
+  readonly startedSequence: number
+  readonly startedAt: string
 }
 
 export interface AgentTeamThreadAttentionResult {

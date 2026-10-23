@@ -6,6 +6,8 @@ import { service, workspaceOf, workspaceParam } from './host-access.ts'
 import type {
   AgentTeamClaimRef,
   AgentTeamMemberId,
+  AgentTeamMemberWatchRef,
+  AgentTeamMemberWatchSnapshot,
   AgentTeamRequestId,
   AgentTeamSupervisionStatus,
   AgentTeamTaskRef,
@@ -779,6 +781,175 @@ const teamSupervise = defineTool({
   },
 })
 
+/** One watch row as both list and status render it. */
+interface WatchRow {
+  readonly watchRef: string
+  readonly memberId: string
+  readonly handle: string
+  readonly state: string
+  readonly presence: string
+  readonly diagnostic?: string
+  readonly stateMinutes: number
+  readonly contextTokens?: number
+  readonly contextWindow?: number
+  readonly turns: number
+  readonly tasks: { readonly taskRef: string; readonly taskNumber?: number; readonly status: string; readonly subject: string }[]
+  readonly intervalMinutes: number
+  readonly stalledMinutes: number
+}
+
+/**
+ * The sampled watch row schema, shared by the single `watch` object and the
+ * `watches` list so both render one vocabulary. It stays a plain literal (no
+ * helper function) because the tool's output type is inferred from these specs.
+ */
+const watchRowProperties = {
+  watchRef: { type: 'string', required: true },
+  memberId: { type: 'string', required: true },
+  handle: { type: 'string', required: true },
+  state: { type: 'string', required: true },
+  presence: { type: 'string', required: true },
+  diagnostic: { type: 'string' },
+  stateMinutes: { type: 'number', required: true },
+  contextTokens: { type: 'number' },
+  contextWindow: { type: 'number' },
+  turns: { type: 'number', required: true },
+  tasks: { type: 'array', required: true, items: { type: 'object', additionalProperties: false, properties: {
+    taskRef: { type: 'string', required: true }, taskNumber: { type: 'number' }, status: { type: 'string', required: true }, subject: { type: 'string', required: true },
+  } } },
+  intervalMinutes: { type: 'number', required: true },
+  stalledMinutes: { type: 'number', required: true },
+} as const
+
+/** The roster handle for one Member ref, falling back to the ref itself once it left. */
+function handleOfMember(host: AgentTeam, memberId: AgentTeamMemberId): string {
+  return host.members().find(status => status.member.memberId === memberId)?.member.handle ?? memberId
+}
+
+/** One sampled snapshot as the flat row the schema declares. */
+function watchRowOf(snapshot: AgentTeamMemberWatchSnapshot): WatchRow {
+  return {
+    watchRef: snapshot.watchRef,
+    memberId: snapshot.memberId,
+    handle: snapshot.handle,
+    state: snapshot.state,
+    presence: snapshot.presence,
+    ...(snapshot.diagnostic === undefined ? {} : { diagnostic: snapshot.diagnostic }),
+    stateMinutes: snapshot.stateMinutes,
+    ...(snapshot.contextTokens === undefined ? {} : { contextTokens: snapshot.contextTokens }),
+    ...(snapshot.contextWindow === undefined ? {} : { contextWindow: snapshot.contextWindow }),
+    turns: snapshot.turns,
+    tasks: snapshot.tasks.map(task => ({
+      taskRef: task.taskRef, ...(task.taskNumber === undefined ? {} : { taskNumber: task.taskNumber }), status: task.status, subject: task.subject,
+    })),
+    intervalMinutes: snapshot.intervalMinutes,
+    stalledMinutes: snapshot.stalledMinutes,
+  }
+}
+
+/** One sampled row as the model reads it. */
+function renderWatchRow(row: WatchRow): string[] {
+  const context = row.contextTokens === undefined
+    ? 'context unavailable'
+    : row.contextWindow === undefined
+      ? `${row.contextTokens} context tokens`
+      : `${row.contextTokens}/${row.contextWindow} context tokens`
+  return [
+    `@${row.handle} (${row.memberId}) — ${row.state} · ${row.presence} for ${row.stateMinutes} minute(s)`,
+    `  ${context} · ${row.turns} completed turn(s) · watching every ${row.intervalMinutes} minute(s), stall threshold ${row.stalledMinutes} minute(s)`,
+    ...(row.diagnostic === undefined ? [] : [`  Diagnostic: ${row.diagnostic}`]),
+    `  Running Tasks: ${row.tasks.length === 0 ? 'none' : row.tasks.map(task => `${task.taskRef}${task.taskNumber === undefined ? '' : ` (#${task.taskNumber})`} — ${task.status} — ${boundedSubject(task.subject)}`).join('; ')}`,
+    `  watchRef: ${row.watchRef}`,
+  ]
+}
+
+const teamWatch = defineTool({
+  name: 'team_watch',
+  description: 'Keep a standing watch over a fellow Member. Only the Team leader of the Workspace may watch: the ledger refuses any other caller. start places or retunes one watch over an enabled Agent Member with a sampling cadence (intervalMinutes, default 10, 1-240) and a stall threshold (stalledMinutes, default 5, 1-240); retuning the same Member replaces the existing watch instead of stacking a second one. While a watch is active the Host samples that Member on your cadence and posts a Team Assistant notice into your own Channel — so it lands in your Inbox like any other Team fact — when the Member changes state (healthy / settling / stopped, i.e. running, idle, failed, unavailable), when one state has lasted past your stall threshold, or when the Tasks it holds change. Each notice reports the supervision state, presence, failure diagnostic, context tokens against the route window, completed conversation turns across the whole rollover lineage, and the Tasks the Member is running. status samples one watched Member immediately; list shows every watch you hold with a fresh sample. The watch is durable: a restart keeps sampling. stop cancels one watch and the notices stop; a watch outlives no other authority — it never resets, interrupts, or messages the watched Member.',
+  parameters: {
+    action: { type: 'string', required: true, enum: ['start', 'stop', 'status', 'list'] },
+    memberRef: { type: 'string', description: "Full branded Member ref exactly as returned by Team tools, including the 'member:' prefix. An unambiguous abbreviation of the first 6+ UUID hex characters also resolves. Required for start and status: the enabled Agent Member of your Workspace to watch. You cannot watch yourself." },
+    watchRef: { type: 'string', description: "Full branded watch ref exactly as returned by team_watch, including the 'watch:' prefix. Required for stop; only the watch's own leader may cancel it." },
+    intervalMinutes: { type: 'number', description: 'Sampling cadence in minutes for start: 1-240, default 10. Retuning an existing watch replaces its cadence.' },
+    stalledMinutes: { type: 'number', description: 'How long one unchanged state must last before it is reported as a stall: 1-240, default 5. "Stopped for five minutes" is one notice, not one per pass.' },
+    workspace: workspaceParam,
+  },
+  output: {
+    schema: { type: 'object', additionalProperties: false, properties: {
+      action: { type: 'string', required: true },
+      // start and stop answer with the committed watch header; status answers
+      // with one sampled row and list with many, all in the same vocabulary.
+      watchRef: { type: 'string' },
+      memberId: { type: 'string' },
+      handle: { type: 'string' },
+      intervalMinutes: { type: 'number' },
+      stalledMinutes: { type: 'number' },
+      watch: { type: 'object', additionalProperties: false, properties: watchRowProperties },
+      watches: { type: 'array', items: { type: 'object', additionalProperties: false, properties: watchRowProperties } },
+    } },
+    render: (_args, value) => {
+      if (value.action === 'start') {
+        return [{ type: 'text', text: [
+          `Committed — watching @${value.handle ?? ''} (${value.memberId ?? ''}) every ${value.intervalMinutes ?? 0} minute(s) with a ${value.stalledMinutes ?? 0}-minute stall threshold.`,
+          `watchRef: ${value.watchRef ?? ''}`,
+          'Notices arrive in your Inbox as Team Assistant messages when that Member changes state, stays in one state past the threshold, or changes the Tasks it holds.',
+        ].join('\n') }]
+      }
+      if (value.action === 'stop') {
+        return [{ type: 'text', text: [
+          `Committed — stopped watching @${value.handle ?? ''} (${value.memberId ?? ''}); no further notices will be posted.`,
+          `watchRef: ${value.watchRef ?? ''}`,
+        ].join('\n') }]
+      }
+      if (value.action === 'status') {
+        const row = value.watch
+        return [{ type: 'text', text: row === undefined ? 'No watch sample is available.' : renderWatchRow(row).join('\n') }]
+      }
+      const watches = value.watches ?? []
+      if (watches.length === 0) return [{ type: 'text', text: 'You hold no active watch in this Workspace. Place one with team_watch action=start memberRef=...' }]
+      return [{ type: 'text', text: ['Your standing watches — current', ...watches.flatMap(row => renderWatchRow(row))].join('\n') }]
+    },
+  },
+  async execute(args, exec) {
+    const agent = exec.agent
+    if (agent === undefined) throw new Error('team_watch requires an Agent session')
+    const host = service(agent)
+    const workspaceId = workspaceOf(args, agent)
+    if (args.action === 'stop') {
+      if (args.watchRef === undefined) throw new Error('team_watch action=stop requires watchRef')
+      const result = await host.unwatchMemberForAgent(agent, { requestId: requestId(agent.id, exec.callId), workspaceId, watchRef: args.watchRef as AgentTeamMemberWatchRef })
+      return { action: 'stop', watchRef: result.watchRef, memberId: result.memberId, handle: handleOfMember(host, result.memberId) }
+    }
+    if (args.action === 'status') {
+      if (args.memberRef === undefined) throw new Error('team_watch action=status requires memberRef')
+      const snapshot = await host.memberWatchSnapshotForAgent(agent, { workspaceId, memberId: args.memberRef as AgentTeamMemberId })
+      return { action: 'status', watch: watchRowOf(snapshot) }
+    }
+    if (args.action === 'list') {
+      const rows = []
+      for (const watch of host.memberWatchesForAgent(agent, { workspaceId })) {
+        try {
+          rows.push(watchRowOf(await host.memberWatchSnapshotForAgent(agent, { workspaceId, memberId: watch.memberId })))
+        } catch {
+          // A Member that left the roster still holds its watch row: list it
+          // plainly instead of dropping the watch from the leader's view.
+          rows.push({ watchRef: watch.watchRef, memberId: watch.memberId, handle: watch.memberId, state: 'stopped', presence: 'unavailable',
+            stateMinutes: 0, turns: 0, tasks: [], intervalMinutes: watch.intervalMinutes, stalledMinutes: watch.stalledMinutes })
+        }
+      }
+      return { action: 'list', watches: rows }
+    }
+    if (args.memberRef === undefined) throw new Error('team_watch action=start requires memberRef')
+    const result = await host.watchMemberForAgent(agent, {
+      requestId: requestId(agent.id, exec.callId), workspaceId, memberId: args.memberRef as AgentTeamMemberId,
+      ...(args.intervalMinutes === undefined ? {} : { intervalMinutes: args.intervalMinutes }),
+      ...(args.stalledMinutes === undefined ? {} : { stalledMinutes: args.stalledMinutes }),
+    })
+    return { action: 'start', watchRef: result.watch.watchRef, memberId: result.watch.memberId,
+      handle: handleOfMember(host, result.watch.memberId), intervalMinutes: result.watch.intervalMinutes, stalledMinutes: result.watch.stalledMinutes }
+  },
+})
+
 export function apply(ctx: Context): void {
   ctx.tools.register(teamInbox)
   ctx.tools.register(teamThread)
@@ -786,5 +957,6 @@ export function apply(ctx: Context): void {
   ctx.tools.register(teamClaim)
   ctx.tools.register(teamView)
   ctx.tools.register(teamSupervise)
+  ctx.tools.register(teamWatch)
   registerContextTools(ctx)
 }

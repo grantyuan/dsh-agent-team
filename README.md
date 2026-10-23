@@ -111,7 +111,7 @@ dsh plugin --profile web remove @wowyuarm/dsh-agent-team
 
 - A durable single-host Team with Channels, Messages, Tasks, Threads, Claims, and Agent membership.
 - A Web Client for Human control: create Channels and Agents, manage membership, send Messages, open Threads, and handle Tasks.
-- An isolated `team-member` preset with six model-facing tools: `team_inbox`, `team_thread`, `team_message`, `team_claim`, `team_view`, and `team_supervise`.
+- An isolated `team-member` preset with seven model-facing tools: `team_inbox`, `team_thread`, `team_message`, `team_claim`, `team_view`, `team_supervise`, and `team_watch`.
 - A pull-based collaboration protocol. Agent Inbox admission is durable, but it does not claim that the model has already processed the update.
 
 The Team is one collaboration domain per DSH home. Its append-only operation ledger is the authority; UI, Remote responses, tools, Inbox, and other projections derive from committed operations. Ordinary DSH Sessions keep the profile's normal preset roster and do not receive Team tools or guidance.

@@ -12,7 +12,7 @@ listener 以 assembly 的 turn signal 为门：agent loop 是唯一带着 signal
 
 整份 prompt 画像都是 per-Member 的 ledger 状态，因此随 Member 经由普通 lifecycle operation 流转——包括 supervision 换代：继任者逐字携带前任的画像、`leader` 标记与 context 策略，而不会回退到默认值（见 Host authority）。
 
-protected 集合在 `member-runtime.ts` 一处定义（`isProtectedPromptSection`）：段落 section 自身、deployment persona 槽位、以及 Team tools 的 `tool:<name>` guidance sections——对受保护名字的 drop 请求在消费端拒绝，对话框将该行渲染为带受保护标记的不可操作状态。九个 Team tools 目前把 guidance 放在 tool description 而非注册的 prompt section 里，所以 `tool:*` 条目今天是前瞻防御：没有任何 live section 携带这些名字，它们不会渲染为对话框的 live 或 stale 行。没有任何 live section 提供的名字照常存储但不起作用——对话框标记为已失效。
+protected 集合在 `member-runtime.ts` 一处定义（`isProtectedPromptSection`）：段落 section 自身、deployment persona 槽位、以及 Team tools 的 `tool:<name>` guidance sections——对受保护名字的 drop 请求在消费端拒绝，对话框将该行渲染为带受保护标记的不可操作状态。十一个 Team tools 目前把 guidance 放在 tool description 而非注册的 prompt section 里，所以 `tool:*` 条目今天是前瞻防御：没有任何 live section 携带这些名字，它们不会渲染为对话框的 live 或 stale 行。没有任何 live section 提供的名字照常存储但不起作用——对话框标记为已失效。
 
 `sectionToolMapping` 是对话框「无自动信号」标记背后的共享 primitive：它扫描每个 section 的文本，对 Member scope 工具 schema 名做整词匹配，不匹配任何当前工具名的 section 即为纯散文。
 
@@ -22,7 +22,7 @@ Auto-prune 就骑在这份投影上。画像的 `autoPrune` 开关（默认关�
 
 `autoExecutePrune` 升级让 sweep 以 Human actor、同样的 echo 齐全形状自行提交移除，在边界落定后 live 生效，并且仍然发通知——每次自动移除都留在台账里且被广播。纯散文与受保护 section 永远不会成为候选。
 
-十个 model-facing tools 定义在 `packages/tool-agent-team/src/`：六个 Team 工具在 `index.ts`，四个 context 工具在 `context-tools.ts`；实现的 collaboration contract 记录在 [`tools.zh.md`](../team-collaboration/tools.zh.md)。它们挂载在隔离开的 `team-member` preset 下（`cordis.patch.yml` 里的一条 declarative row）。不要为了让测试可用就把 tool package 作为 global row 添加；普通 Sessions 必须保持 Team-free。
+十一个 model-facing tools 定义在 `packages/tool-agent-team/src/`：七个 Team 工具在 `index.ts`，四个 context 工具在 `context-tools.ts`；实现的 collaboration contract 记录在 [`tools.zh.md`](../team-collaboration/tools.zh.md)。它们挂载在隔离开的 `team-member` preset 下（`cordis.patch.yml` 里的一条 declarative row）。不要为了让测试可用就把 tool package 作为 global row 添加；普通 Sessions 必须保持 Team-free。
 
 Member 上下文自主管理在这些 preset 之上由 Host 编排。`context_rollover` 与 `context_checkpoint` 工具只做校验并结束/锚定 turn：在 tool 时，引擎的门先拒绝 Member 自己的 timeline 未列为 restorable 的 `checkpointRef`，通过这道门的 ref 仍由 Host 的 seed resolver（与换窗同一套）预校验，因此当下不可能成功的 ref 以 model-visible 的 error result 拒绝，而不是返回假 `scheduled`；可变 guard 集（jobs、route limits）在 commit seam 复查。
 

@@ -1,4 +1,4 @@
-# 十工具协议
+# 十一工具协议
 
 [English](tools.md) | 中文
 
@@ -59,6 +59,14 @@ taskful 的 start 还可传 `parentTaskRef`，把新 Task 归档为同 Channel �
 `team_supervise` 以周期监督 pass 所依据的同一证据读取并修复其他 Member 的健康状态。`status` 报告一个 Member 的 pass 状态——`healthy`、`settling` 或 `stopped`——它的 presence、已记录的失败诊断，以及二十分钟窗口内的失败次数；它是纯读操作，不写任何 operation。`reset` 强制一个异常 Member——stopped 且带错误、反复失败、或卡死——进入与 Human 菜单相同的 fresh-context 重置：Session 从空重开，身份、设置与私有记忆保留，旧日志归档。healthy 的 Member 会拒绝重置——监督只修复真正异常的对象——且调用者不能重置自己。
 
 重置后 Host 只私下提示被重置的 Member：凭私有记忆与最近的团队沟通历史重新定位，仍不清楚的向队友发消息询问——直接派发新任务即可，无需重新同步上下文。
+
+## `team_watch`
+
+`team_watch` 是团队负责人（leader）对另一 Agent Member 的常驻观察点。只有该 Workspace 的指定 leader 能建立 watch：ledger 拒绝其他所有调用者——其他 Member、Human actor，以及监控自己——且目标必须是同一 Workspace 内 enabled 的 Agent Member。`start` 提交一个 durable watch，带采样节奏（`intervalMinutes`，1-240，默认 10）与停滞阈值（`stalledMinutes`，1-240，默认 5）；对同一目标重新 start 是原地替换而非叠加第二个，`stop` 取消 `watchRef` 指定的那一个。
+
+watch 是 durable 的 ledger 状态（`team/member-watch-started` / `team/member-watch-stopped`，requestId 幂等），因此跨重启保留并继续采样。它存在期间，Host 按 leader 的节奏采样被监控的 Member，并在 leader 自己的 Channel 里投递一条 Team Assistant 通知——一条普通 Inbox Message——只在三种事件上触发：该 Member 的监督状态（`healthy`、`settling`、`stopped`）发生变化、某一状态持续超过停滞阈值、或它持有的 Task 集合变化。
+
+每条通知报告监督所读的同一份证据——状态、presence、失败诊断、相对 route 窗口的上下文 token、跨整个 rollover 血统的已完成对话回合数，以及该 Member 正在运行的任务——所以「停止了五分钟」只到一次，而不是每趟 pass 一次。watch 在效果上是只读的：它绝不重置、打断或私信被监控的 Member，也不授予 leader 此前没有的权限。`status` 立即采样一个被监控的 Member，`list` 列出 leader 持有的全部 watch。
 
 ## `context_rollover`
 

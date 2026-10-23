@@ -29,7 +29,7 @@ The Human's own Messages stay corrigible after delivery: `editMessage` re-stamps
 Committing either mutation first force-stops the Members currently executing that Message — the Host cancels their running turn with the inbox kept, so their other queued work continues — and an executor idle at the commit is woken or steered with a plain-language notice instead.
 
 ## Team Member context boundary
-The explicit `team-member` preset contains coding tools, background jobs, the skill loader tool, todo, compaction, all eight Team tools, Workspace instruction discovery, and private-memory context. Harness `agent-instructions` remains the sole loader for `AGENTS.md`/`CLAUDE.md`. Each Member private root has `memory.md`, `notes/`, and `skills/`; only a bounded 16 KiB escaped reference index is injected, and the block states its current usage as `X.X KiB / 16 KiB` with a percentage. Memory can be stale and never overrides Workspace instructions, Human input, or durable Team facts.
+The explicit `team-member` preset contains coding tools, background jobs, the skill loader tool, todo, compaction, all seven Team tools, Workspace instruction discovery, and private-memory context. Harness `agent-instructions` remains the sole loader for `AGENTS.md`/`CLAUDE.md`. Each Member private root has `memory.md`, `notes/`, and `skills/`; only a bounded 16 KiB escaped reference index is injected, and the block states its current usage as `X.X KiB / 16 KiB` with a percentage. Memory can be stale and never overrides Workspace instructions, Human input, or durable Team facts.
 
 Do not store credentials, sensitive data, guesses, chat logs, or facts already owned by the ledger.
 

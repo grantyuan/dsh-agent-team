@@ -157,3 +157,41 @@ export async function foldLineageUsage(
   if (!fold.closed && parent !== undefined) return { ...fold, partial: true }
   return fold
 }
+/**
+ * Count every completed turn across the Member's whole Session lineage.
+ *
+ * The candidate window above is deliberately bounded, because it answers
+ * whether this Member used a tool lately; a leader watching a teammate needs
+ * the unbounded total instead, so this walk reads every generation to its end
+ * instead of stopping at a turn or day bound. Turn numbers restart per
+ * generation, so the seen-turn set is generation-local, the same de-dupe the
+ * windowed fold uses for a forked prefix. A generation that cannot be read, or
+ * a lineage deeper than {@link MAX_USAGE_ANCESTORS}, degrades to the readable
+ * count (an under-count, never an over-count).
+ */
+export async function countLineageTurns(
+  start: UsageGeneration,
+  readAncestor: (sessionId: string) => Promise<UsageAncestorRead>,
+): Promise<number> {
+  let turns = countGenerationTurns(start.ownEvents)
+  let parent = start.parentSession
+  let depth = 0
+  while (parent !== undefined && depth < MAX_USAGE_ANCESTORS) {
+    const read = await readAncestor(parent)
+    if (!read.ok) return turns
+    turns += countGenerationTurns(read.generation.ownEvents)
+    parent = read.generation.parentSession
+    depth += 1
+  }
+  return turns
+}
+
+/** One generation's own completed turns: turn/end events de-duplicated by turn number. */
+function countGenerationTurns(events: readonly UsageEvent[]): number {
+  const seen = new Set<number>()
+  for (const event of events) {
+    if (event.type !== 'turn/end') continue
+    seen.add(event.data.turn)
+  }
+  return seen.size
+}

@@ -41,7 +41,7 @@ import { boundaryByRef, carriedInputOf, checkpointByRef, checkpointRefFor, creat
 import { AGENT_TEAM_HUMAN_HANDLE, AGENT_TEAM_HUMAN_MEMBER_ID, AGENT_TEAM_ASSISTANT_HANDLE, AGENT_TEAM_ASSISTANT_MEMBER_ID, AGENT_TEAM_RECALLED_BODY_TOMBSTONE, AgentTeamLedger, agentTeamAssistantActor, agentTeamHumanActor, type AgentTeamDurableMemberResult } from './ledger.ts'
 import { LedgerFence, ledgerFenceFor } from './ledger-fence.ts'
 import { AGENT_TEAM_TOOL_NAMES, BUNDLED_SKILLS_DIRECTORY, deepCopyCapabilities, deepCopyPrompt, isProtectedPromptSection, memberMemoryDirectoryName, memberMemoryDirectoryPath, MemberRuntime, promptSectionByteLength, sectionToolMapping } from './member-runtime.ts'
-import { PRUNE_WINDOW_DAYS, PRUNE_WINDOW_TURNS, foldLineageUsage, type UsageFold } from './member-section-usage.ts'
+import { PRUNE_WINDOW_DAYS, PRUNE_WINDOW_TURNS, countLineageTurns, foldLineageUsage, type UsageFold } from './member-section-usage.ts'
 import { CURATE_MAX_TOKENS, CURATE_TIMEOUT_MS, buildCurateMessages, parseCurateProposal, type CuratePromptInput } from './member-prompt-curation.ts'
 import { DIGEST_MAX_TOKENS, DIGEST_MESSAGE_LIMIT, DIGEST_RETIREMENT_ENTRY_LIMIT, DIGEST_TIMEOUT_MS, buildDigestMessages, parseThreadDigest, type ThreadDigestMessage } from './thread-digest.ts'
 import { listPrivateSkillNames } from './member-skills.ts'
@@ -54,6 +54,7 @@ import { MemberSupervisor, nextReplacementHandle, supervisionRetirementNotice, S
 import { CONTINUATION_NUDGE_MARKER, TaskContinuationWatcher, continuationNudgeText, type ContinuationLeader, type ContinuationTask } from './continuation-watcher.ts'
 import { CompletionLiaison, INTERRUPT_PUSH_SUMMARY, liaisonFeedbackText, liaisonReportCheckText, liaisonResumePushText, liaisonTaskPushText, type LiaisonInterrupt, type LiaisonLeader } from './completion-liaison.ts'
 import { TruncationEscalator, truncationEscalationText, type TruncationLeader } from './truncation-escalation.ts'
+import { MemberWatchMonitor, memberWatchNoticeText, type MemberWatchNotice, type MemberWatchSample, type MemberWatchTask } from './member-watch.ts'
 import { StoredSessionReadError, StoredSessionReader, sessionFailureOf } from './stored-session-reader.ts'
 import { doctorAnalysisPrompt, humanTranscriptEntriesOf, renderFailureTranscript, type TranscriptEntry, type TranscriptEvent } from './failure-transcript.ts'
 import { agentTeamDomainSpec } from './spec.ts'
@@ -160,6 +161,13 @@ import type {
   AgentTeamRolloverSessionRequest,
   AgentTeamDmRequest,
   AgentTeamDmResult,
+  AgentTeamMemberWatch,
+  AgentTeamMemberWatchSnapshot,
+  AgentTeamWatchMemberRequest,
+  AgentTeamWatchMemberResult,
+  AgentTeamUnwatchMemberRequest,
+  AgentTeamUnwatchMemberResult,
+
   AgentTeamOperationId,
   AgentTeamRemoveChannelMemberRequest,
   AgentTeamRemoveChannelMemberResult,
@@ -832,6 +840,22 @@ export default class AgentTeam extends TypertRemoteService {
     log: message => { this.ctx.logger.warn(`agent-team: ${message}`) },
   })
   /**
+   * The leader's standing watches, sampled on their own cadence. The watch
+   * rows are durable ledger facts (`team/member-watch-started`), so a restart
+   * re-reads who is watching whom; this coordinator owns only the sampling
+   * policy and its reconstructible per-episode memory. Every notice is an
+   * ordinary Team Assistant Message to the watching leader, which is what
+   * puts the observation in the leader's Inbox instead of a private channel.
+   */
+  private readonly memberWatch = new MemberWatchMonitor({
+    watches: () => this.ledger?.activeWatches() ?? [],
+    handleOf: memberId => this.ledger?.getMember(memberId)?.handle,
+    leaderHandleOf: memberId => this.ledger?.getMember(memberId)?.handle,
+    sampleOf: async (memberId, workspaceId) => this.watchSampleOf(memberId, workspaceId),
+    notify: async notice => { await this.notifyLeaderOfWatch(notice) },
+    log: message => { this.ctx.logger.warn(`agent-team: ${message}`) },
+  })
+  /**
    * Team's domain half of the continuity projection: the durable ref naming,
    * the Team-notice rule, and the boundary judgement (committed messages,
    * claim changes, first Thread arrivals). Its claim attribution resolves the
@@ -1186,6 +1210,7 @@ export default class AgentTeam extends TypertRemoteService {
       this.continuationWatcher.dispose()
       this.completionLiaison.dispose()
       this.truncationEscalation.dispose()
+      this.memberWatch.dispose()
       this.contextManagement.dispose()
       this.pressurePolicy.dispose()
       if (this.attachmentGcTimer !== undefined) clearInterval(this.attachmentGcTimer)
@@ -1244,6 +1269,9 @@ export default class AgentTeam extends TypertRemoteService {
     // The completion liaison reads presence and the ledger tail alike, so it
     // rides the same restore gate as the two passes above.
     this.completionLiaison.start()
+    // Standing watches restore with the roster, so their first pass samples a
+    // settled Team instead of an activating one.
+    this.memberWatch.start()
   }
 
   /**
@@ -1734,6 +1762,34 @@ export default class AgentTeam extends TypertRemoteService {
         }
       },
       Date.now(),
+    )
+  }
+
+  /**
+   * Count the Member's completed conversation turns across its whole rollover
+   * lineage. Unlike the candidate window above this walk has no turn or day
+   * bound: a leader watching a teammate asks for the total, not the recent
+   * slice. Unreadable generations degrade the count the same way (under-count).
+   */
+  private async memberTurns(handle: AgentHandle): Promise<number> {
+    const session = handle.agent.session
+    return countLineageTurns(
+      {
+        ownEvents: session.ownEvents(),
+        ...(session.header.parentSession === undefined ? {} : { parentSession: session.header.parentSession }),
+      },
+      async sessionId => {
+        const read = await this.sessionReader.read(SessionId(sessionId))
+        if (!read.ok) return { ok: false }
+        const inspection = read.inspection
+        return {
+          ok: true,
+          generation: {
+            ownEvents: inspection.events.slice(inspection.inheritedEventCount),
+            ...(inspection.header.parentSession === undefined ? {} : { parentSession: inspection.header.parentSession }),
+          },
+        }
+      },
     )
   }
 
@@ -4364,6 +4420,140 @@ export default class AgentTeam extends TypertRemoteService {
     return `${header}\nWorkspace: ${workspaceId}\n\n${body}${context}`
   }
 
+  /**
+   * One sampled observation of a watched Member for the leader's watch: the
+   * same supervision state and presence team_supervise reports, plus the watch's
+   * own measurements (context price, completed turns, held Tasks). Read-only —
+   * sampling never writes a ledger operation; only the notice is a Team fact.
+   */
+  private async watchSampleOf(memberId: AgentTeamMemberId, workspaceId: WorkspaceId): Promise<MemberWatchSample | undefined> {
+    const ledger = this.requireLedger()
+    const member = ledger.getMember(memberId)
+    if (member === undefined || !ledger.participatesIn(memberId, workspaceId)) return undefined
+    const status = this.memberStatus(member)
+    const failures = this.memberFailures.get(memberId)
+    const diagnostic = failures?.runtime?.message ?? failures?.compaction?.message ?? failures?.activation?.detail
+    const handle = this.handles.get(memberId)
+    let contextTokens: number | undefined
+    let contextWindow: number | undefined
+    let turns = 0
+    if (handle !== undefined) {
+      // Measurement is best effort: an unreadable meter degrades the sample to
+      // the supervision fields instead of dropping the whole observation.
+      try {
+        const limits = await this.routeLimitsForAgent(handle.agent)
+        contextTokens = limits?.usageTokens
+        contextWindow = limits?.contextWindow
+      } catch { /* an unmeasurable route still reports state and tasks */ }
+      try {
+        turns = await this.memberTurns(handle)
+      } catch { turns = 0 }
+    }
+    const queue = ledger.memberTasksForWorkspace({ workspaceId }).queues.find(entry => entry.memberId === memberId)
+    const tasks: readonly MemberWatchTask[] = Object.freeze((queue?.current ?? []).map(row => Object.freeze({
+      taskRef: row.taskRef, ...(row.taskNumber === undefined ? {} : { taskNumber: row.taskNumber }), status: row.status, subject: row.subject,
+    })))
+    return Object.freeze({
+      state: this.supervisionStateOf(memberId),
+      presence: status.presence,
+      ...(diagnostic === undefined ? {} : { diagnostic }),
+      ...(contextTokens === undefined ? {} : { contextTokens }),
+      ...(contextWindow === undefined ? {} : { contextWindow }),
+      turns, tasks,
+    })
+  }
+
+  /**
+   * Deliver one watch notice to the watching leader as an ordinary Team
+   * Assistant Message in the leader's own Channel, so the observation lands in
+   * the leader's Inbox and Thread like every other Team fact. A leader without
+   * a Channel is a delivery failure the pass logs and retries; the watch itself
+   * stays durable.
+   */
+  private async notifyLeaderOfWatch(notice: MemberWatchNotice): Promise<void> {
+    const channelRef = this.requireLedger().channelsForMember(notice.leaderMemberId, notice.workspaceId)[0]
+    if (channelRef === undefined) throw new Error(`leader '${notice.leaderHandle}' has no Channel in workspace '${notice.workspaceId}'`)
+    await this.sendMessageAs(agentTeamAssistantActor(), {
+      requestId: randomUUID() as AgentTeamRequestId,
+      workspaceId: notice.workspaceId,
+      channelRef,
+      body: memberWatchNoticeText(notice),
+      recipients: [notice.leaderMemberId],
+      asTask: false,
+    })
+  }
+
+  /**
+   * The leader's standing watch: place or retune one watch over a fellow
+   * Member. Only the Workspace leader may watch (the ledger enforces it), and
+   * the watch is durable — a restart re-reads it.
+   */
+  async watchMemberForAgent(agent: Agent, request: AgentTeamWatchMemberRequest): Promise<AgentTeamWatchMemberResult> {
+    const actor = this.memberCall(agent, request.workspaceId)
+    const result = await this.requireLedger().watchMember({ ...request, actor })
+    if (result.committed) this.emitCommitted(result.value.receipt)
+    return result.value
+  }
+
+  /** Cancel one of the caller's own watches; the ledger rejects any other leader's. */
+  async unwatchMemberForAgent(agent: Agent, request: AgentTeamUnwatchMemberRequest): Promise<AgentTeamUnwatchMemberResult> {
+    const actor = this.memberCall(agent, request.workspaceId)
+    const result = await this.requireLedger().unwatchMember({ ...request, actor })
+    if (result.committed) this.emitCommitted(result.value.receipt)
+    return result.value
+  }
+
+  /** The caller's own watches, newest first — the read the tool lists. */
+  memberWatchesForAgent(agent: Agent, request: { readonly workspaceId: WorkspaceId }): readonly AgentTeamMemberWatch[] {
+    const actor = this.memberCall(agent, request.workspaceId)
+    return this.requireLedger().watchesForLeader(actor.memberId, request.workspaceId)
+  }
+
+  /**
+   * One on-demand sample of a watched Member: the same read the periodic pass
+   * performs, so a leader can look now instead of waiting for the cadence.
+   * Refuses a Member the caller does not watch.
+   */
+  async memberWatchSnapshotForAgent(agent: Agent, request: { readonly workspaceId: WorkspaceId; readonly memberId: AgentTeamMemberId }): Promise<AgentTeamMemberWatchSnapshot> {
+    const actor = this.memberCall(agent, request.workspaceId)
+    const ledger = this.requireLedger()
+    const watch = ledger.watchesForLeader(actor.memberId, request.workspaceId).find(entry => entry.memberId === request.memberId)
+    if (watch === undefined) throw new Error(`you are not watching Member '${request.memberId}' in workspace '${request.workspaceId}'`)
+    const member = ledger.getMember(request.memberId)
+    if (member === undefined) throw new Error(`unknown Member '${request.memberId}' in workspace '${request.workspaceId}'`)
+    const sample = await this.watchSampleOf(request.memberId, request.workspaceId)
+    if (sample === undefined) throw new Error(`Member '${member.handle}' is not readable in workspace '${request.workspaceId}'`)
+    // The state age is the durable start of the watch when nothing has been
+    // re-sampled yet: the leader's own frame for "how long has this held".
+    const since = Date.parse(watch.startedAt)
+    const stateMinutes = Number.isNaN(since) ? 0 : Math.max(0, Math.floor((Date.now() - since) / 60_000))
+    return Object.freeze({
+      watchRef: watch.watchRef,
+      memberId: watch.memberId,
+      handle: member.handle,
+      state: sample.state,
+      presence: sample.presence,
+      ...(sample.diagnostic === undefined ? {} : { diagnostic: sample.diagnostic }),
+      stateMinutes,
+      ...(sample.contextTokens === undefined ? {} : { contextTokens: sample.contextTokens }),
+      ...(sample.contextWindow === undefined ? {} : { contextWindow: sample.contextWindow }),
+      turns: sample.turns,
+      tasks: Object.freeze(ledger.memberTasksForWorkspace({ workspaceId: request.workspaceId }).queues.find(entry => entry.memberId === request.memberId)?.current ?? []),
+      intervalMinutes: watch.intervalMinutes,
+      stalledMinutes: watch.stalledMinutes,
+      startedSequence: watch.startedSequence,
+      startedAt: watch.startedAt,
+    })
+  }
+
+  /**
+   * Run one watch pass now: the periodic timer calls this, and a test or an
+   * operator can drive it with a chosen clock.
+   */
+  runMemberWatchPass(now?: number): Promise<void> {
+    return this.memberWatch.runPass(now)
+  }
+
   threadHistoryForAgent(agent: Agent, request: AgentTeamThreadHistoryRequest): AgentTeamThreadHistory {
     const actor = this.memberActor(agent)
     this.requireAgentWorkspace(actor, request.workspaceId)
@@ -4420,7 +4610,7 @@ export default class AgentTeam extends TypertRemoteService {
    * a selection whose capacity cannot be resolved simply degrades those
    * surfaces to their unavailable or fallback presentations.
    */
-  private async routeLimitsForAgent(agent: Agent): Promise<{ readonly usageTokens: number; readonly hardLimit: number; readonly handoffAt: number } | undefined> {
+  private async routeLimitsForAgent(agent: Agent): Promise<{ readonly usageTokens: number; readonly hardLimit: number; readonly handoffAt: number; readonly contextWindow: number } | undefined> {
     const member = this.memberForAgent(agent)
     if (member === undefined) return undefined
     // The pressure budget must match the route the CURRENT step actually
@@ -4449,7 +4639,7 @@ export default class AgentTeam extends TypertRemoteService {
     // reserve applies against the narrowed budget exactly as against the bare
     // route — an override below the reserve floors to a zero budget.
     const { hardLimit, handoffAt } = deriveContextPressureBudget(effectiveWindow, routeInfo?.defaultMaxTokens)
-    return { usageTokens, hardLimit, handoffAt }
+    return { usageTokens, hardLimit, handoffAt, contextWindow: effectiveWindow }
   }
 
   /**

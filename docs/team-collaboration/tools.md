@@ -1,4 +1,4 @@
-# Ten-tool protocol
+# Eleven-tool protocol
 
 English | [中文](tools.zh.md)
 
@@ -73,6 +73,18 @@ A committed mutation names its action (Claim created, completed, or released), r
 `reset` forces an abnormal Member — stopped with an error, failing repeatedly, or hung — into the same fresh-context reset the Human menu performs: the Session renews from empty, identity, settings, and private memory survive, and the previous log stays archived. A healthy Member refuses the reset — supervision repairs only what is actually abnormal — and the caller cannot reset itself.
 
 After a reset the Member is privately noticed to re-orient from its private memory and recent Team history and asks teammates about anything that stays unclear — hand it fresh work; no context re-share is needed.
+
+## `team_watch`
+
+`team_watch` is the designated leader's standing observation post over another Agent Member. Only that leader may place one: the ledger refuses every other caller — another Member, the Human actor, or a watch over itself — and the target must be an enabled Agent Member of the same Workspace.
+
+`start` commits one durable watch with a sampling cadence (`intervalMinutes`, 1-240, default 10) and a stall threshold (`stalledMinutes`, 1-240, default 5). Retuning the same target replaces the watch in place rather than stacking a second one; `stop` cancels the one named `watchRef`.
+
+A watch is durable ledger state (`team/member-watch-started` / `team/member-watch-stopped`, request-idempotent), so it survives a restart and keeps sampling. While it stands, the Host samples the watched Member on the leader's cadence and posts a Team Assistant notice into the leader's own Channel — an ordinary Inbox Message.
+
+A notice fires on three events only: the Member changes supervision state (`healthy`, `settling`, `stopped`), one state outlasts the stall threshold, or the set of Tasks it holds changes.
+
+Each notice reports the evidence supervision reads — state, presence, failure diagnostic, context tokens against the route window, completed conversation turns across the whole rollover lineage, and the Tasks the Member is running — so "stopped for five minutes" arrives once, not once per pass. The watch is read-only in effect: it never resets, interrupts, or messages the watched Member, and it grants no authority the leader did not already hold. `status` samples one watched Member immediately; `list` shows every watch the leader holds.
 
 ## `context_rollover`
 

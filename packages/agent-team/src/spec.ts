@@ -12,6 +12,7 @@ import type {
   AgentTeamContextCheckpointRef,
   AgentTeamInterruptRef,
   AgentTeamMemberId,
+  AgentTeamMemberWatchRef,
   AgentTeamMessageRef,
   AgentTeamOperation,
   AgentTeamOperationId,
@@ -34,6 +35,7 @@ const threadRefSchema = z.string().regex(/^thread:[^:]+$/).transform(value => va
 const claimRefSchema = z.string().regex(/^claim:[^:]+$/).transform(value => value as AgentTeamClaimRef)
 const interruptRefSchema = z.string().regex(/^interrupt:[^:]+$/).transform(value => value as AgentTeamInterruptRef)
 const activityRefSchema = z.string().regex(/^activity:[^:]+$/).transform(value => value as AgentTeamActivityRef)
+const memberWatchRefSchema = z.string().regex(/^watch:[^:]+$/).transform(value => value as AgentTeamMemberWatchRef)
 const attachmentIdSchema = z.string().min(1).transform(value => value as AgentTeamAttachmentId)
 
 /**
@@ -629,6 +631,36 @@ const storedAgentTeamOperationSchema = z.discriminatedUnion('kind', [
       interruptRef: interruptRefSchema,
       memberId: memberIdSchema,
       resolution: z.enum(['resumed', 'released']),
+      reason: z.string().min(1).optional(),
+    }).strict().transform(omitUndefined),
+  }).strict(),
+  z.object({
+    ...operationBase,
+    previousOperationId: operationIdSchema.nullable(),
+    kind: z.literal('team/member-watch-started'),
+    data: z.object({
+      workspaceId: workspaceIdSchema,
+      watch: z.object({
+        watchRef: memberWatchRefSchema,
+        leaderMemberId: memberIdSchema,
+        memberId: memberIdSchema,
+        workspaceId: workspaceIdSchema,
+        intervalMinutes: z.number().int().positive(),
+        stalledMinutes: z.number().int().positive(),
+        startedSequence: z.number().int().positive(),
+        startedAt: z.string().datetime(),
+      }).strict().transform(omitUndefined),
+    }).strict(),
+  }).strict(),
+  z.object({
+    ...operationBase,
+    previousOperationId: operationIdSchema.nullable(),
+    kind: z.literal('team/member-watch-stopped'),
+    data: z.object({
+      workspaceId: workspaceIdSchema,
+      watchRef: memberWatchRefSchema,
+      leaderMemberId: memberIdSchema,
+      memberId: memberIdSchema,
       reason: z.string().min(1).optional(),
     }).strict().transform(omitUndefined),
   }).strict(),

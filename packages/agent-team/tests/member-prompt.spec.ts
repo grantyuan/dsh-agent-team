@@ -145,7 +145,7 @@ async function buildSharedHarness(): Promise<{
   const persistence = join(root, 'sessions')
   await Promise.all([mkdir(project), mkdir(persistence)])
   process.env.DSH_HOME = join(root, 'dsh-home')
-  // The team-tools fixture registers the six Team tools (the team-enabled
+  // The team-tools fixture registers the seven Team tools (the team-enabled
   // preset check requires them) plus two distinguishable content tools; the
   // member-context row is the preset's real runtime plugin.
   const teamMemberPlugins = [

@@ -3270,3 +3270,124 @@ describe('AgentTeam Team Assistant actor', () => {
     await expect(addLedgerMember(ledger, undefined, 'member:impostor-2', '', 'team assistant')).rejects.toThrow(/collides with the Team Assistant/)
   })
 })
+describe('AgentTeam leader Member watch', () => {
+  // The Channel must exist before the replay: a replayed ledger only sees the
+  // records already in the table.
+  const designWatch = async (test: TeamHarness) => {
+    const channel = (await test.ctx.agentTeam.createChannel({ requestId: requestId(`channel:${crypto.randomUUID()}`), workspaceId: alpha, name: 'watch', description: 'Watch work' })).channel.channelRef
+    const ledger = replayLedger(test)
+    const leaderMember = await addLedgerMember(ledger, channel, 'member:leader', 'Leader', 'leader')
+    const target = await addLedgerMember(ledger, channel, 'member:watched', 'Watched', 'watched')
+    await ledger.updateMember({ requestId: requestId('designate-leader'), memberId: leaderMember.member.memberId,
+      handle: leaderMember.member.handle, description: leaderMember.member.description, actor: agentTeamHumanActor(), leader: true })
+    return { ledger, channel, leader: leaderMember.actor, target }
+  }
+
+  it('lets the Leader place, retune, list and cancel one durable watch', async () => {
+    const test = await harness()
+    const { ledger, leader, target } = await designWatch(test)
+    const placed = (await ledger.watchMember({ requestId: requestId('watch-1'), workspaceId: alpha,
+      memberId: target.member.memberId, actor: leader })).value
+    expect(placed.watch).toMatchObject({ leaderMemberId: leader.memberId, memberId: target.member.memberId, workspaceId: alpha,
+      intervalMinutes: 10, stalledMinutes: 5 })
+    expect(placed.receipt.sequence).toBeGreaterThan(0)
+    expect(ledger.watchesForLeader(leader.memberId, alpha)).toEqual([placed.watch])
+    expect(ledger.activeWatches()).toEqual([placed.watch])
+    // Retuning the same pair replaces the slot instead of stacking a second watch.
+    const retuned = (await ledger.watchMember({ requestId: requestId('watch-2'), workspaceId: alpha,
+      memberId: target.member.memberId, intervalMinutes: 30, stalledMinutes: 15, actor: leader })).value
+    expect(retuned.watch.intervalMinutes).toBe(30)
+    expect(retuned.watch.watchRef).not.toBe(placed.watch.watchRef)
+    expect(ledger.watchesForLeader(leader.memberId, alpha)).toEqual([retuned.watch])
+    expect(ledger.activeWatches()).toEqual([retuned.watch])
+    // A cancelled watch leaves the durable read entirely.
+    const stopped = (await ledger.unwatchMember({ requestId: requestId('unwatch-1'), workspaceId: alpha,
+      watchRef: retuned.watch.watchRef, actor: leader })).value
+    expect(stopped).toMatchObject({ watchRef: retuned.watch.watchRef, memberId: target.member.memberId })
+    expect(ledger.watchesForLeader(leader.memberId, alpha)).toEqual([])
+    expect(ledger.activeWatches()).toEqual([])
+    // The replay of the same records reaches the same projection.
+    const replay = replayLedger(test)
+    expect(replay.activeWatches()).toEqual([])
+    replay.validate()
+  })
+
+  it('keeps the watch across a restart and reports it from the replayed ledger', async () => {
+    const test = await harness()
+    const { ledger, leader, target } = await designWatch(test)
+    const placed = (await ledger.watchMember({ requestId: requestId('watch-restart'), workspaceId: alpha,
+      memberId: target.member.memberId, intervalMinutes: 20, stalledMinutes: 8, actor: leader })).value
+    // A second ledger over the same records reads the standing watch back.
+    const replay = replayLedger(test)
+    expect(replay.activeWatches()).toEqual([placed.watch])
+    expect(replay.watchesForLeader(leader.memberId, alpha)).toEqual([placed.watch])
+    replay.validate()
+  })
+
+  it('refuses a watch from anyone but the Leader, over itself, or over a non-Agent', async () => {
+    const test = await harness()
+    const { ledger, leader, target } = await designWatch(test)
+    const member = await addLedgerMember(ledger, undefined, 'member:plain', 'Plain', 'plain')
+    await expect(ledger.watchMember({ requestId: requestId('not-leader'), workspaceId: alpha,
+      memberId: target.member.memberId, actor: member.actor })).rejects.toThrow(/only the Team Leader can watch Members/)
+    await expect(ledger.watchMember({ requestId: requestId('human-leader'), workspaceId: alpha,
+      memberId: target.member.memberId, actor: agentTeamHumanActor() as never })).rejects.toThrow(/requires Member authority/)
+    await expect(ledger.watchMember({ requestId: requestId('self-watch'), workspaceId: alpha,
+      memberId: leader.memberId, actor: leader })).rejects.toThrow(/the Leader cannot watch itself/)
+    await expect(ledger.watchMember({ requestId: requestId('human-target'), workspaceId: alpha,
+      memberId: AGENT_TEAM_HUMAN_MEMBER_ID, actor: leader })).rejects.toThrow(/watch target must be an Agent Member/)
+    await expect(ledger.watchMember({ requestId: requestId('unknown-target'), workspaceId: alpha,
+      memberId: 'member:nobody' as never, actor: leader })).rejects.toThrow(/unknown Agent Member/)
+    await expect(ledger.watchMember({ requestId: requestId('bad-interval'), workspaceId: alpha,
+      memberId: target.member.memberId, intervalMinutes: 0, actor: leader })).rejects.toThrow(/intervalMinutes must be an integer between 1 and 240/)
+    await expect(ledger.watchMember({ requestId: requestId('bad-stalled'), workspaceId: alpha,
+      memberId: target.member.memberId, stalledMinutes: 241, actor: leader })).rejects.toThrow(/stalledMinutes must be an integer between 1 and 240/)
+    // Only the watching Leader may cancel, and only its own watch.
+    const placed = (await ledger.watchMember({ requestId: requestId('watch-owner'), workspaceId: alpha,
+      memberId: target.member.memberId, actor: leader })).value
+    await expect(ledger.unwatchMember({ requestId: requestId('stranger-stop'), workspaceId: alpha,
+      watchRef: placed.watch.watchRef, actor: member.actor })).rejects.toThrow(/only the Team Leader can watch Members/)
+    await expect(ledger.unwatchMember({ requestId: requestId('unknown-stop'), workspaceId: alpha,
+      watchRef: 'watch:nobody' as never, actor: leader })).rejects.toThrow(/unknown Member watch/)
+    await expect(ledger.unwatchMember({ requestId: requestId('blank-reason'), workspaceId: alpha,
+      watchRef: placed.watch.watchRef, reason: '   ', actor: leader })).rejects.toThrow(/cancellation reason must not be empty/)
+  })
+
+  it('replays one watch request idempotently and rejects a second request that disagrees', async () => {
+    const test = await harness()
+    const { ledger, leader, target } = await designWatch(test)
+    const request = { requestId: requestId('watch-replay'), workspaceId: alpha, memberId: target.member.memberId, actor: leader }
+    const first = await ledger.watchMember(request)
+    const again = await ledger.watchMember(request)
+    expect(first.committed).toBe(true)
+    expect(again.committed).toBe(false)
+    expect(again.value.watch.watchRef).toBe(first.value.watch.watchRef)
+    expect(ledger.activeWatches()).toHaveLength(1)
+    await expect(ledger.watchMember({ ...request, intervalMinutes: 45 })).rejects.toThrow(/request id .* reused/)
+    const stopRequest = { requestId: requestId('unwatch-replay'), workspaceId: alpha, watchRef: first.value.watch.watchRef, actor: leader }
+    expect((await ledger.unwatchMember(stopRequest)).committed).toBe(true)
+    expect((await ledger.unwatchMember(stopRequest)).value.memberId).toBe(target.member.memberId)
+    await expect(ledger.unwatchMember({ ...stopRequest, reason: 'later' })).rejects.toThrow(/request id .* reused/)
+  })
+
+  it('rejects a forged watch record at replay', async () => {
+    const test = await harness()
+    const { ledger, leader, target } = await designWatch(test)
+    await ledger.watchMember({ requestId: requestId('watch-forge'), workspaceId: alpha, memberId: target.member.memberId, actor: leader })
+    const records = [...test.facility.get('agent_team')!.table('operations').entries()]
+    const forge = async (mutate: (operation: AgentTeamOperation) => AgentTeamOperation) => {
+      const tampered = records.map(([id, operation]) => [id, mutate(operation as AgentTeamOperation)] as [string, unknown])
+      await expect(harness(storedPool(tampered))).rejects.toThrow(/invalid Member watch/)
+    }
+    // A watch stamped by a non-leader actor.
+    await forge(operation => operation.kind !== 'team/member-watch-started' ? operation : {
+      ...operation,
+      actor: { kind: 'member', memberId: target.member.memberId, handle: target.member.handle },
+    })
+    // A watch whose stamping does not match its own operation.
+    await forge(operation => operation.kind !== 'team/member-watch-started' ? operation : {
+      ...operation,
+      data: { ...operation.data, watch: { ...operation.data.watch, startedSequence: 99 } },
+    })
+  })
+})

@@ -43,6 +43,9 @@ export type AgentTeamContextCheckpointRef = Branded<'AgentTeamContextCheckpointR
 /** Stable identifier of one recorded interrupted session awaiting continuation. */
 export type AgentTeamInterruptRef = Branded<'AgentTeamInterruptRef'>
 
+/** Stable identifier of one leader-authored standing watch over another Member. */
+export type AgentTeamMemberWatchRef = Branded<'AgentTeamMemberWatchRef'>
+
 /** How one interrupt left the pending stack. */
 export type AgentTeamInterruptResolution = 'resumed' | 'released'
 
@@ -76,6 +79,27 @@ export interface AgentTeamMemberInterrupt {
   /** Ledger sequence of the recording operation — the stack's durable order. */
   readonly recordedSequence: number
   readonly recordedAt: string
+}
+
+/**
+ * One standing watch a Team leader holds over another Member: the durable
+ * instruction that the Host keeps sampling the target's runtime state and
+ * reports what it observes back to the leader. The watch itself is durable
+ * leader-authored coordination state; each observation it produces is an
+ * ordinary Message fact from the Team Assistant, never a second authority.
+ */
+export interface AgentTeamMemberWatch {
+  readonly watchRef: AgentTeamMemberWatchRef
+  readonly leaderMemberId: AgentTeamMemberId
+  readonly memberId: AgentTeamMemberId
+  readonly workspaceId: WorkspaceId
+  /** Sampling cadence in minutes while the watch stays active. */
+  readonly intervalMinutes: number
+  /** How long one unchanged state must last before the leader hears it as a stall. */
+  readonly stalledMinutes: number
+  /** Ledger sequence of the starting operation — the watch's durable order. */
+  readonly startedSequence: number
+  readonly startedAt: string
 }
 
 /** Process-local one-use authorization for one Human invitation. */
