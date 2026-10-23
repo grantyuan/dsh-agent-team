@@ -86,6 +86,8 @@ A notice fires on three events only: the Member changes supervision state (`heal
 
 Each notice reports the evidence supervision reads — state, presence, failure diagnostic, context tokens against the route window, completed conversation turns across the whole rollover lineage, and the Tasks the Member is running — so "stopped for five minutes" arrives once, not once per pass. The watch is read-only in effect: it never resets, interrupts, or messages the watched Member, and it grants no authority the leader did not already hold. `status` samples one watched Member immediately; `list` shows every watch the leader holds.
 
+The state age a `status` read reports is the age of the state the last sample observed, not the age of the watch: a state that just changed does not inherit the previous state minutes.
+
 ## `context_rollover`
 
 `context_rollover` schedules one rollover of the calling Member into a fresh context. The Agent passes a private `handoff` (plus optional `relatedFiles`, or a `checkpointRef` to return to a recorded checkpoint instead). The `checkpointRef` is copy-hardened on both the tool and parameter descriptions: omit it for ordinary generation changes and pressure-driven handoffs, and supply it only when citing the exact ref a `context_timeline` result listed as restorable — never a synthesized or guessed one.

@@ -143,6 +143,16 @@ export class MemberWatchMonitor {
     }
   }
 
+  /**
+   * How long the state this process last sampled has held, in whole minutes.
+   * Undefined until the first sample, so a reader can fall back to the durable
+   * watch start instead of claiming an age it never observed.
+   */
+  sampledStateMinutes(watchRef: AgentTeamMemberWatchRef, now = this.now()): number | undefined {
+    const memory = this.memories.get(watchRef)
+    return memory === undefined ? undefined : Math.max(0, Math.floor((now - memory.stateSince) / 60_000))
+  }
+
   dispose(): void {
     this.disposed = true
     if (this.timer !== undefined) clearInterval(this.timer)

@@ -66,7 +66,7 @@ taskful 的 start 还可传 `parentTaskRef`，把新 Task 归档为同 Channel �
 
 watch 是 durable 的 ledger 状态（`team/member-watch-started` / `team/member-watch-stopped`，requestId 幂等），因此跨重启保留并继续采样。它存在期间，Host 按 leader 的节奏采样被监控的 Member，并在 leader 自己的 Channel 里投递一条 Team Assistant 通知——一条普通 Inbox Message——只在三种事件上触发：该 Member 的监督状态（`healthy`、`settling`、`stopped`）发生变化、某一状态持续超过停滞阈值、或它持有的 Task 集合变化。
 
-每条通知报告监督所读的同一份证据——状态、presence、失败诊断、相对 route 窗口的上下文 token、跨整个 rollover 血统的已完成对话回合数，以及该 Member 正在运行的任务——所以「停止了五分钟」只到一次，而不是每趟 pass 一次。watch 在效果上是只读的：它绝不重置、打断或私信被监控的 Member，也不授予 leader 此前没有的权限。`status` 立即采样一个被监控的 Member，`list` 列出 leader 持有的全部 watch。
+每条通知报告监督所读的同一份证据——状态、presence、失败诊断、相对 route 窗口的上下文 token、跨整个 rollover 血统的已完成对话回合数，以及该 Member 正在运行的任务——所以「停止了五分钟」只到一次，而不是每趟 pass 一次。watch 在效果上是只读的：它绝不重置、打断或私信被监控的 Member，也不授予 leader 此前没有的权限。`status` 立即采样一个被监控的 Member；它报告的「状态时长」是最近一次采样所观察到的那个状态已持续多久，而不是 watch 建立了多久——刚迁移的状态只有在真正持续了那么久之后才会读成对应分钟数。`list` 列出 leader 持有的全部 watch。
 
 ## `context_rollover`
 

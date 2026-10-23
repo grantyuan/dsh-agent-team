@@ -134,6 +134,29 @@ describe('Member watch monitor', () => {
     expect(test.notices.map(notice => notice.reason)).toEqual(['transition', 'stalled', 'transition', 'stalled'])
   })
 
+  it('ages the sampled state rather than the watch, and forgets it with the watch', async () => {
+    const test = harness()
+    // Nothing sampled yet: the reader keeps its own fallback.
+    expect(test.monitor.sampledStateMinutes(watch().watchRef)).toBeUndefined()
+    await test.monitor.runPass()
+    expect(test.monitor.sampledStateMinutes(watch().watchRef)).toBe(0)
+    test.setClock(1_000_000 + 3 * minute)
+    await test.monitor.runPass()
+    expect(test.monitor.sampledStateMinutes(watch().watchRef)).toBe(3)
+    // A state move restarts the age at the moment it was observed, so a later
+    // read never reports the previous state's duration.
+    test.setSample(sample({ state: 'stopped', presence: 'unavailable' }))
+    test.setClock(1_000_000 + 4 * minute)
+    await test.monitor.runPass()
+    expect(test.monitor.sampledStateMinutes(watch().watchRef)).toBe(0)
+    test.setClock(1_000_000 + 9 * minute)
+    expect(test.monitor.sampledStateMinutes(watch().watchRef)).toBe(5)
+    // A cancelled watch keeps no memory to age.
+    test.setWatches([])
+    await test.monitor.runPass()
+    expect(test.monitor.sampledStateMinutes(watch().watchRef)).toBeUndefined()
+  })
+
   it('reports the Tasks a watched Member picked up or dropped', async () => {
     const test = harness()
     await test.monitor.runPass()

@@ -5881,6 +5881,17 @@ describe('Agent Team member context control (ticket 01)', () => {
     expect((await call('team_watch', { action: 'list' })).watches).toEqual([])
     await ctx.agentTeam.runMemberWatchPass(clock + 10 * 60_000)
     expect(notices()).toHaveLength(3)
+
+    // A status read ages the state the pass last observed, not the watch: a
+    // brand-new watch whose only sample was driven six minutes in the past
+    // reports six minutes, where the watch's own start would report none.
+    const replaced = await call('team_watch', { action: 'start', memberRef: workerId, intervalMinutes: 1, stalledMinutes: 1 })
+    expect(replaced.watchRef).not.toBe(started.watchRef)
+    await ctx.agentTeam.runMemberWatchPass(clock - 6 * 60_000)
+    const aged = await call('team_watch', { action: 'status', memberRef: workerId })
+    expect(aged.watch).toMatchObject({ watchRef: replaced.watchRef, state: 'stopped' })
+    expect(aged.watch.stateMinutes).toBeGreaterThanOrEqual(6)
+    expect(aged.watch.stateMinutes).toBeLessThan(8)
     expect(() => ctx.agentTeam.validateLedger()).not.toThrow()
   })
 })

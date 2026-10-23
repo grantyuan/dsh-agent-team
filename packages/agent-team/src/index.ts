@@ -4523,10 +4523,12 @@ export default class AgentTeam extends TypertRemoteService {
     if (member === undefined) throw new Error(`unknown Member '${request.memberId}' in workspace '${request.workspaceId}'`)
     const sample = await this.watchSampleOf(request.memberId, request.workspaceId)
     if (sample === undefined) throw new Error(`Member '${member.handle}' is not readable in workspace '${request.workspaceId}'`)
-    // The state age is the durable start of the watch when nothing has been
-    // re-sampled yet: the leader's own frame for "how long has this held".
+    // The state age is the age of the state the pass last sampled, so "stopped
+    // for five minutes" survives a change of state; before the first sample of
+    // this process the durable watch start is the leader's own frame for it.
     const since = Date.parse(watch.startedAt)
-    const stateMinutes = Number.isNaN(since) ? 0 : Math.max(0, Math.floor((Date.now() - since) / 60_000))
+    const stateMinutes = this.memberWatch.sampledStateMinutes(watch.watchRef)
+      ?? (Number.isNaN(since) ? 0 : Math.max(0, Math.floor((Date.now() - since) / 60_000)))
     return Object.freeze({
       watchRef: watch.watchRef,
       memberId: watch.memberId,
