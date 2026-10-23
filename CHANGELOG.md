@@ -4,6 +4,8 @@ All notable changes to this project are documented in this file. The format foll
 
 ## [Unreleased]
 
+- Fixed replying to the same Thread more than once: the Human's first reply started the Host following that Thread, but the durable validator still only accepted the older reply shape, so every reply after the first was recorded in a shape the replay then rejected — the second answer surfaced as a failure and a restart could refuse to load the ledger at all. The validator now accepts the shape the writer emits and still reads the legacy one, so existing ledgers replay untouched and replying repeatedly works.
+
 - 回复 Agent 的消息不再需要猜「你在说哪条」：Thread 时间线里每条 Agent（含 Team Assistant）消息行都带一个悬停「回复」操作，点击后输入框上方出现一条引用——回复 @handle：消息首行摘要——发送时把这条引用拼进消息正文，于是你回答的是哪条消息对 Agent 是明说的，投递仍走普通 @mention 机制；发送前随时可以点 × 取消引用。你自己发的消息行与已撤回的占位行不提供该操作。
 
 - 你发出的指令现在可以收回：Thread 页里你自己发的每条消息都带 修改 / 撤回 / 删除 操作（撤回与删除前有确认弹窗），修改会把更正后的文本重新送到已经读过旧文本的 Agent 面前；被撤回的消息对所有人都只剩一条「该指令已被用户撤回」的占位说明，原文只留在账本审计里。如果你操作时某个 Agent 已经在执行这条指令，它会被立即停下——当前的回合被取消，但排队的其它任务原样继续——空闲的 Agent 则收到一句平实语言的提示；重复操作是安全的，已撤回的工作也绝不会再以未读的形式回来。

@@ -151,6 +151,7 @@ const messageSchema = z.object({
   topLevel: z.boolean(),
   sequence: z.number().int().positive(),
   occurredAt: z.string().datetime().optional(),
+  recalledAt: z.string().datetime().optional(),
 }).strict().transform(omitUndefined)
 
 type StoredMessage = z.output<typeof messageSchema>
@@ -504,6 +505,29 @@ const storedAgentTeamOperationSchema = z.discriminatedUnion('kind', [
       thread: threadSchema,
       inbox: inboxDeltaSchema,
     }).strict().transform(omitUndefined),
+  }).strict(),
+  z.object({
+    ...operationBase,
+    previousOperationId: operationIdSchema.nullable(),
+    kind: z.literal('team/message-edited'),
+    data: z.object({
+      workspaceId: workspaceIdSchema,
+      message: messageSchema,
+      thread: threadSchema,
+      inbox: inboxDeltaSchema,
+    }).strict(),
+  }).strict(),
+  z.object({
+    ...operationBase,
+    previousOperationId: operationIdSchema.nullable(),
+    kind: z.literal('team/message-recalled'),
+    data: z.object({
+      workspaceId: workspaceIdSchema,
+      mode: z.enum(['retracted', 'deleted']),
+      message: messageSchema,
+      thread: threadSchema,
+      inbox: inboxDeltaSchema,
+    }).strict(),
   }).strict(),
   z.object({
     ...operationBase,

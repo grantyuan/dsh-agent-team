@@ -3730,15 +3730,46 @@ export class AgentTeamLedger {
       && mentionedAgents.some(memberId => !this.everParticipatedFrom(projection, message.threadRef, memberId))) {
       throw new Error('invalid Agent mention projection')
     }
+    const expected = this.messageInboxExpectation(operation, projection, true)
+    if (isDeepStrictEqual(operation.data.inbox, expected)) return
+    // Ledgers written before a Human reply started following the replied
+    // Thread carry no sender start-attention, and the projection replays them
+    // exactly as written — the reply leaves the sender unfollowed, which is
+    // what every later record of that era was written against. That legacy
+    // shape stays legal on load; anything else is a forgery.
+    const legacy = this.messageInboxExpectation(operation, projection, false)
+    if (!isDeepStrictEqual(operation.data.inbox, legacy)) throw new Error('invalid Message inbox projection')
+  }
+
+  /**
+   * The inbox delta a Message send or Thread reply must carry: a start-attention
+   * per unfollowed recipient plus one direct marker per mention. A top-level
+   * send starts every mentioned Member; a reply only starts unfollowed ones.
+   * Since Human replies started following the replied Thread, the current
+   * writer adds the sender's start-attention; `humanJoinsReplyThread` selects
+   * that shape against the legacy one that left the sender unfollowed.
+   */
+  private messageInboxExpectation(
+    operation: AgentTeamMessageSentOperation | AgentTeamThreadRepliedOperation,
+    projection: Projection,
+    humanJoinsReplyThread: boolean,
+  ): AgentTeamInboxDelta {
+    const { message, mentions } = operation.data
+    const mentionedAgents = mentions.filter(memberId => projection.members.has(memberId))
     const started = operation.kind === 'team/message-sent'
       ? [this.startAttention(message.sender, message.threadRef, message.sequence),
         ...mentionedAgents.map(memberId => this.startAttention(memberId, message.threadRef, message.sequence))]
-      : mentionedAgents.filter(memberId => !this.isFollowingFrom(projection, message.threadRef, memberId))
-        .map(memberId => this.startAttention(memberId, message.threadRef, message.sequence))
+      : [
+        ...(humanJoinsReplyThread && operation.actor.kind === 'human'
+          && !this.isFollowingFrom(projection, message.threadRef, operation.actor.memberId)
+          ? [this.startAttention(operation.actor.memberId, message.threadRef, message.sequence)]
+          : []),
+        ...mentionedAgents.filter(memberId => !this.isFollowingFrom(projection, message.threadRef, memberId))
+          .map(memberId => this.startAttention(memberId, message.threadRef, message.sequence)),
+      ]
     const markers = mentions.map(memberId => Object.freeze({ memberId, threadRef: message.threadRef,
       messageRef: message.messageRef, sequence: message.sequence }))
-    const expected = this.inboxDelta(started, [], markers)
-    if (!isDeepStrictEqual(operation.data.inbox, expected)) throw new Error('invalid Message inbox projection')
+    return this.inboxDelta(started, [], markers)
   }
 
   private validateMentions(
@@ -5691,14 +5722,14 @@ export class AgentTeamLedger {
   }
 
   /**
-   * Releases up to 0.1.9 scoped Channel archival and Channel member-removal
-   * inbox cleanup to taskful Threads only (the collector read the Task
-   * projection), so archiving or member removal in a Channel holding a
-   * taskless Thread with Attention or markers wrote an incomplete inbox and
-   * every later load rejected the record, leaving the profile unable to boot.
-   * Records carrying exactly that legacy cleanup are repaired in memory the
-   * same way pre-envelope Thread reads are; any other inbox still fails
-   * validation, so a forgery is not silently accepted.
+   * Repairs releases up to 0.1.9 whose Channel archival and Channel
+   * member-removal inbox cleanup was scoped to taskful Threads only (the
+   * collector read the Task projection), so archiving or member removal in a
+   * Channel holding a taskless Thread with Attention or markers wrote an
+   * incomplete inbox and every later load rejected the record, leaving the
+   * profile unable to boot. Records carrying exactly that legacy cleanup are
+   * repaired in memory the same way pre-envelope Thread reads are; any other
+   * inbox still fails validation, so a forgery is not silently accepted.
    */
   private repairLegacyChannelCleanup(operation: AgentTeamOperation, projection: Projection): AgentTeamOperation {
     if (operation.kind === 'team/channel-archived') {

@@ -888,6 +888,100 @@ describe('AgentTeam durable Thread Attention ledger', () => {
       recent: [expect.objectContaining({ thread: expect.objectContaining({ threadRef: opened.thread.threadRef }), unreadCount: 0 })] })
   })
 
+  it('answers every reply the Human writes in one Thread, not just the first', async () => {
+    const test = await harness()
+    const channel = await test.ctx.agentTeam.createChannel({ requestId: requestId('channel'), workspaceId: alpha, name: 'engineering', description: 'Engineering work' })
+    const ledger = replayLedger(test)
+    const { actor } = await addLedgerMember(ledger, channel.channel.channelRef)
+    const opened = committed((await ledger.sendMessage({ requestId: requestId('opened'), workspaceId: alpha, channelRef: channel.channel.channelRef, body: 'Draft plan', actor })).value)
+    // A Human's first answer starts their Attention in the Thread. Every answer
+    // after it has to keep landing: the first one commits, and a replay that
+    // rejected the record would latch the invariant and fail the second commit
+    // long after the reply itself looked fine.
+    const first = committed((await ledger.reply({ requestId: requestId('first'), workspaceId: alpha, threadRef: opened.thread.threadRef,
+      body: 'Go ahead', baseRevision: opened.thread.revision, actor: agentTeamHumanActor() })).value)
+    expect(first.thread.revision).toBeGreaterThan(opened.thread.revision)
+    const second = committed((await ledger.reply({ requestId: requestId('second'), workspaceId: alpha, threadRef: opened.thread.threadRef,
+      body: 'Also check the budget', baseRevision: first.thread.revision, actor: agentTeamHumanActor() })).value)
+    const third = committed((await ledger.reply({ requestId: requestId('third'), workspaceId: alpha, threadRef: opened.thread.threadRef,
+      body: 'And the timeline', baseRevision: second.thread.revision, actor: agentTeamHumanActor() })).value)
+    expect([first.message.body, second.message.body, third.message.body]).toEqual(['Go ahead', 'Also check the budget', 'And the timeline'])
+    expect(third.thread.revision).toBe(third.message.sequence)
+    const revived = replayLedger(test)
+    expect(() => revived.validate()).not.toThrow()
+    // The replayed ledger holds all three words, newest last, and the Thread
+    // revision the last reply committed.
+    expect(revived.inbox(agentTeamHumanActor(), { workspaceId: alpha }).recent).toEqual([
+      expect.objectContaining({ previewText: 'Draft plan', unreadCount: 0,
+        thread: expect.objectContaining({ threadRef: opened.thread.threadRef, revision: third.thread.revision }) }),
+    ])
+  })
+
+  it('keeps answering quoted replies that mention the Agent', async () => {
+    const test = await harness()
+    const channel = await test.ctx.agentTeam.createChannel({ requestId: requestId('channel'), workspaceId: alpha, name: 'engineering', description: 'Engineering work' })
+    const ledger = replayLedger(test)
+    const { member, actor } = await addLedgerMember(ledger, channel.channel.channelRef)
+    const opened = committed((await ledger.sendMessage({ requestId: requestId('opened'), workspaceId: alpha, channelRef: channel.channel.channelRef, body: 'Draft plan', actor })).value)
+    const working = committed((await ledger.reply({ requestId: requestId('working'), workspaceId: alpha, threadRef: opened.thread.threadRef, body: 'Plan is ready', baseRevision: opened.thread.revision, actor })).value)
+    // The reply button quotes the message it answers, and that quote names the
+    // sender — a mention the Host delivers to. The Human is already following
+    // the Thread after their first answer, so the second one carries no fresh
+    // start-attention for them and must still replay.
+    const quote = `回复 @${member.handle} 的消息「Plan is ready」`
+    const first = committed((await ledger.reply({ requestId: requestId('h1'), workspaceId: alpha, threadRef: working.thread.threadRef,
+      body: `${quote}：thanks`, baseRevision: working.thread.revision, actor: agentTeamHumanActor() })).value)
+    const second = committed((await ledger.reply({ requestId: requestId('h2'), workspaceId: alpha, threadRef: working.thread.threadRef,
+      body: `${quote}：one more thing`, baseRevision: first.thread.revision, actor: agentTeamHumanActor() })).value)
+    expect(second.message.body).toBe(`${quote}：one more thing`)
+    expect(replayLedger(test).inbox(agentTeamHumanActor(), { workspaceId: alpha })).toEqual(ledger.inbox(agentTeamHumanActor(), { workspaceId: alpha }))
+    expect(() => replayLedger(test).validate()).not.toThrow()
+  })
+
+  it('replays a Human reply recorded before the sender started following the Thread', async () => {
+    const test = await harness()
+    const channel = await test.ctx.agentTeam.createChannel({ requestId: requestId('channel'), workspaceId: alpha, name: 'engineering', description: 'Engineering work' })
+    const ledger = replayLedger(test)
+    const { actor } = await addLedgerMember(ledger, channel.channel.channelRef)
+    const opened = committed((await ledger.sendMessage({ requestId: requestId('opened'), workspaceId: alpha, channelRef: channel.channel.channelRef, body: 'Draft plan', actor })).value)
+    committed((await ledger.reply({ requestId: requestId('answer'), workspaceId: alpha, threadRef: opened.thread.threadRef,
+      body: 'Go ahead', baseRevision: opened.thread.revision, actor: agentTeamHumanActor() })).value)
+    // Ledgers written before Human replies started following the replied Thread
+    // carry the reply without the sender's start-attention, and the projection
+    // replays them that way. A durable ledger still has to load, so the older
+    // shape stays legal; only a shape matching neither era is a forgery.
+    const records = [...test.facility.get('agent_team')!.table('operations').entries()].map(([id, operation]) => {
+      const typed = operation as AgentTeamOperation
+      if (typed.kind !== 'team/thread-replied' || typed.actor.kind !== 'human') return [id, typed] as [string, unknown]
+      return [id, { ...typed, data: { ...typed.data, inbox: { ...typed.data.inbox, attention: { ...typed.data.inbox.attention,
+        set: typed.data.inbox.attention.set.filter(entry => entry.memberId !== AGENT_TEAM_HUMAN_MEMBER_ID) } } } }] as [string, unknown]
+    })
+    const legacy = await harness(storedPool(records))
+    const legacyLedger = replayLedger(legacy)
+    expect(() => legacyLedger.validate()).not.toThrow()
+    expect(legacyLedger.inbox(agentTeamHumanActor(), { workspaceId: alpha })).toMatchObject({ items: [], totalUnreadCount: 0 })
+  })
+
+  it('rejects a Human reply that carries neither the current nor the legacy inbox shape', async () => {
+    const test = await harness()
+    const channel = await test.ctx.agentTeam.createChannel({ requestId: requestId('channel'), workspaceId: alpha, name: 'engineering', description: 'Engineering work' })
+    const ledger = replayLedger(test)
+    const { actor } = await addLedgerMember(ledger, channel.channel.channelRef)
+    const opened = committed((await ledger.sendMessage({ requestId: requestId('opened'), workspaceId: alpha, channelRef: channel.channel.channelRef, body: 'Draft plan', actor })).value)
+    committed((await ledger.reply({ requestId: requestId('answer'), workspaceId: alpha, threadRef: opened.thread.threadRef,
+      body: 'Go ahead', baseRevision: opened.thread.revision, actor: agentTeamHumanActor() })).value)
+    // A forged record that invents a start-attention of its own, matching
+    // neither the writer's shape nor the era before it.
+    const records = [...test.facility.get('agent_team')!.table('operations').entries()].map(([id, operation]) => {
+      const typed = operation as AgentTeamOperation
+      if (typed.kind !== 'team/thread-replied' || typed.actor.kind !== 'human') return [id, typed] as [string, unknown]
+      return [id, { ...typed, data: { ...typed.data, inbox: { ...typed.data.inbox, attention: { ...typed.data.inbox.attention,
+        set: [...typed.data.inbox.attention.set, { memberId: AGENT_TEAM_ASSISTANT_MEMBER_ID, threadRef: typed.data.message.threadRef,
+          startSequence: typed.data.message.sequence, readThroughSequence: typed.data.message.sequence - 1 }] } } } }] as [string, unknown]
+    })
+    await expect(harness(storedPool(records))).rejects.toThrow(/invalid Message inbox projection/)
+  })
+
   it('bounds the Human recent slice to the ten newest participated Threads', async () => {
     const test = await harness()
     const channel = await test.ctx.agentTeam.createChannel({ requestId: requestId('channel'), workspaceId: alpha, name: 'engineering', description: 'Engineering work' })
