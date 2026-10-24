@@ -101,6 +101,8 @@ import type {
   AgentTeamRemoveHumanAvatarResult,
   AgentTeamInbox,
   AgentTeamInboxRequest,
+  AgentTeamMessageCenter,
+  AgentTeamMessageCenterRequest,
   AgentTeamJoinChannelRequest,
   AgentTeamJoinChannelResult,
   AgentTeamJoinWorkspaceRequest,
@@ -4052,6 +4054,17 @@ export default class AgentTeam extends TypertRemoteService {
   inbox(request: AgentTeamInboxRequest): AgentTeamInbox {
     this.requireWorkspace(request.workspaceId)
     return this.requireLedger().inbox(agentTeamHumanActor(), request)
+  }
+
+  /**
+   * Human's Message Center: every Thread in the Workspace, or this person's own
+   * received and sent Messages, with the ledger signal behind each processing
+   * trace. Read-only; it commits nothing.
+   */
+  @Remote('messageCenter')
+  messageCenter(request: AgentTeamMessageCenterRequest): AgentTeamMessageCenter {
+    this.requireWorkspace(request.workspaceId)
+    return this.requireLedger().messageCenter(agentTeamHumanActor(), request)
   }
 
   /**

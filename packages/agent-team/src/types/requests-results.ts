@@ -1636,3 +1636,160 @@ export interface AgentTeamResolveMemberInterruptResult {
   readonly interruptRef: AgentTeamInterruptRef
   readonly resolution: AgentTeamInterruptResolution
 }
+
+/** Human read of the Message Center: every Thread in the Workspace, or this person's own received and sent Messages. */
+export interface AgentTeamMessageCenterRequest {
+  readonly workspaceId: WorkspaceId
+  /** Which surface to answer; the result's own `view` repeats it as the discriminant. */
+  readonly view: 'topics' | 'messages'
+  /** Case-insensitive substring matched against a Thread subject, a Message body, or a sender's handle and name. */
+  readonly query?: string
+  /** Restrict to one Channel, resolved by unique prefix like every other Channel ref. */
+  readonly channelRef?: AgentTeamChannelRef
+  /** Include Threads whose Channel is archived; the default skips them, as every other Team surface does. */
+  readonly includeArchived?: boolean
+  /** Inclusive ISO lower bound on the row's instant. */
+  readonly since?: string
+  /** Inclusive ISO upper bound on the row's instant. */
+  readonly until?: string
+  /** Messages only: which side of the conversation to keep. */
+  readonly direction?: 'received' | 'sent' | 'all'
+  /** The previous page's last row sequence; the next page holds only strictly smaller ones. */
+  readonly cursor?: number
+  /** Rows per page, 1 to 100; defaults to 50 like the Inbox slice. */
+  readonly limit?: number
+}
+
+/**
+ * One Thread as the 「所有讨论」 list draws it: the rendering material a row needs
+ * without a per-row Channel, Task, or Member view, plus this reader's own
+ * relation to it.
+ */
+export interface AgentTeamTopicRow {
+  readonly workspaceId: WorkspaceId
+  readonly channelRef: AgentTeamChannelRef
+  readonly channelName: string
+  readonly threadRef: AgentTeamThreadRef
+  readonly taskRef?: AgentTeamTaskRef
+  /** The Task's ordinal inside its home Channel; absent on taskless Threads. */
+  readonly taskNumber?: number
+  /** The opening line, trimmed and capped at 120 characters — the Inbox row's own bound. */
+  readonly subject: string
+  /** Instant of the anchor Message — when the Thread opened. */
+  readonly openedAt: string
+  /** Instant of the newest fact in the Thread. */
+  readonly lastOccurredAt: string
+  readonly lastActor: AgentTeamInboxActor
+  /** Message facts in the Thread, anchor included; activities are not counted. */
+  readonly messageCount: number
+  /** Distinct Message senders, so a row can draw a participant stack. */
+  readonly participantCount: number
+  /** Unread facts waiting for this reader; zero for a Thread they no longer follow. */
+  readonly unreadCount: number
+  /** Whether this reader has written in the Thread — the 「我参与过」 filter. */
+  readonly iParticipated: boolean
+  readonly needsHumanDecision: boolean
+  readonly claimOwners: readonly AgentTeamInboxActor[]
+  /** The matched Thread subject when `query` is present and matched there. */
+  readonly matchExcerpt?: string
+  /** The newest fact's ledger sequence — the ordering and paging key of this view. */
+  readonly newestSequence: number
+}
+
+/**
+ * What a row says about the Message it answers: the Thread context a reply
+ * actually lives in. The ledger holds no Message-level reply pointer, so this
+ * names a derived neighbour rather than pretending to be an exact reply target.
+ */
+export interface AgentTeamMessageContext {
+  /** `previous-in-thread` — the nearest earlier Message from someone else; `thread-anchor` — the Thread's opening line. */
+  readonly relation: 'previous-in-thread' | 'thread-anchor'
+  readonly sender: AgentTeamInboxActor
+  readonly excerpt: string
+  readonly messageRef: AgentTeamMessageRef
+}
+
+/** One derived processing trace, carrying the ledger signal it came from. */
+export interface AgentTeamMessageProcessingEvidence {
+  readonly kind: 'read' | 'replied' | 'claimed' | 'task-closed'
+  /** The Member the signal names, on a read trace. */
+  readonly memberId?: AgentTeamMemberId
+  readonly messageRef?: AgentTeamMessageRef
+  readonly taskRef?: AgentTeamTaskRef
+  readonly occurredAt?: string
+}
+
+/**
+ * Whether a sent Message has been picked up, and why the row believes it. Every
+ * trace here is derived from facts already in the ledger — no separate
+ * acknowledgement record exists — so `basis` stays `derived` and a surface must
+ * present it as inference, never as a person's confirmation.
+ */
+export interface AgentTeamMessageProcessing {
+  /** `pending` — nothing observed yet; `acknowledged` — picked up; `resolved` — the work it asked for closed. */
+  readonly state: 'pending' | 'acknowledged' | 'resolved'
+  readonly basis: 'derived'
+  readonly evidence: readonly AgentTeamMessageProcessingEvidence[]
+}
+
+/**
+ * One Message as the 「我的消息」 list draws it: what was said, who said it to
+ * whom, which Thread it lives in, and — for this reader's own Messages — how far
+ * it has been picked up.
+ */
+export interface AgentTeamMessageRow {
+  readonly workspaceId: WorkspaceId
+  /** Absent on a direct Message, which lives in no Channel. */
+  readonly channelRef?: AgentTeamChannelRef
+  /** Absent on a direct Message, which lives in no Channel. */
+  readonly channelName?: string
+  /** Absent on a direct Message, which lives in no Thread. */
+  readonly threadRef?: AgentTeamThreadRef
+  /** The Thread's opening line, so a row names its Thread without a Thread view. */
+  readonly threadSubject?: string
+  readonly taskRef?: AgentTeamTaskRef
+  readonly taskNumber?: number
+  /** Absent on a direct Message, which has no Message ref in any Thread timeline. */
+  readonly messageRef?: AgentTeamMessageRef
+  /** The `team/dm-sent` operation id — a direct Message's only stable identity. */
+  readonly dmOperationId?: AgentTeamOperationId
+  /** Ledger position used for ordering and paging; the DM operation's sequence on a direct Message. */
+  readonly sequence: number
+  readonly occurredAt: string
+  readonly sender: AgentTeamInboxActor
+  /** Members this Message named, or the one counterpart of a direct Message. */
+  readonly recipients: readonly AgentTeamInboxActor[]
+  /** The body, trimmed and capped like every other row preview. */
+  readonly excerpt: string
+  readonly direction: 'received' | 'sent'
+  readonly via: 'thread' | 'dm'
+  /** The other side of a direct Message; absent on a Thread Message. */
+  readonly dmPartner?: AgentTeamInboxActor
+  readonly replyContext?: AgentTeamMessageContext
+  /** Present on this reader's own Messages only: how far this one has been picked up. */
+  readonly processing?: AgentTeamMessageProcessing
+  /** The matched body line when `query` is present and matched the body. */
+  readonly matchExcerpt?: string
+}
+
+export interface AgentTeamMessageCenterTopics {
+  readonly view: 'topics'
+  readonly humanMemberId: AgentTeamMemberId
+  readonly topics: readonly AgentTeamTopicRow[]
+  /** More rows exist past this page; ask again with `cursor`. */
+  readonly hasMore: boolean
+  /** The last row's sequence; absent on an empty page. */
+  readonly cursor?: number
+}
+
+export interface AgentTeamMessageCenterMessages {
+  readonly view: 'messages'
+  readonly humanMemberId: AgentTeamMemberId
+  readonly messages: readonly AgentTeamMessageRow[]
+  readonly hasMore: boolean
+  /** The last row's sequence; absent on an empty page. */
+  readonly cursor?: number
+}
+
+export type AgentTeamMessageCenter = AgentTeamMessageCenterTopics | AgentTeamMessageCenterMessages
+

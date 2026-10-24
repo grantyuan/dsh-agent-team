@@ -85,6 +85,15 @@ import type {
   AgentTeamMemberWorkspaceJoinedOperation,
   AgentTeamMemberWorkspaceLeftOperation,
   AgentTeamMessage,
+  AgentTeamMessageCenter,
+  AgentTeamMessageCenterMessages,
+  AgentTeamMessageCenterRequest,
+  AgentTeamMessageCenterTopics,
+  AgentTeamMessageContext,
+  AgentTeamMessageProcessing,
+  AgentTeamMessageProcessingEvidence,
+  AgentTeamMessageRow,
+  AgentTeamTopicRow,
   AgentTeamMessageRef,
   AgentTeamMessageSentOperation,
   AgentTeamMessageEditedOperation,
@@ -613,6 +622,19 @@ export const AGENT_TEAM_RECALLED_BODY_TOMBSTONE = '[instruction withdrawn by the
 /** Bounded preview of a Thread anchor's body, collapsing to the tombstone once the Human recalled that anchor. */
 function boundedAnchorPreview(anchor: AgentTeamMessage): string {
   return anchor.recalledAt === undefined ? boundedInboxPreview(anchor.body) : AGENT_TEAM_RECALLED_BODY_TOMBSTONE
+}
+
+/**
+ * The excerpt a search row shows: the first body line carrying the needle,
+ * trimmed and capped at the same 120-character bound every other preview uses,
+ * so a hit is quoted exactly as the row's own excerpt would render it.
+ */
+function boundedMatchExcerpt(body: string, needle: string): string {
+  for (const line of body.split('\n')) {
+    const trimmed = line.trim()
+    if (trimmed.toLowerCase().includes(needle)) return trimmed.length > 120 ? `${trimmed.slice(0, 119)}…` : trimmed
+  }
+  return boundedInboxPreview(body)
 }
 
 /** Open standings a live Claim can hold: work in flight, or finished and awaiting acceptance. */
@@ -2660,6 +2682,244 @@ export class AgentTeamLedger {
       cursor: facts.length === 0 ? before : facts[0]!.sequence, hasMore: all.length > facts.length })
   }
 
+
+
+  /**
+   * The Message Center projection: every Thread this reader can see, or this
+   * person's own received and sent Messages. Read-only and replay-derived: it
+   * writes no fact, and every processing trace it reports quotes a ledger
+   * signal rather than inventing a confirmation nobody recorded.
+   */
+  messageCenter(actor: AgentTeamHumanActor | AgentTeamMemberActor, request: AgentTeamMessageCenterRequest): AgentTeamMessageCenter {
+    const authorized = this.assertActorForWorkspace(actor, request.workspaceId)
+    const limit = request.limit ?? 50
+    if (!Number.isInteger(limit) || limit < 1 || limit > 100) throw new Error('message center limit must be an integer between 1 and 100')
+    const cursor = request.cursor ?? Number.MAX_SAFE_INTEGER
+    if (!Number.isInteger(cursor) || cursor < 1) throw new Error('message center cursor must be a positive integer')
+    const direction = request.direction ?? 'all'
+    if (direction !== 'received' && direction !== 'sent' && direction !== 'all') throw new Error('message center direction must be received, sent, or all')
+    const needle = request.query?.trim().toLowerCase() || undefined
+    const since = this.messageCenterInstant(request.since, 'since')
+    const until = this.messageCenterInstant(request.until, 'until')
+    // An archived Channel stays reachable only through the explicit opt-in every
+    // other Team surface uses; a filter naming one fails loudly instead of
+    // silently answering an empty page.
+    const channelFilter = request.channelRef === undefined ? undefined
+      : (request.includeArchived === true ? this.requireChannel(request.workspaceId, request.channelRef) : this.requireActiveChannel(request.workspaceId, request.channelRef)).channelRef
+    const visibleChannels = new Map<AgentTeamChannelRef, AgentTeamChannel>()
+    for (const channel of this.state.channels.values()) {
+      if (channel.workspaceId !== request.workspaceId) continue
+      if (channelFilter !== undefined && channel.channelRef !== channelFilter) continue
+      if (channel.state === 'archived' && request.includeArchived !== true) continue
+      if (authorized.kind === 'member' && !this.isChannelMember(channel.channelRef, authorized.memberId)) continue
+      visibleChannels.set(channel.channelRef, channel)
+    }
+    const taskNumbers = this.taskNumbers(request.workspaceId)
+    const humanMemberId = this.initialization().data.humanMemberId
+    const memberId = authorized.memberId
+    if (request.view === 'topics') {
+      const rows: AgentTeamTopicRow[] = []
+      for (const thread of this.state.threads.values()) {
+        const channelRef = this.channelRefForThread(thread.threadRef)
+        if (channelRef === undefined) continue
+        const channel = visibleChannels.get(channelRef)
+        if (channel === undefined) continue
+        const facts = this.threadFacts(thread.threadRef)
+        const newest = facts.at(-1)
+        if (newest === undefined) continue
+        if (!this.messageCenterInRange(since, until, newest.occurredAt)) continue
+        const anchor = this.threadAnchor(thread.threadRef)
+        const task = thread.taskRef === undefined ? undefined : this.state.tasks.get(thread.taskRef)
+        const matchExcerpt = this.messageCenterTopicMatch(anchor, facts, needle)
+        if (needle !== undefined && matchExcerpt === undefined) continue
+        const senders = new Set<AgentTeamMemberId>()
+        for (const fact of facts) if (fact.kind === 'message') senders.add(fact.message.sender)
+        const clock = this.inboxThreadClock(thread.threadRef, task)
+        rows.push(Object.freeze({
+          workspaceId: request.workspaceId, channelRef, channelName: channel.name, threadRef: thread.threadRef,
+          ...(task === undefined ? {} : { taskRef: task.taskRef }),
+          ...(task === undefined ? {} : { taskNumber: taskNumbers.get(task.taskRef) ?? 0 }),
+          subject: boundedAnchorPreview(anchor), openedAt: anchor.occurredAt, lastOccurredAt: newest.occurredAt,
+          lastActor: this.inboxActorFor(newest), messageCount: this.state.messageCountByThread.get(thread.threadRef) ?? 0,
+          participantCount: senders.size, unreadCount: this.unreadFor(memberId, thread.threadRef).length,
+          iParticipated: this.state.threadsByWriter.get(memberId)?.has(thread.threadRef) === true,
+          needsHumanDecision: clock.needsHumanDecision, claimOwners: this.liveClaimOwners(task),
+          ...(matchExcerpt === undefined ? {} : { matchExcerpt }), newestSequence: newest.sequence,
+        }))
+      }
+      // Sequences and instants are both monotonic in the ledger, so ordering by
+      // the newest fact's sequence *is* ordering by its instant — and it keeps
+      // the paging key the cursor already speaks.
+      const ordered = rows.sort((left, right) => right.newestSequence - left.newestSequence || left.threadRef.localeCompare(right.threadRef))
+        .filter(row => row.newestSequence < cursor)
+      const page = ordered.slice(0, limit)
+      return Object.freeze({ view: 'topics', humanMemberId, topics: Object.freeze(page), hasMore: ordered.length > page.length,
+        ...(page.length === 0 ? {} : { cursor: page.at(-1)!.newestSequence }) })
+    }
+    const rows: AgentTeamMessageRow[] = []
+    for (const fact of this.state.orderedFacts) {
+      if (fact.kind !== 'message') continue
+      const message = fact.message
+      const channel = visibleChannels.get(message.channelRef)
+      if (channel === undefined) continue
+      const sent = message.sender === memberId
+      // A Message belongs to this view because it named this reader or because
+      // this reader wrote it; nothing else is 「我的消息」.
+      if (!sent && !(this.state.mentionsByMessage.get(message.messageRef) ?? []).includes(memberId)) continue
+      if (direction !== 'all' && direction !== (sent ? 'sent' : 'received')) continue
+      if (!this.messageCenterInRange(since, until, fact.occurredAt)) continue
+      const anchor = this.threadAnchor(message.threadRef)
+      const threadSubject = boundedAnchorPreview(anchor)
+      const matchExcerpt = this.messageCenterBodyMatch(message, threadSubject, needle)
+      if (needle !== undefined && matchExcerpt === undefined) continue
+      const task = anchor.taskRef === undefined ? undefined : this.state.tasks.get(anchor.taskRef)
+      const replyContext = message.sequence === anchor.sequence ? undefined : this.messageReplyContext(this.threadFacts(message.threadRef), message, anchor)
+      rows.push(Object.freeze({
+        workspaceId: request.workspaceId, channelRef: message.channelRef, channelName: channel.name,
+        threadRef: message.threadRef, threadSubject,
+        ...(task === undefined ? {} : { taskRef: task.taskRef }),
+        ...(task === undefined ? {} : { taskNumber: taskNumbers.get(task.taskRef) ?? 0 }),
+        messageRef: message.messageRef, sequence: fact.sequence, occurredAt: fact.occurredAt,
+        sender: this.memberActor(message.sender),
+        recipients: Object.freeze((this.state.mentionsByMessage.get(message.messageRef) ?? []).map(recipient => this.memberActor(recipient))),
+        excerpt: this.messageExcerpt(message), direction: sent ? 'sent' : 'received', via: 'thread',
+        ...(replyContext === undefined ? {} : { replyContext }),
+        ...(sent ? { processing: this.messageProcessing(this.threadFacts(message.threadRef), message, memberId) } : {}),
+        ...(matchExcerpt === undefined ? {} : { matchExcerpt }),
+      }))
+    }
+    // A direct Message lives in no Channel and no Thread, so it can only be
+    // found in the operation stream; it is kept here for Agent readers, since
+    // the ledger refuses a Human on both sides of a DM.
+    for (const operation of this.state.ordered) {
+      if (operation.kind !== 'team/dm-sent') continue
+      const data = operation.data
+      if (data.workspaceId !== request.workspaceId) continue
+      const sent = data.senderMemberId === memberId
+      if (!sent && data.recipientMemberId !== memberId) continue
+      if (direction !== 'all' && direction !== (sent ? 'sent' : 'received')) continue
+      if (!this.messageCenterInRange(since, until, operation.occurredAt)) continue
+      const partner = this.memberActor(sent ? data.recipientMemberId : data.senderMemberId)
+      let matchExcerpt: string | undefined
+      if (needle !== undefined) {
+        if (data.body.toLowerCase().includes(needle)) matchExcerpt = boundedMatchExcerpt(data.body, needle)
+        else if (!partner.name.toLowerCase().includes(needle)) continue
+      }
+      rows.push(Object.freeze({
+        workspaceId: request.workspaceId, sequence: operation.sequence, occurredAt: operation.occurredAt,
+        sender: this.memberActor(data.senderMemberId), recipients: Object.freeze([partner]),
+        excerpt: boundedInboxPreview(data.body), direction: sent ? 'sent' : 'received', via: 'dm',
+        dmOperationId: operation.operationId, dmPartner: partner,
+        ...(matchExcerpt === undefined ? {} : { matchExcerpt }),
+      }))
+    }
+    const ordered = rows.sort((left, right) => right.sequence - left.sequence).filter(row => row.sequence < cursor)
+    const page = ordered.slice(0, limit)
+    return Object.freeze({ view: 'messages', humanMemberId, messages: Object.freeze(page), hasMore: ordered.length > page.length,
+      ...(page.length === 0 ? {} : { cursor: page.at(-1)!.sequence }) })
+  }
+
+  /** A bound the caller wrote as an instant, rejected rather than silently ignored when unparseable. */
+  private messageCenterInstant(value: string | undefined, field: 'since' | 'until'): number | undefined {
+    if (value === undefined) return undefined
+    const instant = Date.parse(value)
+    if (Number.isNaN(instant)) throw new Error('message center ' + field + ' must be an ISO instant')
+    return instant
+  }
+
+  private messageCenterInRange(since: number | undefined, until: number | undefined, occurredAt: string): boolean {
+    const instant = Date.parse(occurredAt)
+    if (Number.isNaN(instant)) return false
+    if (since !== undefined && instant < since) return false
+    return until === undefined || instant <= until
+  }
+
+  /** The search hit on a Thread: its subject, else the first Message line carrying the term. */
+  private messageCenterTopicMatch(anchor: AgentTeamMessage, facts: readonly AgentTeamThreadFact[], needle: string | undefined): string | undefined {
+    if (needle === undefined) return undefined
+    const subject = boundedAnchorPreview(anchor)
+    if (anchor.body.toLowerCase().includes(needle)) return subject
+    for (const fact of facts) {
+      if (fact.kind !== 'message') continue
+      if (fact.message.body.toLowerCase().includes(needle)) return boundedMatchExcerpt(fact.message.body, needle)
+      if (this.memberActor(fact.message.sender).name.toLowerCase().includes(needle)) return boundedMatchExcerpt(fact.message.body, needle)
+    }
+    return undefined
+  }
+
+  /** The search hit on one Message: its body, its sender, or the Thread subject it lives under. */
+  private messageCenterBodyMatch(message: AgentTeamMessage, threadSubject: string, needle: string | undefined): string | undefined {
+    if (needle === undefined) return undefined
+    if (message.body.toLowerCase().includes(needle)) return boundedMatchExcerpt(message.body, needle)
+    if (this.memberActor(message.sender).name.toLowerCase().includes(needle)) return boundedMatchExcerpt(message.body, needle)
+    return threadSubject.toLowerCase().includes(needle) ? threadSubject : undefined
+  }
+
+  /** A recalled body never renders; the row keeps the tombstone the timeline uses. */
+  private messageExcerpt(message: AgentTeamMessage): string {
+    return message.recalledAt === undefined ? boundedInboxPreview(message.body) : AGENT_TEAM_RECALLED_BODY_TOMBSTONE
+  }
+
+  /**
+   * The neighbour a Message answers. The ledger holds no Message-level reply
+   * pointer, so this names the nearest earlier Message from someone else, and
+   * falls back to the Thread's opening line: a derived relation, labelled as
+   * one, never a claimed exact target.
+   */
+  private messageReplyContext(facts: readonly AgentTeamThreadFact[], message: AgentTeamMessage, anchor: AgentTeamMessage): AgentTeamMessageContext {
+    let previous: AgentTeamMessage | undefined
+    for (const fact of facts) {
+      if (fact.kind !== 'message') continue
+      if (fact.sequence >= message.sequence) break
+      if (fact.message.sender === message.sender) continue
+      previous = fact.message
+    }
+    const context = previous ?? anchor
+    return Object.freeze({ relation: previous === undefined ? 'thread-anchor' : 'previous-in-thread',
+      sender: this.memberActor(context.sender),
+      excerpt: previous === undefined ? boundedAnchorPreview(anchor) : this.messageExcerpt(context), messageRef: context.messageRef })
+  }
+
+  /**
+   * How far this reader's own Message has been picked up, derived from facts
+   * already in the ledger: a recipient's read watermark, a later reply in the
+   * Thread, a later Claim, and a later Task acceptance or close. No
+   * acknowledgement record exists, so `basis` stays `derived` and the state is
+   * the strongest signal present, never a person's confirmation.
+   */
+  private messageProcessing(facts: readonly AgentTeamThreadFact[], message: AgentTeamMessage, memberId: AgentTeamMemberId): AgentTeamMessageProcessing {
+    const evidence: AgentTeamMessageProcessingEvidence[] = []
+    for (const recipient of this.state.mentionsByMessage.get(message.messageRef) ?? []) {
+      const attention = this.attentionFor(recipient, message.threadRef)
+      if (attention !== undefined && attention.readThroughSequence >= message.sequence) {
+        evidence.push(Object.freeze({ kind: 'read', memberId: recipient }))
+      }
+    }
+    let replied = false
+    let claimed = false
+    let closed = false
+    for (const fact of facts) {
+      if (fact.sequence <= message.sequence) continue
+      if (fact.kind === 'message') {
+        if (replied || fact.message.sender === memberId) continue
+        replied = true
+        evidence.push(Object.freeze({ kind: 'replied', messageRef: fact.message.messageRef, occurredAt: fact.occurredAt }))
+        continue
+      }
+      const activity = fact.activity
+      if (activity.kind === 'claim') {
+        if (claimed) continue
+        claimed = true
+        evidence.push(Object.freeze({ kind: 'claimed', taskRef: activity.taskRef, occurredAt: fact.occurredAt }))
+      } else if (activity.kind === 'accept' || activity.kind === 'close') {
+        if (closed) continue
+        closed = true
+        evidence.push(Object.freeze({ kind: 'task-closed', taskRef: activity.taskRef, occurredAt: fact.occurredAt }))
+      }
+    }
+    const state = closed ? 'resolved' : (replied || claimed || evidence.length > 0) ? 'acknowledged' : 'pending'
+    return Object.freeze({ state, basis: 'derived', evidence: Object.freeze(evidence) })
+  }
   listClaims(actor: AgentTeamHumanActor | AgentTeamMemberActor, request: { workspaceId: WorkspaceId; taskRef: AgentTeamTaskRef }): AgentTeamClaimList {
     const authorized = this.assertActorForWorkspace(actor, request.workspaceId)
     const { task, thread } = this.threadForActor(authorized, request.workspaceId, request.taskRef)
