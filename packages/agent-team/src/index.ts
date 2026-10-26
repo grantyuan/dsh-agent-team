@@ -752,6 +752,11 @@ export default class AgentTeam extends TypertRemoteService {
       if (ledger === undefined) return []
       return ledger.listMembers()
         .filter(member => member.state === 'enabled')
+        // An external Member always reads stopped (it owns no session), so
+        // admitting it to the watch list would open a coercion chain that can
+        // never heal — and end in archive-and-replace destroying the virtual
+        // member and spawning a real replacement in its seat.
+        .filter(member => member.external !== true)
         .map(member => member.memberId)
     },
     stateOf: memberId => this.supervisionStateOf(memberId),
@@ -1292,10 +1297,14 @@ export default class AgentTeam extends TypertRemoteService {
     const persistedSessions = new Set((await this.persistedSessionHeaders()).map(snapshot => snapshot.header.id))
     await this.sweepWorkspaceParticipations(ledger)
     for (const member of ledger.listMembers()) {
+      // An external Member is virtual: the durable `external` marker keeps the
+      // restart restore from building it a real session, which is exactly the
+      // double-execution bug — the clone would receive the wakes its polling
+      // counterpart already consumes.
+      if (member.external === true) continue
       if (member.state === 'enabled') await this.activateMember(member, undefined, persistedSessions)
       else if (member.state === 'inactive') await this.memberRuntime.cleanupRemovedMember(member)
-    }
-    // Supervision starts only after the restore settled: a pass that ran while
+    }    // Supervision starts only after the restore settled: a pass that ran while
     // Members were still activating would read every cold Session as an
     // abnormal stop and start handing work over to fresh generations. The
     // continuation watcher rides the same restore gate — its pass would
@@ -2026,6 +2035,9 @@ export default class AgentTeam extends TypertRemoteService {
         handle: request.handle,
         description: request.description ?? '',
         presetId: EXTERNAL_MEMBER_PRESET_ID,
+        // The durable virtual marker: every session-creating path reads it, so
+        // this Member stays session-less through restarts and lifecycle ops.
+        external: true,
         privateMemoryPath: dshHomePath('agent-team', 'members', memberMemoryDirectoryName(memberId)),
         state: 'enabled',
       })
@@ -2056,13 +2068,17 @@ export default class AgentTeam extends TypertRemoteService {
       const result = await this.requireLedger().resumeMember({ ...request, actor: agentTeamHumanActor() })
       if (result.committed) this.emitCommitted(result.value.receipt)
       this.clearMemberNotificationState(result.value.member.memberId)
-      // The suspended Session's log is durable once its retirement completes,
-      // and agents.resume() waits for exactly that retirement before loading.
-      // Consulting the persistence tree here instead would race the
-      // fire-and-forget retirement on Windows, where the JSONL backend
-      // publishes directories through transient staging entries that surface
-      // as ENOENT mid-walk — so pass the known session rather than re-listing.
-      await this.activateMember(result.value.member, undefined, new Set([result.value.member.sessionId]))
+      // An external Member resumes to enabled-and-session-less: there is no
+      // persisted Session to restore and none may be built.
+      if (result.value.member.external !== true) {
+        // The suspended Session's log is durable once its retirement completes,
+        // and agents.resume() waits for exactly that retirement before loading.
+        // Consulting the persistence tree here instead would race the
+        // fire-and-forget retirement on Windows, where the JSONL backend
+        // publishes directories through transient staging entries that surface
+        // as ENOENT mid-walk — so pass the known session rather than re-listing.
+        await this.activateMember(result.value.member, undefined, new Set([result.value.member.sessionId]))
+      }
       return Object.freeze({ receipt: result.value.receipt, status: this.memberStatus(result.value.member) })
     })
   }
@@ -2080,6 +2096,7 @@ export default class AgentTeam extends TypertRemoteService {
     this.requireAccepting()
     const member = this.requireLedger().getMember(request.memberId)
     if (member === undefined || !this.requireLedger().participatesIn(request.memberId, request.workspaceId)) throw new Error(`unknown Member '${request.memberId}' in workspace '${request.workspaceId}'`)
+    if (member.external === true) throw new Error(`Agent Member '${member.handle}' is an external member: it owns no session in this Host, so there is nothing to recover`)
     this.recovery.stopTracking(request.memberId)
     const handle = this.handles.get(request.memberId)
     // A live handle running a different Session than the durable binding is an
@@ -3206,6 +3223,9 @@ export default class AgentTeam extends TypertRemoteService {
     const ledger = this.requireLedger()
     const member = ledger.getMember(memberId)
     if (member === undefined || member.state !== 'enabled') return
+    // An external Member is permanently session-less by design; "restarting"
+    // it would build the clone the marker exists to prevent.
+    if (member.external === true) return
     const handle = this.handles.get(memberId)
     if (handle === undefined || this.ctx.agentPresets.composedPreset(handle.agent.ctx) === undefined) {
       this.ctx.logger.warn(`agent-team: supervision rebuilding member '${member.handle}' after it stopped with no live composition`)
@@ -4594,6 +4614,7 @@ export default class AgentTeam extends TypertRemoteService {
     if (target === undefined || !ledger.participatesIn(request.memberId, request.workspaceId)) throw new Error(`unknown Member '${request.memberId}' in workspace '${request.workspaceId}'`)
     if (target.memberId === actor.memberId) throw new Error(`Agent Member '${target.handle}' cannot reset its own context through team_supervise`)
     if (target.state !== 'enabled') throw new Error(`Agent Member '${target.handle}' is ${target.state}; only enabled Members can be reset`)
+    if (target.external === true) throw new Error(`Agent Member '${target.handle}' is an external member: it owns no session in this Host, so there is no context to reset`)
     if (this.supervisionStateOf(request.memberId) === 'healthy') throw new Error(`Agent Member '${target.handle}' reads healthy; supervision resets only abnormal Members`)
     this.ctx.logger.warn(`agent-team: member '${actor.handle}' reset abnormal member '${target.handle}' through team supervision`)
     await this.enqueueLifecycle(async () => {

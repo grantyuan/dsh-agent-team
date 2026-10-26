@@ -85,7 +85,7 @@ async function seedTeam(ledger: AgentTeamLedger): Promise<AgentTeamChannelRef> {
 async function addExternalMember(ledger: AgentTeamLedger, channelRefs: readonly AgentTeamChannelRef[]): Promise<void> {
   await ledger.addMember({ requestId: requestId('member-visitor'), workspaceId: alpha, handle: 'visitor',
     description: 'An external harness agent', presetId: 'team-member', channelRefs: [...channelRefs], actor: human,
-    member: agentMember(externalId, 'visitor') })
+    member: { ...agentMember(externalId, 'visitor'), external: true } })
 }
 
 describe('external member ledger semantics', () => {
@@ -103,8 +103,29 @@ describe('external member ledger semantics', () => {
     expect(ledger.channelsInWorkspace(alpha).map(channel => channel.channelRef)).toEqual([first.channelRef])
   })
 
-  it('grants a created external member its channels and accumulates mentions as unread', async () => {
-    const { ledger } = await openLedger()
+  it('keeps the external marker durable across a restart replay and a roster edit', async () => {
+    const { ledger, table } = await openLedger()
+    const channelRef = await seedTeam(ledger)
+    await addExternalMember(ledger, [channelRef])
+    expect(ledger.getMember(externalId)?.external).toBe(true)
+
+    // A Human roster edit must not strip the marker: absent-clears applies to
+    // the overlay fields only, and the identity spread keeps the rest.
+    await ledger.updateMember({ requestId: requestId('update-visitor'),
+      memberId: externalId, handle: 'visitor', description: 'An external harness agent',
+      actor: human })
+    expect(ledger.getMember(externalId)?.external).toBe(true)
+
+    // The restart shape: a fresh ledger over the same durable table replays
+    // the whole operation chain and reads the same virtual member — enabled,
+    // external, and exactly the row the restore loop must skip.
+    const replayed = new AgentTeamLedger(table)
+    await replayed.initialize()
+    expect(replayed.getMember(externalId)?.external).toBe(true)
+    expect(replayed.getMember(externalId)?.state).toBe('enabled')
+  })
+
+  it('grants a created external member its channels and accumulates mentions as unread', async () => {    const { ledger } = await openLedger()
     const channelRef = await seedTeam(ledger)
     await addExternalMember(ledger, [channelRef])
     expect(ledger.participatesIn(externalId, alpha)).toBe(true)

@@ -110,6 +110,8 @@ const memberSchema = z.object({
   capabilities: memberCapabilitiesSchema.optional(),
   // Ledgers written before the leader designation existed omit the field.
   leader: z.boolean().optional(),
+  // Ledgers written before the external-agent gateway existed omit the field.
+  external: z.boolean().optional(),
   // Ledgers written before the prompt profile existed omit the field.
   prompt: memberPromptProfileSchema.optional(),
   // Ledgers written before the task-start policy existed omit the field.

@@ -219,6 +219,14 @@ export interface AgentTeamAgentMember {
    */
   readonly leader?: boolean | undefined
   /**
+   * Durable virtual-member marker, set only by the external-agent gateway:
+   * this Member owns no Session in this Host — not at creation, not after a
+   * restart, not through resume/recover/supervision — and reaches the Team
+   * only by polling the gateway. Members written before the gateway existed
+   * omit the field.
+   */
+  readonly external?: boolean | undefined
+  /**
    * Task-start context policy. `fresh` renews the Member's context through
    * the serialized lifecycle queue at every claim and Human atomic-start
    * boundary; absent (and `continue`) keeps the current Session across Task
