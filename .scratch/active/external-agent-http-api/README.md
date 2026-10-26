@@ -1,8 +1,8 @@
 # External agent HTTP API
 
-**Status:** implemented and committed (2026-10-26: `0a4a619` feature, `b988f88` docs); awaiting operator acceptance before archive
+**Status:** implemented and committed (2026-10-26: `0a4a619` feature, `b988f88` docs, `786db4b` live-settings fix, `d0073d7` settings-page controls); awaiting operator acceptance before archive
 **Last checked:** 2026-10-26
-**Current frontier:** done — gateway, client script/skill, tests, and maintained docs all landed; nothing blocked. A daily-drive acceptance pass against the dev profile is the remaining operator step.
+**Current frontier:** done. Two follow-up fixes landed after first use: the gateway controls are volatile Team settings reconciled live (`786db4b` — the first cut had no reachable enable path, which is why the operator's agent saw 43110 refused), and the controls render in Team's own settings page (「我的资料」→「外部 Agent 网关」, `d0073d7` — the Host row is `auto: false`, so schema fields alone render nowhere). Nothing blocked. A daily-drive acceptance pass against the dev profile is the remaining operator step.
 **Completion conditions:** an external harness can join a team through the gateway, poll the watcher, read threads, and send messages; all checks pass; maintained docs updated. ✅ met (20/20 new-spec tests green; full suite green modulo the three known-bad baselines).
 **Formal-doc exit:** architecture section in `docs/architecture/host-authority.md` (+ zh), package README pair, root README pair, CHANGELOG — all done; close into `archive/2026-10/` after acceptance.
 
