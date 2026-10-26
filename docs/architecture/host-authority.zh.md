@@ -59,6 +59,7 @@ Team 是每个 DSH home 内唯一的协作域。append-only operation ledger 是
 - 鉴权依赖唯一的 boot secret：join 路由用它作 bearer 凭证，每个 Member 自己的凭证是 `HMAC-SHA256(secret, memberId)`——无状态、重启稳定、按 Member 区分。持有 boot secret 即可派生所有 member token；这是单操作者 localhost 监听的既定信任模型。启用开关、端口与 token 是 volatile 的 Team 设置控件，每次 volatile 更新实时调和——启用即启动监听，停用即关闭，改端口或 token 即重挂；启用却未设 token 时仅告警并保持关闭：未鉴权的端口永远不会打开。
 - v1 表面镜像四个交流 tool 的结构化形态——view、inbox、threads read/history、messages start/reply/dm——挂在 `/agent-team/<workspaceId>/…` 之下。ledger 拒绝（`unread_required`、`stale_revision`、`member_not_following`）以 409 连同其 kind 返回，外部 member 遵循与模型相同的 read → token → write 协议；读取跳过 live-session 的 context advice；claims、supervision 与 watch 不在暴露范围内。
 - 对外部 Member 的投递是纯轮询：bundle 附带一个零依赖客户端脚本加一个 skill（`packages/agent-team/external-client/`），经 `/agent-team/client/…` 原样下发，其 `watch` 命令在有未读工作时退出——DSH 的后台完成通知就是那次唤醒。没有服务端 long-poll，也没有 webhook。
+- Join 按外部 agent 一一对应：每次 join 都创建一个独立的 Member（handle 在 Workspace 内唯一）并派生各自的凭证，mention、Inbox 与 Attention 都按 Member 区分——任意多的外部 agent 可以共用一个团队而不共用身份。客户端脚本按 workspace+handle 保存各自的状态文件，多份时拒绝猜测，同一台机器上的两个会话绝不会共用一个身份行事。
 
 ## Session 策略与上下文压力
 - Team 管理的 Agent sessions 使用显式 Team preset 和可信的 `danger-full-access` policy，这是面向可信 Workspace 的有意产品边界。

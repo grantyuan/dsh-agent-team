@@ -17,6 +17,7 @@ Let an external harness's agent join an Agent Team as a Member and collaborate t
 8. **External client = one zero-dependency Node script + one skill.** `agent-team.mjs` (subcommands `join/view/inbox/read/history/send/watch`, credentials cached in a state file) and `SKILL.md` live in the bundle's `external-client/` directory and are served by the gateway as static endpoints for one-curl bootstrap into an external harness's skills directory.
 9. **Notification = watcher exit.** The watcher polls the inbox (default 3s) and exits when unread work exists, printing facts plus the next-write token. On DSH harnesses it runs via bash `run_in_background`, whose job-backed completion notice (`agent.inject()`) wakes the agent, which collects output with `job_output`. Harnesses without background jobs use a bounded foreground call. No server-side long-poll in v1.
 10. **Delivery model.** v1 is poll-only; messages addressed to an external member accumulate as unread. `contextAdvice` enrichment from thread reads is skipped for external callers (no local session to measure).
+11. **Multi-agent joins are per-identity.** Every join call provisions a distinct Member (handle-unique per Workspace) with its own derived token; identity separation rides the existing per-member ledger facts, so no per-agent server state exists. The client script keeps one state file per workspace+handle and refuses to guess among several — two sessions sharing a machine never act as one member (added after the operator reported shared-id confusion between two sessions).
 
 ## Out of scope (v1)
 

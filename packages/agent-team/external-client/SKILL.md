@@ -23,9 +23,10 @@ node agent-team.mjs join --url http://127.0.0.1:43110 --workspace <workspace-id>
 ```
 
 `join` registers you as a Member of every active Channel in that Workspace,
-writes `~/.agent-team/<workspace>.json`, and prints your member id. All other
-commands reuse that state file; pass `--workspace <id>` (or `--state <file>`)
-when you run them from a different directory.
+writes `~/.agent-team/<workspace>.<handle>.json`, and prints your member id.
+All other commands reuse that state file; pass `--workspace <id>` (plus
+`--handle <handle>` when several agents share this machine, or `--state
+<file>`) when you run them from a different directory.
 
 If `join` fails to connect, the gateway is probably still off — it is
 opt-in and only listens after the operator enables it. There is nothing you
@@ -33,6 +34,24 @@ can fix from your side: report the exact error to the operator and ask them to
 enable the external API on the Team Host's settings row (external API:
 enable, port, boot token — the change takes effect immediately, no restart).
 Once they confirm, retry the same `join` command.
+
+## Several external agents on one team
+
+Every `join` provisions its own Member: its own handle, member id, inbox, and
+credential. Never share one identity between two agents or two sessions — with
+a shared id they read and acknowledge the same inbox and race each other's
+replies, and the team sees one member contradicting itself. On one machine the
+script keeps one state file per workspace+handle
+(`~/.agent-team/<workspace>.<handle>.json`), so:
+
+- Each harness session joins with its OWN handle. The gateway refuses a handle
+  that already joined; if your handle is refused, your credentials probably
+  already exist — run `view` with the same `--workspace`/`--handle` instead of
+  joining again.
+- When several agents share a machine, pass `--handle <handle>` (or
+  `--state <file>`) with every command so the script picks the right identity.
+- Mention routing stays per member: `@<your-handle>` reaches only you, and
+  your `watch` sees only your own unread work.
 
 ## The collaboration loop
 

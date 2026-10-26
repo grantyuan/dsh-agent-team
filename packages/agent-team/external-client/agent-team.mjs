@@ -14,15 +14,17 @@
  *   watch  — block until the team has unread work, then read it and exit
  *
  * Credentials from `join` are cached in a state file (default
- * ~/.agent-team/<workspace>.json) and every other command reuses them.
- * Output is JSON on stdout; errors are JSON on stderr with exit code 1.
+ * ~/.agent-team/<workspace>.<handle>.json — one per agent, so several external
+ * agents or sessions on this machine each keep their own identity) and every
+ * other command reuses them. Output is JSON on stdout; errors are JSON on
+ * stderr with exit code 1.
  *
  * The `watch` exit IS the notification: run it in the background (bash
  * run_in_background on DSH harnesses) and its completion notice wakes you;
  * without background jobs, call it with a bounded --timeout in the foreground.
  */
 
-import { readFile, writeFile, mkdir } from 'node:fs/promises'
+import { readFile, writeFile, mkdir, readdir } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { parseArgs } from 'node:util'
@@ -48,7 +50,10 @@ Commands:
   send dm    --member REF --body TEXT [--client-request-id ID]
   watch   [--interval SEC] [--timeout SEC] [--max-reads N] [--state FILE]
 
-State defaults to ~/.agent-team/<workspace>.json. JSON in, JSON out.`
+State defaults to ~/.agent-team/<workspace>.<handle>.json — one file per agent,
+so several external agents (or sessions) on this machine each keep their own
+identity. Pass --handle with every command, or --state to name the file
+directly. JSON in, JSON out.`
 }
 
 const COMMANDS = ['join', 'view', 'inbox', 'read', 'history', 'send', 'watch']
@@ -86,13 +91,39 @@ const { values } = parseArgs({
 })
 
 /** State resolution: --state wins, else ~/.agent-team/<workspace>.json. */
+function sanitizeStatePart(value) {
+  return value.replace(/[^\w.-]/gu, '_')
+}
+
+/**
+ * State resolution: --state wins; else the per workspace+handle default — one
+ * file per agent, so two agents (or two sessions) sharing this machine never
+ * overwrite each other's credentials and never act as one member. With no
+ * --handle, resolve a single match and refuse to guess among several: two
+ * agents sharing one state file would share one inbox and race each other's
+ * reads and replies.
+ */
 async function statePathOf(values) {
   if (values.state !== undefined) return resolve(values.state)
   const workspace = values.workspace
   if (workspace === undefined || workspace === '') {
-    return fail('join requires --workspace; other commands need --workspace or --state (the file join wrote)', { usage: usage() })
+    return fail('join requires --workspace; other commands need --workspace (plus --handle when several agents share this machine) or --state (the file join wrote)', { usage: usage() })
   }
-  return join(homedir(), '.agent-team', `${workspace.replace(/[^\w.-]/gu, '_')}.json`)
+  const directory = join(homedir(), '.agent-team')
+  const base = sanitizeStatePart(workspace)
+  if (values.handle !== undefined && values.handle !== '') {
+    return join(directory, `${base}.${sanitizeStatePart(values.handle)}.json`)
+  }
+  let entries
+  try {
+    entries = await readdir(directory)
+  } catch {
+    return fail(`no state directory at ${directory}; run the join command first`)
+  }
+  const candidates = entries.filter(entry => entry === `${base}.json` || (entry.startsWith(`${base}.`) && entry.endsWith('.json')))
+  if (candidates.length === 1) return join(directory, candidates[0])
+  if (candidates.length === 0) return fail(`no state file for workspace '${workspace}' under ${directory}; run the join command first`)
+  return fail(`several agents have joined workspace '${workspace}' on this machine; pass --handle <handle> or --state <file> to pick one identity`, { candidates: candidates.sort() })
 }
 
 async function loadState(values) {
@@ -167,7 +198,13 @@ async function main() {
   })
     const body = await response.json().catch(() => ({}))
     if (response.ok === false) {
-      fail(`join refused: ${body?.error?.message ?? `HTTP ${response.status}`}`, { status: response.status })
+      const detail = body?.error?.message ?? `HTTP ${response.status}`
+      // A taken handle means this identity already joined here: its state file
+      // likely still holds working credentials (tokens are derived, so they
+      // never expire) — point the caller there instead of at a fresh join.
+      const taken = /handle/i.test(detail)
+      const hint = taken === false ? '' : ` — this handle already joined this workspace; run view --workspace <id> --handle ${values.handle} to reuse its credentials (state file ${await statePathOf(values)}), or pick a fresh --handle for a second agent`
+      fail(`join refused: ${detail}${hint}`, { status: response.status })
     }
     const state = { baseUrl, workspaceId: values.workspace, memberId: body.memberId, token: body.token }
     const path = await statePathOf(values)

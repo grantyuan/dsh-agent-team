@@ -263,4 +263,47 @@ describe('client script end-to-end', () => {
     const read = await run(process.execPath, [scriptPath, 'read', '--thread', wakeBody.reads[0]!.threadRef, '--state', stateFile])
     expect(JSON.parse(read.stdout)).toMatchObject({ thread: { threadRef: wakeBody.reads[0]!.threadRef } })
   })
+
+  it('keeps two joined agents independent with per-handle state files', async () => {
+    const { ledger } = await openLedger()
+    const channelRef = await seedTeam(ledger)
+    const api = await new AgentTeamExternalApi(ledgerCore(ledger), { port: 0, token: 'test-secret' }).start()
+    cleanups.push(() => api.stop())
+    const port = api.boundPort
+    if (port === undefined) throw new Error('gateway did not bind')
+    // A hermetic HOME: the default per-handle state path resolves under it.
+    const home = await mkdtemp(join(tmpdir(), 'agent-team-home-'))
+    cleanups.push(() => rm(home, { recursive: true, force: true }))
+    const env = { ...process.env, HOME: home }
+
+    const joinArgs = ['join', '--url', `http://127.0.0.1:${port}`, '--workspace', alpha, '--token', 'test-secret']
+    const joinA = await run(process.execPath, [scriptPath, ...joinArgs, '--handle', 'visitor-a'], { env })
+    const joinB = await run(process.execPath, [scriptPath, ...joinArgs, '--handle', 'visitor-b'], { env })
+    const stateA = JSON.parse(joinA.stdout) as { memberId: string; token: string; stateFile: string }
+    const stateB = JSON.parse(joinB.stdout) as { memberId: string; token: string; stateFile: string }
+    // Two joins, two identities: distinct members, distinct derived tokens,
+    // distinct state files — never one shared id.
+    expect(stateA.memberId).not.toBe(stateB.memberId)
+    expect(stateA.token).not.toBe(stateB.token)
+    expect(stateA.stateFile).not.toBe(stateB.stateFile)
+
+    // The mention routes to the member it names; B's watch stays quiet while
+    // A's wakes with the facts.
+    await ledger.sendMessage({ requestId: requestId('to-a'), workspaceId: alpha, channelRef,
+      body: '@visitor-a only you', actor: scout })
+    const quietB = await run(process.execPath, [scriptPath, 'watch', '--workspace', alpha, '--handle', 'visitor-b', '--interval', '1', '--timeout', '2'], { env })
+    expect(JSON.parse(quietB.stdout)).toMatchObject({ kind: 'quiet' })
+    const wakeA = await run(process.execPath, [scriptPath, 'watch', '--workspace', alpha, '--handle', 'visitor-a', '--interval', '1', '--timeout', '20'], { env })
+    const wakeBody = JSON.parse(wakeA.stdout) as { kind: string; reads: { threadRef: string; baseRevision: number; facts: { body: string }[] }[] }
+    expect(wakeBody.kind).toBe('messages')
+    expect(wakeBody.reads[0]!.facts.some(fact => fact.body.includes('only you'))).toBe(true)
+
+    // A replies under its own resolved identity (no --state, just --handle).
+    const reply = await run(process.execPath, [scriptPath, 'send', 'reply',
+      '--workspace', alpha, '--handle', 'visitor-a',
+      '--thread', wakeBody.reads[0]!.threadRef, '--base-revision', String(wakeBody.reads[0]!.baseRevision),
+      '--body', 'ack from visitor-a'], { env })
+    expect(JSON.parse(reply.stdout)).toMatchObject({ kind: 'committed' })
+    expect(ledger.inbox(scout, { workspaceId: alpha }).totalUnreadCount).toBeGreaterThan(0)
+  })
 })
