@@ -64,6 +64,7 @@ import type {
   AgentTeamAddExternalMemberRequest,
   AgentTeamAddMemberRequest,
   AgentTeamAddMemberResult,
+  AgentTeamGatewayConfig,
   AgentTeamAgentMember,
   AgentTeamAgentMemberStatus,
   AgentTeamArchiveChannelRequest,
@@ -184,6 +185,8 @@ import type {
   AgentTeamSendMessageResult,
   AgentTeamSetHumanProfileRequest,
   AgentTeamSetHumanProfileResult,
+  AgentTeamSetGatewayConfigRequest,
+  AgentTeamSetGatewayConfigResult,
   AgentTeamSetMemberStateRequest,
   AgentTeamStatus,
   AgentTeamTask,
@@ -4090,6 +4093,52 @@ export default class AgentTeam extends TypertRemoteService {
       await settings.mutate(HUMAN_PROFILE_SETTINGS_NAMESPACE, ops)
     }
     return Object.freeze({ ...this.humanProfile() })
+  }
+
+  /** The Team settings page's view of the external-agent gateway controls. */
+  @Remote('gatewayConfig')
+  gatewayConfigForClient(): AgentTeamGatewayConfig {
+    const boundPort = this.externalApi?.boundPort
+    return Object.freeze({
+      enabled: this.config.externalApiEnabled.get() === true,
+      port: this.config.externalApiPort.get() ?? 43110,
+      token: this.config.externalApiToken.get() ?? '',
+      listening: this.externalApi !== undefined,
+      ...(boundPort === undefined ? {} : { boundPort }),
+    })
+  }
+
+  /**
+   * Overwrite the external-agent gateway controls the caller supplies — the
+   * same ownership story as {@link setHumanProfile}: the controls are the Host
+   * row's own volatile Config, the schema supplies the shape, this method
+   * supplies the judgements it cannot make (a real port, a token before an
+   * enable), and the settings service persists and applies the result live.
+   * The returned view is post-reconcile, so `listening` answers what the
+   * listener is doing now, not what the edit intended.
+   */
+  @Remote('setGatewayConfig')
+  async setGatewayConfig(request: AgentTeamSetGatewayConfigRequest): Promise<AgentTeamSetGatewayConfigResult> {
+    this.requireAccepting()
+    const settings = this.ctx.get('settings')
+    if (settings === undefined) throw new Error('the settings service is unavailable')
+    if (request.port !== undefined
+      && (typeof request.port !== 'number' || !Number.isSafeInteger(request.port) || request.port < 1 || request.port > 65535)) {
+      throw new Error('gateway port must be an integer between 1 and 65535')
+    }
+    if (request.token !== undefined && request.token.trim() === '') {
+      throw new Error('the boot token must not be empty; disable the gateway instead of clearing its token')
+    }
+    const nextEnabled = request.enabled ?? this.config.externalApiEnabled.get() === true
+    const nextToken = (request.token ?? this.config.externalApiToken.get() ?? '').trim()
+    if (nextEnabled && nextToken === '') throw new Error('set a boot token before enabling the external gateway')
+    const ops: SettingsPathOp[] = []
+    if (request.enabled !== undefined) ops.push({ op: 'set', path: ['externalApiEnabled'], value: request.enabled })
+    if (request.port !== undefined) ops.push({ op: 'set', path: ['externalApiPort'], value: request.port })
+    if (request.token !== undefined) ops.push({ op: 'set', path: ['externalApiToken'], value: nextToken })
+    if (ops.length !== 0) await settings.mutate(HUMAN_PROFILE_SETTINGS_NAMESPACE, ops)
+    await this.reconcileExternalApi()
+    return this.gatewayConfigForClient()
   }
 
   /** Human existing-Thread reply; unread and revision conflicts are business outcomes. */

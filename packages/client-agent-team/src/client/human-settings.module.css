@@ -82,6 +82,51 @@
   width: 200px;
 }
 
+/* The gateway row is denser than the identity rows: a checkbox, two fields, a
+ * button, and a live state line do not share one line with the description
+ * without crushing it to a character per line, so the row stacks its text
+ * above its controls and lets the controls wrap as a group. */
+.gatewayRow {
+  align-items: stretch;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.gatewayControls {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+
+.gatewayCheck {
+  align-items: center;
+  display: inline-flex;
+  font-size: 13px;
+  gap: 6px;
+}
+
+.gatewayPort {
+  height: 36px;
+  width: 96px;
+}
+
+.gatewayToken {
+  height: 36px;
+  width: 200px;
+}
+
+.gatewayState {
+  color: var(--dsw-alias-label-tertiary);
+  font-size: 12px;
+  line-height: 18px;
+  margin: 0;
+}
+
+.gatewayState[data-listening='true'] {
+  color: var(--dsw-alias-state-business-primary);
+}
+
 /* The Human's own face, drawn at the identity language's 40px seat: the
  * uploaded bytes when there are any, the business-tinted initial otherwise.
  * The static white is the platform's own white (`--dsw-static-*`), the same

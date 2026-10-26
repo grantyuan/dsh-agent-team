@@ -3262,7 +3262,9 @@ it('configures the Human profile from Settings in real Web', async () => {
   expect(saveRing?.outlineStyle).not.toBe('none')
   await page.keyboard.press('Enter')
   await expect.poll(() => scaffold!.ctx.agentTeam.humanHandle()).toBe('Ada')
-  await expect.poll(async () => await panel.getByRole('button', { name: '保存' }).isDisabled()).toBe(true)
+  // exact: the page now also carries the gateway's 「保存网关设置」, and role
+  // names match by substring.
+  await expect.poll(async () => await panel.getByRole('button', { name: '保存', exact: true }).isDisabled()).toBe(true)
 
   // Avatar upload: bytes go to the persistent store, the reference into
   // settings, and the page draws what the browser can decode.
@@ -3280,10 +3282,10 @@ it('configures the Human profile from Settings in real Web', async () => {
   // reader typed and the notice states the rule.
   await nameField.fill('   ')
   await panel.getByText('名字不能为空。').waitFor()
-  expect(await panel.getByRole('button', { name: '保存' }).isDisabled()).toBe(true)
+  expect(await panel.getByRole('button', { name: '保存', exact: true }).isDisabled()).toBe(true)
   await page.screenshot({ path: join(UI09_SHOTS, 'human-profile-empty-name.png'), fullPage: true })
   await nameField.fill('Ada')
-  await expect.poll(async () => await panel.getByRole('button', { name: '保存' }).isDisabled()).toBe(true)
+  await expect.poll(async () => await panel.getByRole('button', { name: '保存', exact: true }).isDisabled()).toBe(true)
 
   // 390×844: the shipped panel keeps its 188px nav rail at every viewport, so
   // the question this answers is whether OUR column survives the squeeze.

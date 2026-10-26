@@ -640,6 +640,40 @@ export interface AgentTeamHumanProfileResult {
   readonly latestVersion?: string | undefined
 }
 
+/**
+ * The Team settings page's view of the external-agent gateway controls: the
+ * three volatile settings plus the listener's live state. `listening` is the
+ * honest answer, not an echo of `enabled` — an enabled gateway with an empty
+ * token stays off until a token lands.
+ */
+export interface AgentTeamGatewayConfig {
+  readonly enabled: boolean
+  readonly port: number
+  readonly token: string
+  readonly listening: boolean
+  /** The resolved listen port once bound (an ephemeral port resolves at listen time). */
+  readonly boundPort?: number
+}
+
+/**
+ * Human intent to retune the external-agent gateway from its settings row.
+ * Absent fields keep their stored value; the Host owns the write because the
+ * controls are the Host row's own Config, exactly like the Human profile.
+ */
+export interface AgentTeamSetGatewayConfigRequest {
+  readonly enabled?: boolean
+  readonly port?: number
+  readonly token?: string
+}
+
+export interface AgentTeamSetGatewayConfigResult {
+  readonly enabled: boolean
+  readonly port: number
+  readonly token: string
+  readonly listening: boolean
+  readonly boundPort?: number
+}
+
 /** Local environment read: how the running DSH compares to the declared support line. */
 export interface AgentTeamEnvironmentRequest {
 }

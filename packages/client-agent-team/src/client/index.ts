@@ -367,6 +367,18 @@ function applyUi(ctx: ClientContext): void {
     inject: () => ({
       identity: humanIdentity,
       environment,
+      gateway: {
+        read: async () => {
+          const read = await ctx.remote.agentTeam.gatewayConfig()
+          if (!read.ok) throw new Error(read.error.message)
+          return read.value
+        },
+        save: async (patch: { enabled?: boolean; port?: number; token?: string }) => {
+          const saved = await ctx.remote.agentTeam.setGatewayConfig(patch)
+          if (!saved.ok) throw new Error(saved.error.message)
+          return saved.value
+        },
+      },
       saveName: async (name: string) => {
         const saved = await ctx.remote.agentTeam.setHumanProfile({ name })
         if (!saved.ok) return saved.error.message

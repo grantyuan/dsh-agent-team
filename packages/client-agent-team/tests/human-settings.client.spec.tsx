@@ -39,6 +39,9 @@ const INERT_ENVIRONMENT_SOURCE = {
   subscribe: () => () => {},
 }
 
+const GATEWAY_OFF = { enabled: false, port: 43110, token: '', listening: false }
+const GATEWAY_ON = { enabled: true, port: 43110, token: 'boot-secret', listening: true, boundPort: 43110 }
+
 /** Render the page with the faces a test cares about; the rest stay inert. */
 function renderSection(injected: Record<string, unknown> = {}) {
   const { identity } = identityWith()
@@ -50,6 +53,10 @@ function renderSection(injected: Record<string, unknown> = {}) {
     // profile-page tests about the profile page. The block's own behaviour is
     // covered in environment-check.client.spec.tsx.
     environment: INERT_ENVIRONMENT_SOURCE,
+    gateway: {
+      read: vi.fn(async () => GATEWAY_OFF),
+      save: vi.fn(async () => GATEWAY_OFF),
+    },
     saveName: vi.fn(async () => undefined),
     uploadAvatar: vi.fn(async () => undefined),
     removeAvatar: vi.fn(async () => undefined),
@@ -209,5 +216,54 @@ describe('Human profile page', () => {
     const footnote = screen.getByText('版本 0.1.13')
     expect(screen.getByText(zh.environmentOutOfRangeTitle).compareDocumentPosition(footnote))
       .toBe(Node.DOCUMENT_POSITION_FOLLOWING)
+  })
+})
+
+describe('External agent gateway controls', () => {
+  it('renders the current controls and the live listening state', async () => {
+    renderSection({ gateway: { read: vi.fn(async () => GATEWAY_ON), save: vi.fn(async () => GATEWAY_ON) } })
+    await waitFor(() => { expect(screen.getByText('监听中 · 端口 43110')).not.toBeNull() })
+    expect((screen.getByLabelText('启用外部 Agent 网关') as HTMLInputElement).checked).toBe(true)
+    expect((screen.getByLabelText('端口') as HTMLInputElement).value).toBe('43110')
+    expect((screen.getByLabelText('Boot token') as HTMLInputElement).value).toBe('boot-secret')
+  })
+
+  it('saves only what changed and lands on the post-reconcile view', async () => {
+    const save = vi.fn(async () => GATEWAY_ON)
+    renderSection({ gateway: { read: vi.fn(async () => GATEWAY_OFF), save } })
+    const enable = await screen.findByLabelText('启用外部 Agent 网关')
+    // Enabling without a token refuses locally: the hint appears, the save
+    // button stays disabled, and no round trip is spent.
+    fireEvent.click(enable)
+    await waitFor(() => { expect(screen.getByText('启用前请先填写 Boot token。')).not.toBeNull() })
+    expect((screen.getByRole('button', { name: '保存网关设置' }) as HTMLButtonElement).disabled).toBe(true)
+    expect(save).not.toHaveBeenCalled()
+
+    fireEvent.change(screen.getByLabelText('Boot token'), { target: { value: 'boot-secret' } })
+    fireEvent.click(screen.getByRole('button', { name: '保存网关设置' }))
+    await waitFor(() => { expect(save).toHaveBeenCalledWith({ enabled: true, token: 'boot-secret' }) })
+    // The saved view is what the page shows: the listener is up.
+    await waitFor(() => { expect(screen.getByText('监听中 · 端口 43110')).not.toBeNull() })
+  })
+
+  it('keeps a refused edit in the fields and reports the Host reason', async () => {
+    const save = vi.fn(async () => { throw new Error('gateway port 80 is not free') })
+    renderSection({ gateway: { read: vi.fn(async () => GATEWAY_OFF), save } })
+    fireEvent.change(await screen.findByLabelText('端口'), { target: { value: '80' } })
+    fireEvent.change(screen.getByLabelText('Boot token'), { target: { value: 'boot-secret' } })
+    fireEvent.click(screen.getByLabelText('启用外部 Agent 网关'))
+    fireEvent.click(screen.getByRole('button', { name: '保存网关设置' }))
+    await waitFor(() => { expect(save).toHaveBeenCalledWith({ enabled: true, port: 80, token: 'boot-secret' }) })
+    await waitFor(() => { expect(screen.getByRole('alert').textContent).toBe('网关设置没保存上：gateway port 80 is not free') })
+    // Non-optimistic: the typed values survive the refusal.
+    expect((screen.getByLabelText('端口') as HTMLInputElement).value).toBe('80')
+    expect((screen.getByLabelText('Boot token') as HTMLInputElement).value).toBe('boot-secret')
+  })
+
+  it('reports an unreadable gateway config inside the row, not as a dead page', async () => {
+    renderSection({ gateway: { read: vi.fn(async () => { throw new Error('host offline') }), save: vi.fn(async () => GATEWAY_OFF) } })
+    await waitFor(() => { expect(screen.getByRole('alert').textContent).toBe('网关设置读不出来：host offline') })
+    // The page's own identity rows stay readable beside the failed row.
+    expect(screen.getByLabelText('名字')).not.toBeNull()
   })
 })
