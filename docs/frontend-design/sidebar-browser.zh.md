@@ -36,7 +36,7 @@ Agent 卡片会话视图：Agent 行的头像与文案整体是选择按钮（`�
 
 Member 经 `context_rollover` 换新上下文时，Agents 面板观察该 Member 的旧→新 Session 绑定，仅在嵌入页正是被观察的旧 live Session id 时恰好跟随一次，归档视图不跳转。
 
-窄屏 rail 四个图标按钮自上而下：收件箱（`IconQueueOutline14`，16px）→ 任务（`IconChecklistOutlineRegular`）→ 频道（`IconListPenOutline16`）→ Agents（`IconAgentPresetOutline16`）；不复用 checklist（任务）或 user（成员）图标。收件箱图标是目的地：点击打开 Inbox 页并请求展开侧栏；任务图标打开 Tasks 页；频道/Agents 图标点击请求展开侧栏并聚焦对应分区头部。
+窄屏 rail 五枚图标按钮自上而下：收件箱（`IconQueueOutlineRegular`，16px）→ 任务（`IconChecklistOutlineRegular`）→ 消息中枢（`IconBrowseOutlineRegular`）→ 频道（`IconListPenOutline16`）→ Agents（`IconAgentPresetOutline16`）；任意两面不共用同一图形，且不复用 checklist（任务）或 user（成员）图标。收件箱图标是目的地：点击打开 Inbox 页并请求展开侧栏；任务图标打开 Tasks 页；消息中枢图标打开消息中枢（见[消息中枢](message-center.zh.md)）；频道/Agents 图标点击请求展开侧栏并聚焦对应分区头部。
 
 Agent 创建流程没有频道选择页，Agent 编辑器没有成员区块——频道成员只在频道侧管理（创建对话框初始成员、频道编辑器成员行、成员管理对话框）；未入频道的 Member 仍可经 DM 触达。
 
@@ -54,7 +54,7 @@ slot 选举摘不掉别的插件注册的列表行、入口文案又是本地化
 
 ## 收件箱（Inbox）
 
-「收件箱」入口：宽栏是工作区选择器**之上**的一张卡片——它的合计取自每个可见 Workspace，是选择器所命名的那个范围之外、唯一跨范围的目的地，所以由它领起侧栏，而不是站在那个范围里面；窄轨没有选择器可领起，它就是 rail 第一枚图标。
+「收件箱」入口：宽栏是工作区选择器**之上**三张全局卡片的第一张——它的合计取自每个可见 Workspace，是选择器所命名的那个范围之外、唯一跨范围的目的地，所以由它领起侧栏，而不是站在那个范围里面；窄轨没有选择器可领起，它就是 rail 第一枚图标。任务卡片与消息中枢卡片随后排布，遵守同样的全局面纪律，自身不带任何范围。
 
 这个入口用同一套方式标记自己的事实——图标**左上角一个点**，数值取各可见 Workspace 的切片合计（mention 只在 Inbox 合计里计数），为 0 时不渲染：没有在等的东西就是没有这个记号，而不是画一个空点。点是 8px 的 `--dsw-alias-state-business-primary`——队列给「点名了这位读者」的 Thread 用的同一种实心墨，于是同一个颜色走到哪里都还是「这需要你」——外加 2px 所在表面的描边（`--team-mark-ring`：凡是自己上底色的表面都把当下这层底色交出来——卡片在悬停与当前页时、rail 按钮在悬停、聚焦与当前页时）。
 
@@ -66,7 +66,7 @@ slot 选举摘不掉别的插件注册的列表行、入口文案又是本地化
 
 Inbox 页作为屏上面孔时卡片/图标携带 `aria-current='page'`，窄轨那枚图标还带上卡片同款当前页底色——rail 没有文字，底色是它唯一能说「你在这」的东西；被嵌入的成员会话覆盖期间它只是被记住的位置，不携带高亮。
 
-`TeamConversation` 由同一个 owner 渲染同一组面：Thread | Channel | Inbox | Tasks | welcome。选 Inbox 或 Tasks 清掉 Channel/Thread 面并两者互斥；选 Workspace、Channel 或 Thread 清掉两个。从 Inbox 或 Tasks 行进入的 Thread 记住来处：Back 读作「返回收件箱列表」或「返回任务列表」并回到那张列表，从 Channel 进入的 Thread 则保持 Back 落在频道时间线。来处是持久的，刷新后 Back 仍指向正确目标。
+`TeamConversation` 由同一个 owner 渲染同一组面：Thread | Channel | Inbox | Tasks | 消息中枢 | welcome。选 Inbox、Tasks 或消息中枢清掉 Channel/Thread 面并三者互斥；选 Workspace、Channel 或 Thread 清掉全部三个。从这些列表进入的 Thread 记住来处：Back 读作「返回收件箱列表」「返回任务列表」或「返回消息中心」并回到那张列表，从 Channel 进入的 Thread 则保持 Back 落在频道时间线。来处是持久的，刷新后 Back 仍指向正确目标。
 
 Tasks 页保持与 Inbox 相同的全局位置纪律：持久的导航 face、跨 Workspace 合并、无 scope 订阅；行点击经与 Inbox 行相同的 select-Thread 路径落到该 Task 的 Thread。
 

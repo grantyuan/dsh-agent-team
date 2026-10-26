@@ -13,4 +13,5 @@ The UI system is maintained in focused files:
 | [components.md](components.md) | one contract per Team component: messages, runs, refs, capsule, rosters, profile, failures, and the Thread header band |
 | [thread-and-composer.md](thread-and-composer.md) | timeline scrolling, the composer and mentions, Thread/Task entry rows, and status pills |
 | [sidebar-browser.md](sidebar-browser.md) | the sidebar Workspace browser and the Inbox surface it hosts |
+| [message-center.md](message-center.md) | the Human Message center: the two read tabs over one filter bar, their row anatomy, the inline reply, and locate |
 | [refresh-copy-accessibility.md](refresh-copy-accessibility.md) | data refresh semantics, copy and localization, the accessibility baseline, and how the system evolves |

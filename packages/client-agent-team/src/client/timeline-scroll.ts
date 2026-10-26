@@ -9,6 +9,12 @@ export interface TimelineScroll {
   isPinned: () => boolean
   /** Scroll the timeline to the latest fact immediately. */
   scrollToBottom: () => void
+  /**
+   * Release the follow margin without moving: a locate pass that prepends
+   * older history and then scrolls to one fact must not fight the pinned
+   * reader policy on every content change in between.
+   */
+  unpin: () => void
 }
 
 /**
@@ -49,5 +55,5 @@ export function useTimelineScroll(contentKey: string): TimelineScroll {
     }
   }, [contentKey])
 
-  return { ref, onScroll, isPinned: () => pinnedRef.current, scrollToBottom }
+  return { ref, onScroll, isPinned: () => pinnedRef.current, scrollToBottom, unpin: () => { pinnedRef.current = false } }
 }

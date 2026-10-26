@@ -1,0 +1,290 @@
+/* The Human Message Center: the shared conversation seat carries the header
+   band, column, gutters, and scrollbar; this sheet styles the filter bar and the
+   message rows. Every color rides the shipped DSW aliases so the page follows
+   the active theme. */
+
+.toolbar {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin: 12px auto 0;
+  max-width: 880px;
+  min-width: 0;
+}
+
+.tabs {
+  align-self: flex-start;
+  max-width: 100%;
+}
+
+.filters {
+  align-items: flex-end;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+  min-width: 0;
+}
+
+.filterControl {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+
+.filterLabel {
+  color: var(--dsw-alias-label-tertiary);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  line-height: 16px;
+  text-transform: none;
+}
+
+.filterSelect,
+.filterInput {
+  background: var(--dsw-specific-input-major, var(--dsw-alias-bg-l1));
+  border: 1px solid var(--dsw-alias-border-l2);
+  border-radius: var(--dsw-radius-sm, 6px);
+  color: var(--dsw-alias-label-primary);
+  font: inherit;
+  font-size: 13px;
+  height: 30px;
+  min-width: 0;
+  padding: 0 8px;
+}
+
+.filterSelect:focus-visible,
+.filterInput:focus-visible,
+.searchInput:focus-visible {
+  outline: var(--dsw-focus-ring-width, 2px) solid var(--dsw-focus-ring-color, var(--dsw-alias-state-business-primary));
+  outline-offset: -1px;
+}
+
+.searchField {
+  align-items: center;
+  background: var(--dsw-specific-input-major, var(--dsw-alias-bg-l1));
+  border: 1px solid var(--dsw-alias-border-l2);
+  border-radius: var(--dsw-radius-sm, 6px);
+  display: flex;
+  gap: 6px;
+  height: 30px;
+  padding: 0 8px;
+}
+
+.searchField:focus-within {
+  border-color: var(--dsw-alias-state-business-primary);
+}
+
+.searchIcon {
+  align-items: center;
+  color: var(--dsw-alias-label-tertiary);
+  display: inline-flex;
+  flex: 0 0 16px;
+}
+
+.searchInput {
+  background: transparent;
+  border: 0;
+  color: var(--dsw-alias-label-primary);
+  font: inherit;
+  font-size: 13px;
+  height: 100%;
+  min-width: 0;
+  outline: none;
+  padding: 0;
+  width: 220px;
+}
+
+.searchInput::placeholder {
+  color: var(--dsw-alias-label-caption, var(--dsw-alias-label-tertiary));
+}
+
+.panel {
+  min-width: 0;
+}
+
+.panel:focus-visible {
+  outline: none;
+}
+
+.rows {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.more {
+  display: flex;
+  justify-content: center;
+  padding: 8px 0 4px;
+}
+
+.messageRow {
+  background: transparent;
+  border-radius: var(--dsw-radius-lg, 8px);
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+  padding: 8px;
+}
+
+.messageRow:hover {
+  background: var(--dsw-alias-interactive-bg-hover);
+}
+
+.messageHead {
+  align-items: baseline;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px 8px;
+  min-width: 0;
+}
+
+.directionBadge {
+  border: 1px solid var(--dsw-alias-border-l2);
+  border-radius: var(--dsw-radius-xs, 4px);
+  color: var(--dsw-alias-label-secondary);
+  flex: none;
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 16px;
+  padding: 0 5px;
+}
+
+.directionBadge[data-direction='received'] {
+  border-color: var(--dsw-alias-state-business-primary);
+  color: var(--dsw-alias-state-business-primary);
+}
+
+.directionBadge[data-direction='dm'] {
+  border-style: dashed;
+}
+
+.senderName {
+  color: var(--dsw-alias-label-primary);
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 20px;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.excerpt {
+  color: var(--dsw-alias-label-primary);
+  font-size: 13px;
+  line-height: 20px;
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.replyContext {
+  border-left: 2px solid var(--dsw-alias-border-l3, var(--dsw-alias-border-l2));
+  color: var(--dsw-alias-label-tertiary);
+  font-size: 12px;
+  line-height: 18px;
+  margin: 0;
+  overflow-wrap: anywhere;
+  padding-left: 8px;
+}
+
+.messageFoot {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 8px;
+}
+
+.processingPill {
+  border-radius: var(--dsw-radius-xs, 4px);
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 16px;
+  padding: 0 6px;
+}
+
+.processingPill[data-state='pending'] {
+  background: var(--dsw-alias-state-warn-tertiary, transparent);
+  color: var(--dsw-alias-state-warn-label, var(--dsw-alias-label-secondary));
+}
+
+.processingPill[data-state='acknowledged'] {
+  background: var(--dsw-alias-interactive-bg-hover);
+  color: var(--dsw-alias-label-secondary);
+}
+
+.processingPill[data-state='resolved'] {
+  background: var(--dsw-alias-state-success-tertiary, transparent);
+  color: var(--dsw-alias-state-success-primary, var(--dsw-alias-label-secondary));
+}
+
+.replyBox {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 4px;
+  padding: 8px;
+  border-left: 2px solid var(--dsw-alias-border-l3, var(--dsw-alias-border-l2));
+  min-width: 0;
+}
+
+.replyArea {
+  background: var(--dsw-specific-input-major, var(--dsw-alias-bg-l1));
+  border: 1px solid var(--dsw-alias-border-l2);
+  border-radius: var(--dsw-radius-sm, 6px);
+  color: var(--dsw-alias-label-primary);
+  font: inherit;
+  font-size: 13px;
+  line-height: 20px;
+  min-width: 0;
+  padding: 6px 8px;
+  resize: vertical;
+  width: 100%;
+}
+
+.replyArea:focus-visible {
+  outline: var(--dsw-focus-ring-width, 2px) solid var(--dsw-focus-ring-color, var(--dsw-alias-state-business-primary));
+  outline-offset: -1px;
+}
+
+.replyArea::placeholder {
+  color: var(--dsw-alias-label-caption, var(--dsw-alias-label-tertiary));
+}
+
+.replyNotice {
+  font-size: 12px;
+  line-height: 18px;
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.replyNotice[role='alert'] {
+  color: var(--dsw-alias-state-danger-primary, var(--dsw-alias-label-secondary));
+}
+
+.replyNotice[role='status'] {
+  color: var(--dsw-alias-label-secondary);
+}
+
+.replyActions {
+  display: flex;
+  gap: 8px;
+}
+
+@media (max-width: 720px) {
+  .searchInput {
+    width: 100%;
+  }
+
+  .filters {
+    align-items: stretch;
+  }
+
+  .filterControl {
+    flex: 1 1 140px;
+  }
+}

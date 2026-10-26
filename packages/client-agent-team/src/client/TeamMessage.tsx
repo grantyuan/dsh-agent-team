@@ -61,6 +61,14 @@ export interface TeamMessageProps {
   readonly onReplyMessage?: ((messageRef: AgentTeamMessageRef, body: string, sender: AgentTeamMemberId) => void) | undefined
   /** The Human recalled this Message: every reader sees a tombstone, never the body. */
   readonly recalled?: boolean
+  /**
+   * The ledger sequence of the fact this row renders, so a locate pass can
+   * find the row in the timeline DOM. Stable per fact, so it never breaks the
+   * memo boundary.
+   */
+  readonly dataSequence?: number
+  /** One-shot locate flash on this row; absent on every other row, so the memo holds. */
+  readonly focused?: boolean
   readonly children?: ReactNode
 }
 
@@ -72,7 +80,7 @@ export interface TeamMessageProps {
  * skipping a render here never detaches it. Callers must therefore keep the
  * props they derive per render (mention names, ref callbacks) identity-stable.
  */
-export const TeamMessage = memo(function TeamMessage({ senderName, memberId, human, avatarUrl, body, occurredAt, mentionNames, senderTitle, grouped, showGroupedTime, attachments, loadAttachment, t, onOpenRef, onResolveTaskRefs, onResolveThreadRefs, channelNameOf, memberOf, onOpenMemberSession, messageRef, editable, replyable, onEditMessage, onRecallMessage, onReplyMessage, recalled, children }: TeamMessageProps) {
+export const TeamMessage = memo(function TeamMessage({ senderName, memberId, human, avatarUrl, body, occurredAt, mentionNames, senderTitle, grouped, showGroupedTime, attachments, loadAttachment, t, onOpenRef, onResolveTaskRefs, onResolveThreadRefs, channelNameOf, memberOf, onOpenMemberSession, messageRef, editable, replyable, onEditMessage, onRecallMessage, onReplyMessage, recalled, dataSequence, focused, children }: TeamMessageProps) {
   const avatarStyle = human ? undefined : { '--team-avatar-hue': memberHue(memberId) } as CSSProperties
   // Only the Human's own row may draw a picture: the profile owns those bytes,
   // and one seat painting the reader's face for another author would name two
@@ -192,7 +200,7 @@ export const TeamMessage = memo(function TeamMessage({ senderName, memberId, hum
       ? <div className={css.messageText}>{onOpenRef === undefined ? displayBody : renderRefs(displayBody, onOpenRef, onOpenMemberSession, taskLabel, threadChipLabel, channelChipLabel, memberChipLabel, channelNameOf, memberOf)}</div>
       : <div ref={markdownRef} className={css.messageMarkdown}><MarkdownText key={`${displayBody}:${onOpenRef === undefined ? 'literal' : 'refs'}`} text={displayBody} labels={markdownLabels} /></div>
   return (
-    <article className={css.messageRow} data-human={human || undefined} data-grouped={grouped || undefined}>
+    <article className={css.messageRow} data-human={human || undefined} data-grouped={grouped || undefined} data-sequence={dataSequence} data-focused={focused || undefined}>
       {identityImage.src === undefined
         ? <div className={css.messageIdentity} data-avatar="initial" style={avatarStyle} aria-hidden="true">{senderName.replace('@', '').slice(0, 1).toUpperCase()}</div>
         : <img className={css.messageIdentityImage} data-avatar="image" src={identityImage.src} alt="" aria-hidden="true" onError={identityImage.failed} />}

@@ -24,6 +24,7 @@ A change that invalidates a documented fact updates the owning document in the s
 | A Team component or its states | [`frontend-design/components.md`](frontend-design/components.md) |
 | Timeline scrolling, the composer, entry rows, or status pills | [`frontend-design/thread-and-composer.md`](frontend-design/thread-and-composer.md) |
 | The sidebar browser or the Inbox surface | [`frontend-design/sidebar-browser.md`](frontend-design/sidebar-browser.md) |
+| The Human Message center page, its rows, the inline reply, or locate | [`frontend-design/message-center.md`](frontend-design/message-center.md) |
 | Refresh semantics, copy, accessibility, or evolution | [`frontend-design/refresh-copy-accessibility.md`](frontend-design/refresh-copy-accessibility.md) |
 | Setup, the verification gradient, or which check a change needs | [`development/start-and-checks.md`](development/start-and-checks.md) |
 | Browser evidence, generated files, package seams, or adding a Host operation | [`development/generated-and-seams.md`](development/generated-and-seams.md) |

@@ -2762,7 +2762,13 @@ export class AgentTeamLedger {
         const matchExcerpt = this.messageCenterTopicMatch(anchor, facts, needle)
         if (needle !== undefined && matchExcerpt === undefined) continue
         const senders = new Set<AgentTeamMemberId>()
-        for (const fact of facts) if (fact.kind === 'message') senders.add(fact.message.sender)
+        const participants: AgentTeamInboxActor[] = []
+        for (const fact of facts) {
+          if (fact.kind !== 'message') continue
+          if (senders.has(fact.message.sender)) continue
+          senders.add(fact.message.sender)
+          participants.push(this.memberActor(fact.message.sender))
+        }
         const clock = this.inboxThreadClock(thread.threadRef, task)
         rows.push(Object.freeze({
           workspaceId: request.workspaceId, channelRef, channelName: channel.name, threadRef: thread.threadRef,
@@ -2770,7 +2776,7 @@ export class AgentTeamLedger {
           ...(task === undefined ? {} : { taskNumber: taskNumbers.get(task.taskRef) ?? 0 }),
           subject: boundedAnchorPreview(anchor), openedAt: anchor.occurredAt, lastOccurredAt: newest.occurredAt,
           lastActor: this.inboxActorFor(newest), messageCount: this.state.messageCountByThread.get(thread.threadRef) ?? 0,
-          participantCount: senders.size, unreadCount: this.unreadFor(memberId, thread.threadRef).length,
+          participantCount: participants.length, participants, unreadCount: this.unreadFor(memberId, thread.threadRef).length,
           iParticipated: this.state.threadsByWriter.get(memberId)?.has(thread.threadRef) === true,
           needsHumanDecision: clock.needsHumanDecision, claimOwners: this.liveClaimOwners(task),
           ...(matchExcerpt === undefined ? {} : { matchExcerpt }), newestSequence: newest.sequence,

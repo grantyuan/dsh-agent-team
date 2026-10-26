@@ -1700,6 +1700,8 @@ export interface AgentTeamTopicRow {
   readonly messageCount: number
   /** Distinct Message senders, so a row can draw a participant stack. */
   readonly participantCount: number
+  /** The same senders as the stack draws them, in the order they first spoke. */
+  readonly participants: readonly AgentTeamInboxActor[]
   /** Unread facts waiting for this reader; zero for a Thread they no longer follow. */
   readonly unreadCount: number
   /** Whether this reader has written in the Thread — the 「我参与过」 filter. */

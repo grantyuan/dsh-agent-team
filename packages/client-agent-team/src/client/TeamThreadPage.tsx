@@ -44,6 +44,13 @@ interface TeamThreadPageProps {
   readonly taskNumber?: number
   /** The Team list this Thread was entered from, deciding where Back lands. */
   readonly threadOrigin?: TeamThreadOrigin
+  /**
+   * One-shot locate anchor from the Message Center: after the first read, the
+   * timeline walks older history until this sequence is rendered, scrolls it
+   * into view, and flashes it once. A sequence no page reaches states that it
+   * could not be located instead of leaving a blank scroll.
+   */
+  readonly focusSequence?: number
   readonly backFromThread: TeamConversationProps['backFromThread']
   readonly loadChannels: TeamConversationProps['loadChannels']
   readonly readThread: TeamConversationProps['readThread']
@@ -115,7 +122,7 @@ function readMeta(facts: readonly AgentTeamThreadReadFact[]): ReadonlyMap<Thread
 
 export function TeamThreadPage(props: TeamThreadPageProps) {
   const {
-    workspaceId, humanName, humanAvatarUrl, channelRef, taskRef, threadRef, taskNumber, threadOrigin, backFromThread, selectChannel, selectThread, resolveTaskRefs, resolveThreadRefs, openMemberSession, putAttachment,
+    workspaceId, humanName, humanAvatarUrl, channelRef, taskRef, threadRef, taskNumber, threadOrigin, focusSequence, backFromThread, selectChannel, selectThread, resolveTaskRefs, resolveThreadRefs, openMemberSession, putAttachment,
     loadChannels, readThread, loadThreadHistory, threadObservations, summarizeThread,
     subscribeChanges, loadMembers, drafts, getAttachment, reply, editMessage, recallMessage, changeTask, promoteThread, t,
   } = props
@@ -131,6 +138,20 @@ export function TeamThreadPage(props: TeamThreadPageProps) {
   const [readFacts, setReadFacts] = useState<readonly AgentTeamThreadReadFact[]>([])
   const [historyCursor, setHistoryCursor] = useState<number>()
   const [historyHasMore, setHistoryHasMore] = useState(false)
+  // The Message Center's locate pass. One-shot per mount: after the first read
+  // lands, walk older history until the anchored sequence is rendered, then
+  // scroll that row into view and flash it once. A sequence the walk cannot
+  // reach — a recalled row, or history that never contains it — states that it
+  // could not be located instead of leaving the reader on a silent scroll.
+  const [focusedSequence, setFocusedSequence] = useState<number>()
+  const [focusMissing, setFocusMissing] = useState(false)
+  const focusTimerRef = useRef<ReturnType<typeof setTimeout>>()
+  const focusRanRef = useRef(false)
+  const olderFactsRef = useRef<readonly AgentTeamThreadFact[]>([])
+  const applyOlderFacts = (facts: readonly AgentTeamThreadFact[]): void => {
+    olderFactsRef.current = mergeFacts(olderFactsRef.current, facts)
+    setOlderFacts(olderFactsRef.current)
+  }
   // A bounded read acknowledges at most 20 unread facts; larger backlogs need
   // continuation reads. Reads also never self-wake a change scope, so a
   // backlog beyond a handful of batches would otherwise linger forever. The
@@ -322,6 +343,7 @@ export function TeamThreadPage(props: TeamThreadPageProps) {
     setCurrentFacts([])
     currentFactsRef.current = []
     setOlderFacts([])
+    olderFactsRef.current = []
     setReadFacts([])
     setHistoryCursor(undefined)
     setHistoryHasMore(false)
@@ -329,6 +351,10 @@ export function TeamThreadPage(props: TeamThreadPageProps) {
     setNewFactsCount(0)
     setError(undefined)
     setStatusMessage(undefined)
+    setFocusedSequence(undefined)
+    setFocusMissing(false)
+    focusRanRef.current = false
+    clearTimeout(focusTimerRef.current)
     const sequence = sequenceRef.current + 1
     sequenceRef.current = sequence
     setLoading(true)
@@ -391,6 +417,7 @@ export function TeamThreadPage(props: TeamThreadPageProps) {
     return () => {
       mountedRef.current = false
       sequenceRef.current += 1
+      clearTimeout(focusTimerRef.current)
       for (const dispose of disposers) dispose()
     }
   }, [workspaceId, taskRef, threadRef])
@@ -419,7 +446,7 @@ export function TeamThreadPage(props: TeamThreadPageProps) {
       const result = await loadThreadHistory({ workspaceId, ...threadRequest, beforeSequence, limit: 20 })
       if (!mountedRef.current) return
       if (!result.ok) { setError(result.error.message); return }
-      setOlderFacts(current => mergeFacts(current, result.value.facts))
+      applyOlderFacts(result.value.facts)
       setHistoryCursor(result.value.cursor)
       setHistoryHasMore(result.value.hasMore)
       setError(undefined)
@@ -429,6 +456,52 @@ export function TeamThreadPage(props: TeamThreadPageProps) {
       if (mountedRef.current) setLoading(false)
     }
   }
+
+  // The locate pass the Message Center's 「定位」 asks for. It waits for the
+  // first read, pages older history until the anchored sequence is rendered
+  // (bounded: fifty maximum pages is far past any Thread the projection
+  // serves), then scrolls the row to the middle of the viewport and flashes
+  // it once. The pass owns the viewport from its first page: the follow
+  // margin would scroll back to the tail on every prepended page otherwise.
+  useEffect(() => {
+    if (focusSequence === undefined || focusRanRef.current) return
+    if (loading || projection === undefined) return
+    focusRanRef.current = true
+    void (async () => {
+      timeline.unpin()
+      let cursor: number | undefined
+      let located = false
+      for (let page = 0; page < 50; page += 1) {
+        const loaded = [...olderFactsRef.current, ...currentFactsRef.current]
+        if (loaded.some(fact => fact.sequence === focusSequence)) { located = true; break }
+        const before = cursor ?? minSequence(loaded)
+        if (before === undefined) break
+        let result: Awaited<ReturnType<typeof loadThreadHistory>>
+        try {
+          result = await loadThreadHistory({ workspaceId, ...threadRequest, beforeSequence: before, limit: 100 })
+        } catch { break }
+        if (!mountedRef.current || !result.ok) break
+        applyOlderFacts(result.value.facts)
+        cursor = result.value.cursor
+        if (result.value.facts.some(fact => fact.sequence === focusSequence)) { located = true; break }
+        if (!result.value.hasMore) break
+      }
+      if (!mountedRef.current) return
+      if (!located) { setFocusMissing(true); return }
+      // The prepend renders before this paint, so the row exists by the time
+      // the frame the reader sees is built.
+      requestAnimationFrame(() => {
+        if (!mountedRef.current) return
+        const row = timeline.ref.current?.querySelector<HTMLElement>(`[data-sequence="${focusSequence}"]`)
+        if (row === null || row === undefined) { setFocusMissing(true); return }
+        row.scrollIntoView({ block: 'center' })
+        setFocusedSequence(focusSequence)
+        focusTimerRef.current = setTimeout(() => { setFocusedSequence(current => current === focusSequence ? undefined : current) }, 2600)
+      })
+    })()
+    // The one-shot ref keeps re-runs of this effect no-ops; teardown rides the
+    // page's own `mountedRef`, like every other async pass here.
+  }, [focusSequence, loading, projection, workspaceId, taskRef, threadRef])
 
   const activeProjection = projection
   const task = activeProjection?.task
@@ -600,6 +673,8 @@ export function TeamThreadPage(props: TeamThreadPageProps) {
         onRecallMessage={openRecallMessage}
         onReplyMessage={openReplyMessage}
         recalled={fact.message.recalledAt !== undefined}
+        dataSequence={fact.sequence}
+        {...(fact.sequence === focusedSequence ? { focused: true } : {})}
         {...(senderStatus === undefined ? {} : { senderTitle: senderStatus.member.description })}
       />
     }
@@ -838,17 +913,22 @@ export function TeamThreadPage(props: TeamThreadPageProps) {
       full: detail === '' ? t('statusError') : detail,
     }]
   })
-  // The Team list this Thread was entered from owns the Back target: an Inbox
-  // or Tasks origin returns to that list, a Channel origin returns to its
-  // timeline, and a Thread restored without either returns further.
+  // The Team list this Thread was entered from owns the Back target: an Inbox,
+  // Tasks, or Message Center origin returns to that list, a Channel origin
+  // returns to its timeline, and a Thread restored without either returns
+  // further.
   const backLabel = threadOrigin === 'inbox' ? t('backToInbox')
     : threadOrigin === 'tasks' ? t('backToTasks')
+    : threadOrigin === 'messages' ? t('backToMessages')
     : channelRef === undefined ? t('backToWorkspace')
     : t('backToChannel')
 
   return <main className={css.surface} data-team-thread={threadRef}>
     <div className={css.surfaceHeader}>
       <div className={css.backRow}><Button size="sm" icon={<IconChevronLeftOutlineRegular />} onClick={backFromThread}>{backLabel}</Button></div>
+      {/* The locate pass reports a sequence it could not reach here, above an
+          otherwise normal timeline — the Thread still opens and reads. */}
+      {focusMissing && <p className={threadCss.focusMissing} role="status">{t('messagesLocateFailed')}</p>}
       <header className={css.headerRow}>
         <div className={css.headerCopy}>
           <div className={threadCss.titleLine}>

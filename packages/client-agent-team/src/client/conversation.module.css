@@ -477,6 +477,27 @@
   50% { opacity: 1; }
 }
 
+/* The Message Center 「定位」 lands here: the row flashes once and fades, so
+   the reader finds the fact without the mark outliving its purpose. The flash
+   is fill plus outline — never color alone — and stills under reduced motion. */
+@keyframes messageFocusFlash {
+  0%, 55% {
+    background: var(--dsw-alias-state-business-secondary, var(--dsw-alias-interactive-bg-hover));
+    outline: 2px solid var(--dsw-alias-state-business-primary);
+    outline-offset: 0;
+  }
+  100% {
+    background: transparent;
+    outline: 2px solid transparent;
+    outline-offset: 0;
+  }
+}
+
+.messageRow[data-focused] {
+  animation: messageFocusFlash 2.4s ease-out forwards;
+  border-radius: var(--dsw-radius-sm, 6px);
+}
+
 @media (max-width: 600px) {
   .surfaceHeader { padding: 12px 12px 10px; }
   .headerRow { align-items: stretch; flex-direction: column; gap: 8px; }
@@ -491,6 +512,7 @@
   .entryArrow { transition: none; }
   .entryRow:hover .entryArrow,
   .entryRow:focus-visible .entryArrow { transform: none; }
+  .messageRow[data-focused] { animation: none; outline: 2px solid var(--dsw-alias-state-business-primary); outline-offset: 0; }
 }
 
 /* One run = one same-sender reply turn (message + its Thread gate). It is a

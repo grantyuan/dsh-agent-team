@@ -30,9 +30,9 @@ Every row additionally carries 历史会话: it takes over the conversation seat
 
 Every row also carries 已暂停任务: a dialog over the Member's durable pending-interrupt stack through `memberInterrupts` — newest-first entries with the Host's restorable verdict (an anchor the lineage walk cannot prove today reads as unverified, never as optimistically returnable) and a 释放 control per entry through `resolveMemberInterrupt`. The stack reads for every lifecycle state because it is a ledger read; `resumed` closes stay the Host's own and are never offered here.
 
-The narrow rail's four icon buttons read top-down Inbox (`IconQueueOutline14` at 16px) → Tasks (`IconChecklistOutlineRegular`) → Channels (`IconListPenOutline16`) → Agents (`IconAgentPresetOutline16`); none reuse the checklist (Task) or member icons.
+The narrow rail's five icon buttons read top-down Inbox (`IconQueueOutlineRegular` at 16px) → Tasks (`IconChecklistOutlineRegular`) → Message center (`IconBrowseOutlineRegular`) → Channels (`IconListPenOutline16`) → Agents (`IconAgentPresetOutline16`); no two faces share a glyph, and none reuse the checklist (Task) or member icons.
 
-The Inbox icon is a destination: clicking it opens the Inbox page and expands the sidebar; the Tasks icon opens the Tasks page; the Channels/Agents icons expand the sidebar and focus their section header.
+The Inbox icon is a destination: clicking it opens the Inbox page and expands the sidebar; the Tasks icon opens the Tasks page; the Message center icon opens the Message center (see [Message center](message-center.md)); the Channels/Agents icons expand the sidebar and focus their section header.
 
 Agent creation carries no Channel page and the Agent editor carries no membership section: Channel membership is managed from the Channel side (create-dialog initial members, Channel editor member rows, and the member-management dialog); a Channel-less Member stays reachable through its DM view.
 
@@ -49,7 +49,7 @@ Team mode stands the sidebar's global chrome down the same way: the shipped New 
 SlotCore cannot withdraw another plugin's list row and the entry's label is localized, so the rule keys off the mode attribute and the shipped `panelList` class substring instead of the copy; ordinary conversations keep both, and the browser test pins the transition from both sides — visible before entering Team, present but hidden inside it.
 
 ## Inbox (收件箱)
-The Inbox entry is one card on the wide rail above the Workspace selector — its total sums the unread of every visible Workspace, so it is the one destination that outlives the scope the selector names, and it leads the sidebar instead of standing inside that scope — and the rail's first icon on the narrow rail, where no selector exists to lead.
+The Inbox entry is the first of the three global cards on the wide rail above the Workspace selector — its total sums the unread of every visible Workspace, so it is the one destination that outlives the scope the selector names, and it leads the sidebar instead of standing inside that scope — and the rail's first icon on the narrow rail, where no selector exists to lead. The Tasks card and the Message center card follow it with the same global-face discipline and no scope of their own.
 
 The entry marks its own fact the same way — a dot on the icon's top-left corner, standing for the sum of each visible Workspace's slice with mentions counted inside the Inbox total rather than alone, and rendering nothing at zero: nothing waiting is the absence of the mark, not an empty dot.
 
@@ -65,7 +65,7 @@ The number lives in the control's accessible name on both rails (`收件箱，6 
 
 While the Inbox page stands, the card/icon carries `aria-current="page"` — and the rail icon wears the card's own current-page fill, because the icon-only rail has no label and the fill is the only thing that can say where the reader is.
 
-`TeamConversation` renders the same faces under one owner: Thread | Channel | Inbox | Tasks | welcome. Selecting Inbox or Tasks clears the Channel/Thread faces and each other; selecting a Workspace, Channel, or Thread clears both. A Thread opened from an Inbox or Tasks row remembers that list as its origin: Back reads 返回收件箱列表 or 返回任务列表 and returns there, while a Thread entered from its Channel keeps Back on the Channel timeline. The origin is durable, so a reload keeps the right Back target.
+`TeamConversation` renders the same faces under one owner: Thread | Channel | Inbox | Tasks | Message center | welcome. Selecting Inbox, Tasks, or the Message center clears the Channel/Thread faces and each other; selecting a Workspace, Channel, or Thread clears all three. A Thread opened from one of those lists remembers that list as its origin: Back reads 返回收件箱列表, 返回任务列表, or 返回消息中心 and returns there, while a Thread entered from its Channel keeps Back on the Channel timeline. The origin is durable, so a reload keeps the right Back target.
 
 The Tasks page keeps the same global-position discipline as the Inbox: a durable navigation face, merged across Workspaces, with a scope-less subscription; a row click lands on that Task's Thread through the same select-Thread path the Inbox row uses.
 

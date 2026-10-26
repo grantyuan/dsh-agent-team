@@ -25,6 +25,8 @@ import type {
   AgentTeamLeaveWorkspaceResult,
   AgentTeamJoinChannelRequest,
   AgentTeamJoinChannelResult,
+  AgentTeamMessageCenter,
+  AgentTeamMessageCenterRequest,
   AgentTeamGetAttachmentRequest,
   AgentTeamGetAttachmentResult,
   AgentTeamPutAttachmentRequest,
@@ -231,6 +233,8 @@ export type TeamConversationProps = PropsRuntime<'main'> & PropsLocale<'team'> &
   loadInbox: (request: AgentTeamInboxRequest) => Promise<RemoteResult<AgentTeamInbox>>
   /** Human cross-Channel Task list; the Tasks page merges one call per visible Workspace. */
   loadTasks: (request: AgentTeamTasksRequest) => Promise<RemoteResult<AgentTeamTasks>>
+  /** Human-only Message Center read: discussions or addressed Messages; the page merges one call per visible Workspace. */
+  loadMessageCenter: (request: AgentTeamMessageCenterRequest) => Promise<RemoteResult<AgentTeamMessageCenter>>
   /** Human-only Thread Attention observations; the Thread composer ranks the returned followers first. */
   threadObservations: (request: AgentTeamThreadObservationsRequest) => Promise<RemoteResult<AgentTeamThreadObservations>>
   /** Human one-shot plain-language Thread digest: propose-only, commits nothing. */

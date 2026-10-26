@@ -441,6 +441,36 @@ export async function runtimeWithTeam(options?: { mode?: 'team'; workspaceId?: s
     inboxRows = rows.map(row => ({ workspaceId: row.workspaceId, item: row as Record<string, unknown> }))
     wakeAll()
   }
+  // The Message Center double: one read shape answers both faces, tagged per
+  // Workspace like the Inbox double. Rows carry the whole Host row so specs
+  // assert what the projection says (sender, processing evidence, reply
+  // context) rather than a reshaped bench-only summary.
+  let messageCenterTopics: Array<{ readonly workspaceId: string; readonly row: Record<string, unknown> }> = []
+  let messageCenterMessages: Array<{ readonly workspaceId: string; readonly row: Record<string, unknown> }> = []
+  let messageCenterFailure: string | undefined
+  const messageCenter = vi.fn(async ({ workspaceId, view }: { workspaceId: string; view: 'topics' | 'messages' }) => {
+    if (messageCenterFailure !== undefined) return { ok: false as const, error: { message: messageCenterFailure } }
+    if (view === 'topics') {
+      const topics = messageCenterTopics.filter(entry => entry.workspaceId === workspaceId).map(entry => entry.row)
+      return { ok: true as const, value: { view: 'topics' as const, humanMemberId: 'member:human', topics, hasMore: false } }
+    }
+    const messages = messageCenterMessages.filter(entry => entry.workspaceId === workspaceId).map(entry => entry.row)
+    return { ok: true as const, value: { view: 'messages' as const, humanMemberId: 'member:human', messages, hasMore: false } }
+  })
+  /** Seed the discussion rows every Message Center topics read answers with. */
+  const seedMessageCenterTopics = (rows: ReadonlyArray<{ readonly workspaceId: string } & Record<string, unknown>>): void => {
+    messageCenterTopics = rows.map(row => ({ workspaceId: row.workspaceId, row: row as Record<string, unknown> }))
+    wakeAll()
+  }
+  /** Seed the message rows every Message Center messages read answers with. */
+  const seedMessageCenterMessages = (rows: ReadonlyArray<{ readonly workspaceId: string } & Record<string, unknown>>): void => {
+    messageCenterMessages = rows.map(row => ({ workspaceId: row.workspaceId, row: row as Record<string, unknown> }))
+    wakeAll()
+  }
+  /** Make the next Message Center reads refuse, or clear the refusal. */
+  const failMessageCenter = (message?: string): void => {
+    messageCenterFailure = message
+  }
   // The digest double: opening a Thread asks for a recap, and every bench
   // answer is seeded here. The default is a quiet no-decision digest so
   // Thread specs never trip on the panel; `seedDigest` reshapes it and
@@ -627,7 +657,7 @@ export async function runtimeWithTeam(options?: { mode?: 'team'; workspaceId?: s
   // refuses by contract.
   runtime.remote.provideNamespaces({
     session: { modelCatalog },
-    agentTeam: { members, joinWorkspace, leaveWorkspace, addMember, view: viewChannels, inbox, tasks, memberTasks, readThread, threadHistory: loadThreadHistory, threadObservations, summarizeThread, putAttachment, getAttachment, createChannel, updateChannel, archiveChannel, updateMember, recoverMember, clearMemberContext, compactMemberContext, memberSessions, memberSessionTranscript, archiveMember, joinChannel, removeChannelMember, sendMessage, reply, changeTask, changeTasks, promoteThread, resolveTaskRefs, changes, environment, humanProfile, setHumanProfile, putHumanAvatar, getHumanAvatar, removeHumanAvatar },
+    agentTeam: { members, joinWorkspace, leaveWorkspace, addMember, view: viewChannels, inbox, messageCenter, tasks, memberTasks, readThread, threadHistory: loadThreadHistory, threadObservations, summarizeThread, putAttachment, getAttachment, createChannel, updateChannel, archiveChannel, updateMember, recoverMember, clearMemberContext, compactMemberContext, memberSessions, memberSessionTranscript, archiveMember, joinChannel, removeChannelMember, sendMessage, reply, changeTask, changeTasks, promoteThread, resolveTaskRefs, changes, environment, humanProfile, setHumanProfile, putHumanAvatar, getHumanAvatar, removeHumanAvatar },
   })
   Object.assign(runtime.remote, {
     $stream: <T,>(options: ConstructorParameters<typeof RemoteStream<T>>[1]) => new RemoteStream(connection, options),
@@ -659,5 +689,5 @@ export async function runtimeWithTeam(options?: { mode?: 'team'; workspaceId?: s
   const disposeSettings = runtime.slots.register({ name: 'sidebar.settings', priority: 0 }, BaselineSettings as never)
   const team = await runtime.mount({ inject: [...inject], apply })
   const view = runtime.renderRoot()
-  return { runtime, team, view, disposeWorkspace, disposeSettings, members, humanProfile, setHumanProfile, getHumanAvatar, putHumanAvatar, removeHumanAvatar, seedHumanProfile, failHumanProfile, failHumanProfileWrite, environment, seedEnvironment, failEnvironment, joinWorkspace, leaveWorkspace, addMember, status, viewChannels, createChannel, updateChannel, archiveChannel, putAttachment, getAttachment, updateMember, recoverMember, clearMemberContext, compactMemberContext, memberSessions, memberSessionTranscript, archiveMember, modelCatalog, joinChannel, removeChannelMember, sendMessage, reply, changeTask, changeTasks, promoteThread, resolveTaskRefs, publishAgentReply, publishPresence, seedChannel, publishChannelUpdate, failChanges, recoverChanges, readThread, loadThreadHistory, threadObservations, changes, inbox, seedInbox, tasks, seedTasks, memberTasks, seedMemberTasks, openSession, summarizeThread, seedDigest, failDigest }
+  return { runtime, team, view, disposeWorkspace, disposeSettings, members, humanProfile, setHumanProfile, getHumanAvatar, putHumanAvatar, removeHumanAvatar, seedHumanProfile, failHumanProfile, failHumanProfileWrite, environment, seedEnvironment, failEnvironment, joinWorkspace, leaveWorkspace, addMember, status, viewChannels, createChannel, updateChannel, archiveChannel, putAttachment, getAttachment, updateMember, recoverMember, clearMemberContext, compactMemberContext, memberSessions, memberSessionTranscript, archiveMember, modelCatalog, joinChannel, removeChannelMember, sendMessage, reply, changeTask, changeTasks, promoteThread, resolveTaskRefs, publishAgentReply, publishPresence, seedChannel, publishChannelUpdate, failChanges, recoverChanges, readThread, loadThreadHistory, threadObservations, changes, inbox, seedInbox, messageCenter, seedMessageCenterTopics, seedMessageCenterMessages, failMessageCenter, tasks, seedTasks, memberTasks, seedMemberTasks, openSession, summarizeThread, seedDigest, failDigest }
 }

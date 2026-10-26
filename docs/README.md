@@ -34,6 +34,7 @@ This directory contains the maintained engineering documentation for this reposi
 | [`frontend-design/components.md`](frontend-design/components.md) | The per-component contracts | Changing a Team component or its states |
 | [`frontend-design/thread-and-composer.md`](frontend-design/thread-and-composer.md) | Timeline scrolling, composer and mentions, entry rows, status pills | Changing scrolling, the composer, entry rows, or status pills |
 | [`frontend-design/sidebar-browser.md`](frontend-design/sidebar-browser.md) | The sidebar browser and the Inbox surface | Changing the sidebar browser or the Inbox surface |
+| [`frontend-design/message-center.md`](frontend-design/message-center.md) | The Human Message center: topics and message rows, the shared filter bar, the inline reply, and locate | Changing the Message center page or its rows |
 | [`frontend-design/refresh-copy-accessibility.md`](frontend-design/refresh-copy-accessibility.md) | Refresh semantics, copy, accessibility, and evolution | Changing refresh behavior, copy, or accessibility |
 | [`harness-navigation.md`](harness-navigation.md) | Routes through this repository and `../deepseek-harness`, including source entry points and integration traps | Unsure which Harness document, package, source, or test to inspect |
 

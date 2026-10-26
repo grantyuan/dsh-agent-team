@@ -34,6 +34,7 @@
 | [`frontend-design/components.zh.md`](frontend-design/components.zh.md) | 各组件合同 | 修改某个 Team 组件或其状态 |
 | [`frontend-design/thread-and-composer.zh.md`](frontend-design/thread-and-composer.zh.md) | 时间线滚动、composer 与 mention、入口行、状态胶囊 | 修改滚动、composer、入口行或状态胶囊 |
 | [`frontend-design/sidebar-browser.zh.md`](frontend-design/sidebar-browser.zh.md) | 侧栏浏览器与 Inbox 界面 | 修改侧栏浏览器或 Inbox 界面 |
+| [`frontend-design/message-center.zh.md`](frontend-design/message-center.zh.md) | Human 的消息中枢：讨论行与消息行、共用筛选栏、行内回复与定位 | 修改消息中枢页面或其行 |
 | [`frontend-design/refresh-copy-accessibility.zh.md`](frontend-design/refresh-copy-accessibility.zh.md) | 刷新语义、文案、可访问性与演进 | 修改刷新行为、文案或可访问性 |
 | [`harness-navigation.zh.md`](harness-navigation.zh.md) | 本仓库与 `../deepseek-harness` 的查阅路线、源码入口、已知接入陷阱 | 不确定应该查哪个 Harness 文档/package/source 时 |
 

@@ -227,4 +227,76 @@ describe('TeamNavigation', () => {
     expect(new TeamNavigation().getSnapshot()).toEqual({ mode: 'team', workspaceId: 'workspace:one', channelRef: 'channel:1' })
   })
 
+  it('opens the Message Center page as a durable location and returns a Thread entered there', () => {
+    const navigation = new TeamNavigation()
+    navigation.actions().selectWorkspace('workspace:one' as never)
+    navigation.actions().enterTeam()
+    navigation.actions().selectMessages()
+    expect(navigation.getSnapshot()).toEqual({ mode: 'team', workspaceId: 'workspace:one', messages: true })
+    // Same face discipline as the Inbox: the page survives a reload and
+    // re-selecting it spams nobody.
+    expect(JSON.parse(localStorage.getItem(STORAGE_KEY) ?? '')).toEqual({ mode: 'team', workspaceId: 'workspace:one', messages: true })
+    expect(new TeamNavigation().getSnapshot()).toEqual({ mode: 'team', workspaceId: 'workspace:one', messages: true })
+    navigation.actions().selectMessages()
+    expect(navigation.getSnapshot()).toEqual({ mode: 'team', workspaceId: 'workspace:one', messages: true })
+
+    // A located row opens its Thread with the Message Center as origin; Back
+    // returns to the Center, not to a Workspace overview.
+    navigation.actions().selectThread('thread:1' as never, 'channel:1' as never, undefined, undefined, 'messages')
+    expect(navigation.getSnapshot()).toEqual({ mode: 'team', workspaceId: 'workspace:one', channelRef: 'channel:1', threadRef: 'thread:1', threadOrigin: 'messages' })
+    navigation.actions().backFromThread()
+    expect(navigation.getSnapshot()).toEqual({ mode: 'team', workspaceId: 'workspace:one', messages: true })
+
+    // Any other Team face takes the seat back, as with Inbox and Tasks.
+    navigation.actions().selectChannel('channel:2' as never)
+    expect(navigation.getSnapshot().messages).toBeUndefined()
+    navigation.actions().selectMessages()
+    navigation.actions().selectWorkspace('workspace:two' as never)
+    expect(navigation.getSnapshot()).toEqual({ mode: 'team', workspaceId: 'workspace:two' })
+  })
+
+  it('carries the one-shot locate anchor with its Thread and drops it everywhere else', () => {
+    const navigation = new TeamNavigation()
+    navigation.actions().selectWorkspace('workspace:one' as never)
+    navigation.actions().enterTeam()
+    // 「定位」 opens the Thread with the row's ledger sequence: a durable
+    // navigation fact so a reload replays the scroll and the flash.
+    navigation.actions().selectThread('thread:1' as never, 'channel:1' as never, undefined, undefined, 'messages', 42)
+    expect(navigation.getSnapshot()).toEqual({ mode: 'team', workspaceId: 'workspace:one', channelRef: 'channel:1', threadRef: 'thread:1', threadOrigin: 'messages', focusSequence: 42 })
+    expect(JSON.parse(localStorage.getItem(STORAGE_KEY) ?? '')).toMatchObject({ threadRef: 'thread:1', focusSequence: 42 })
+    expect(new TeamNavigation().getSnapshot().focusSequence).toBe(42)
+
+    // Opening another Thread without an anchor leaves no stale one behind.
+    navigation.actions().selectThread('thread:2' as never, 'channel:1' as never)
+    expect(navigation.getSnapshot().focusSequence).toBeUndefined()
+    expect(JSON.parse(localStorage.getItem(STORAGE_KEY) ?? '')).not.toHaveProperty('focusSequence')
+
+    // Leaving the Thread for a Channel drops the anchor with the Thread.
+    navigation.actions().selectThread('thread:1' as never, 'channel:1' as never, undefined, undefined, 'messages', 42)
+    navigation.actions().selectChannel('channel:2' as never)
+    expect(navigation.getSnapshot().focusSequence).toBeUndefined()
+
+    // Back out of the Thread drops both.
+    navigation.actions().selectThread('thread:1' as never, 'channel:1' as never, undefined, undefined, 'messages', 42)
+    navigation.actions().backFromThread()
+    expect(navigation.getSnapshot()).toEqual({ mode: 'team', workspaceId: 'workspace:one', messages: true })
+  })
+
+  it('ignores malformed persisted locate anchors', () => {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify({
+      mode: 'team', workspaceId: 'workspace:one', threadRef: 'thread:1', threadOrigin: 'messages', focusSequence: -3,
+    }))
+    expect(new TeamNavigation().getSnapshot().focusSequence).toBeUndefined()
+
+    localStorage.setItem(STORAGE_KEY, JSON.stringify({
+      mode: 'team', workspaceId: 'workspace:one', threadRef: 'thread:1', focusSequence: 4.5,
+    }))
+    expect(new TeamNavigation().getSnapshot().focusSequence).toBeUndefined()
+
+    localStorage.setItem(STORAGE_KEY, JSON.stringify({
+      mode: 'team', workspaceId: 'workspace:one', focusSequence: 9,
+    }))
+    expect(new TeamNavigation().getSnapshot()).toEqual({ mode: 'team', workspaceId: 'workspace:one' })
+  })
+
 })

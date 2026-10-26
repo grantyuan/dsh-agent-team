@@ -137,6 +137,20 @@ describe('Message Center projection', () => {
     const scoutTopics = topicsOf(ledger.messageCenter(scout, { workspaceId: alpha, view: 'topics' }))
     expect(scoutTopics.topics.map(row => row.threadRef)).toEqual([humanStart.value.thread.threadRef])
     expect(scoutTopics.topics[0]!.iParticipated).toBe(false)
+
+    // The participant stack names the same people the count counts, in the
+    // order they first spoke — the stack the Client draws from.
+    const humanThreadRef = humanStart.value.thread.threadRef
+    const scoutReply = await ledger.reply({ requestId: requestId('reply-participants'), workspaceId: alpha,
+      taskRef: humanStart.value.task!.taskRef, body: 'Scout joins the rollout thread',
+      baseRevision: humanStart.value.thread.revision, actor: scout })
+    if (scoutReply.value.kind !== 'committed') throw new Error('expected committed reply')
+    const rejoined = topicsOf(ledger.messageCenter(human, { workspaceId: alpha, view: 'topics' }))
+    const joinedRow = rejoined.topics.find(row => row.threadRef === humanThreadRef)
+    expect(joinedRow!.participantCount).toBe(2)
+    expect(joinedRow!.participants).toHaveLength(2)
+    expect(joinedRow!.participants.map(actor => actor.memberId)).toEqual(['member:human', scoutId])
+    expect(joinedRow!.participants[1]!.name).toBe('scout')
   })
 
   it('searches subjects, bodies and sender names, and pages by the newest sequence', async () => {

@@ -13,4 +13,5 @@
 | [components.zh.md](components.zh.md) | 每个 Team 组件一份合同：消息、消息块、ref、计数胶囊、花名册、资料页、失败态与 Thread 顶层栏 |
 | [thread-and-composer.zh.md](thread-and-composer.zh.md) | 时间线滚动、composer 与 mention、Thread/Task 入口行，以及状态胶囊与弹层 |
 | [sidebar-browser.zh.md](sidebar-browser.zh.md) | 侧栏工作区浏览器，以及它承载的 Inbox 界面 |
+| [message-center.zh.md](message-center.zh.md) | Human 的消息中枢：一条筛选栏上的两个读取 tab、两种行的结构、行内回复与定位 |
 | [refresh-copy-accessibility.zh.md](refresh-copy-accessibility.zh.md) | 数据刷新语义、文案与本地化、可访问性基线，以及体系如何演进 |

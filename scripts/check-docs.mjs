@@ -99,6 +99,7 @@ const BLOCK_CHARACTER_CEILINGS = {
   'frontend-design/README.md': [367, 189],
   'frontend-design/components.md': [603, 523],
   'frontend-design/layout-and-typography.md': [556, 452],
+  'frontend-design/message-center.md': [679, 246],
   'frontend-design/principles-and-language.md': [775, 557],
   'frontend-design/refresh-copy-accessibility.md': [510, 310],
   'frontend-design/sidebar-browser.md': [556, 366],

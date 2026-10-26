@@ -242,6 +242,15 @@
   z-index: 2;
 }
 
+/* The Message Center locate pass could not reach its sequence: said once,
+   above the still-readable timeline, not as an error that blocks the page. */
+.focusMissing {
+  color: var(--dsw-alias-label-secondary);
+  font-size: 12px;
+  line-height: 18px;
+  margin: 4px 0 0;
+}
+
 /* The hint carries no read semantics — it only scrolls to the tail. */
 .newUpdatesJump {
   background: none;

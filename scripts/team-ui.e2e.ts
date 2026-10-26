@@ -2077,16 +2077,17 @@ it('drives the complete opt-in Agent Team journey in real Web', async () => {
   expect(scaffold.ctx.agentTeam.inbox({ workspaceId: inboxWorkspace.id }).totalUnreadCount).toBe(baseUnread + 3)
   await expectSidebarUnread(String(baseUnread + 3))
 
-  // Narrow rail: 收件箱 → 任务 → Channels → Agents, the unread dot marked on the
-  // first icon; the first icon is a destination that opens its own page and
-  // expands the sidebar, and that behaviour is asserted for the Inbox icon below.
+  // Narrow rail: 收件箱 → 任务 → 消息中枢 → Channels → Agents, the unread dot
+  // marked on the first icon; the first icon is a destination that opens its own
+  // page and expands the sidebar, and that behaviour is asserted for the Inbox
+  // icon below.
   await page.setViewportSize({ width: 390, height: 844 })
   const inboxRail = page.locator('nav[class*="railWorkspace"]')
   await inboxRail.waitFor()
   const railLabels = await inboxRail.locator('button').evaluateAll(buttons => buttons.map(button => button.getAttribute('aria-label')))
-  expect(railLabels).toHaveLength(4)
+  expect(railLabels).toHaveLength(5)
   expect(railLabels![0]).toBe(`收件箱，${baseUnread + 3} 条未读`)
-  expect(railLabels!.slice(1)).toEqual(['任务', '频道', 'Agents'])
+  expect(railLabels!.slice(1)).toEqual(['任务', '消息中心', '频道', 'Agents'])
   await expectSidebarUnread(String(baseUnread + 3))
   // The dot replaced the number on the surface, so the rail's hover hint is where
   // a reader still meets the quantity without opening the page: the same name the
@@ -3360,6 +3361,86 @@ it('configures the Human profile from Settings in real Web', async () => {
   })
   expect(identityGeometry).toEqual({ width: 18, height: 18, radius: '50%' })
   await page.screenshot({ path: join(UI09_SHOTS, 'human-identity-in-inbox-stack.png'), fullPage: true })
+
+  // ── Human Message center (消息中枢) ────────────────────────────────────
+  // The third global face, over the ledger this journey already seeded: the
+  // topics tab lists the Threads the flow created, the messages tab the
+  // Messages this Human received or wrote. Both faces screenshot at the wide
+  // seat and on the 390×844 rail; the inline reply and locate run for real.
+  const centerCard = page.locator('button[class*="messagesCard"]')
+  await centerCard.waitFor()
+  await centerCard.click()
+  const center = page.locator('[data-team-messages]')
+  await center.waitFor()
+  const topicRows = center.locator('[data-team-messages-topic]')
+  await expect.poll(async () => await topicRows.count()).toBeGreaterThan(0)
+  await settleAnimations(page)
+  await page.screenshot({ path: join(UI09_SHOTS, 'message-center-topics.png'), fullPage: true })
+  // One search box drives both faces through the Host: the subject the flow
+  // seeded a unique marker into narrows the topics tab to that one Thread, and
+  // 清除筛选 hands the full list back.
+  await center.getByLabel('搜索').fill('PROFILE-NAME-MARKER')
+  await expect.poll(async () => await topicRows.count(), { timeout: 10_000 }).toBe(1)
+  await center.getByRole('button', { name: '清除筛选' }).click()
+  await expect.poll(async () => await topicRows.count()).toBeGreaterThan(0)
+
+  await center.getByRole('tab', { name: '我的消息' }).click()
+  const messageRows = center.locator('[data-team-messages-message]')
+  await expect.poll(async () => await messageRows.count()).toBeGreaterThan(0)
+  // The rows this journey produced are on one list — the written side, each
+  // carrying the derived processing pill; the addressed side renders the same
+  // row with the other badge and no pill, which the component suite pins for
+  // both directions on a seeded ledger.
+  await expect.poll(async () => await messageRows.locator('[data-direction="sent"]').count()).toBeGreaterThan(0)
+  await expect.poll(async () => await center.locator('[class*="processingPill"]').count()).toBeGreaterThan(0)
+  // The inline reply runs the real Human path: the composer anchors on the
+  // Thread's revision, Enter sends, and — when the answer names a Member who
+  // does not follow the Thread — the confirmation detour continues the same
+  // intent on the second Enter. The commit prints on the row and the re-read
+  // brings the 「我发出的」 row up without any manual refresh.
+  const replyRow = messageRows.first()
+  await replyRow.getByRole('button', { name: '回复' }).click()
+  const replyArea = center.getByRole('textbox', { name: '回复' })
+  await replyArea.fill('E2E-INLINE-REPLY 就地回复这条')
+  await replyArea.press('Enter')
+  if (await center.getByText('提及未关注成员需要确认，再次发送以继续').count() > 0) {
+    await replyArea.press('Enter')
+  }
+  await center.getByText('回复已发出').waitFor()
+  await expect.poll(async () => await messageRows.filter({ hasText: 'E2E-INLINE-REPLY' }).count()).toBe(1)
+  expect(await replyArea.count()).toBe(0)
+  await settleAnimations(page)
+  await page.screenshot({ path: join(UI09_SHOTS, 'message-center-mine.png'), fullPage: true })
+  // 定位到讨论 opens the Thread with the row's sequence as the anchor: the
+  // timeline flashes the anchored row once (fill + outline), and Back reads
+  // the Message center as the origin it was entered from.
+  const locateRow = messageRows.first()
+  await locateRow.getByRole('button', { name: '定位到讨论' }).click()
+  await page.locator('[data-team-thread]').waitFor()
+  await expect.poll(async () => await page.locator('[data-team-thread] [data-focused]').count()).toBe(1)
+  await page.getByRole('button', { name: '返回消息中心' }).waitFor()
+  await settleAnimations(page)
+  await page.screenshot({ path: join(UI09_SHOTS, 'message-center-locate.png'), fullPage: true })
+  await page.getByRole('button', { name: '返回消息中心' }).click()
+  await center.waitFor()
+  await expect.poll(async () => await topicRows.count()).toBeGreaterThan(0)
+
+  // 390×844: both faces keep the rail readable and add no horizontal overflow.
+  await page.setViewportSize({ width: 390, height: 844 })
+  await settleLayout(page)
+  const centerNarrow = await page.evaluate(() => ({
+    scrollWidth: document.documentElement.scrollWidth,
+    clientWidth: document.documentElement.clientWidth,
+  }))
+  expect(centerNarrow.scrollWidth).toBeLessThanOrEqual(centerNarrow.clientWidth)
+  await settleAnimations(page)
+  await page.screenshot({ path: join(UI09_SHOTS, 'message-center-topics-narrow.png'), fullPage: true })
+  await center.getByRole('tab', { name: '我的消息' }).click()
+  await expect.poll(async () => await messageRows.count()).toBeGreaterThan(0)
+  await settleAnimations(page)
+  await page.screenshot({ path: join(UI09_SHOTS, 'message-center-mine-narrow.png'), fullPage: true })
+  await page.setViewportSize({ width: 1440, height: 960 })
+  await settleLayout(page)
   expect(consoleWatch).toEqual({ warnings: [], pageErrors: [] })
 }, 180_000)
 
