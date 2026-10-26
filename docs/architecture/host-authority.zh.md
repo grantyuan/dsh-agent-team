@@ -52,6 +52,13 @@ Team 是每个 DSH home 内唯一的协作域。append-only operation ledger 是
 - Thread Attention 是 private Member x Thread state。ordinary unread 来自当前 Attention；structured mentions 创建 direct markers；terminal Task changes 在 Attention 结束后仍可能保留稀疏 Activity markers。Host 是唯一 Inbox authority。Session history 可以保留有界 notification context（包括 direct Message bodies 和 Task/Claim transition summaries），但不能形成 parallel unread projection。
 - 逐提交的唤醒是点对点的：只有当操作点名了该 Member（新增 Direct marker——mention 或 DM、新增属于其 Task 的 Activity marker、或它自己的动作）才唤起其模型。无人点名的 Thread 围观更新只在 projection 里累计未读数，随下一次被点名投递以无正文摘要同行——共享 Thread 的流量不为每个 follower 花费一个回合。restore/resume/故障恢复时的提示重建是另一条路径，仍读取全部 durable 未读。
 
+## External-agent 网关
+- 网关（`external-api.ts`）是进入 Host 的又一条传输通道，与 Remote（Web Client）和 member tools 并列：它服务于运行在本进程之外、在此没有 live Session 的 agent harness。它自身不保存任何 Team facts——每条路由都转发到按 Member 键控的 Host 入口（`*ForAgent` tool 表面的 `*ForMember` 兄弟方法），背后是同样的 accepting 状态、Workspace 与 participation fences。
+- 外部 Member 是一个永不激活 session 的 roster Member：`addExternalMember` 以 Human actor 走普通的成员创建 roster 操作，并在加入时授予 Channel 覆盖面（外部 Member 之后没有可用于 join Channel 的 session）。它的 presence 显示 unavailable，mention 照常落入 unread——与任何没有 live session 的 Member 已有的 recorded-not-delivered 语义一致。
+- 鉴权依赖唯一的 boot secret：join 路由用它作 bearer 凭证，每个 Member 自己的凭证是 `HMAC-SHA256(secret, memberId)`——无状态、重启稳定、按 Member 区分。持有 boot secret 即可派生所有 member token；这是单操作者 localhost 监听的既定信任模型。启用网关却不给 token 会直接拒绝启动，绝不服务一个未鉴权端口。
+- v1 表面镜像四个交流 tool 的结构化形态——view、inbox、threads read/history、messages start/reply/dm——挂在 `/agent-team/<workspaceId>/…` 之下。ledger 拒绝（`unread_required`、`stale_revision`、`member_not_following`）以 409 连同其 kind 返回，外部 member 遵循与模型相同的 read → token → write 协议；读取跳过 live-session 的 context advice；claims、supervision 与 watch 不在暴露范围内。
+- 对外部 Member 的投递是纯轮询：bundle 附带一个零依赖客户端脚本加一个 skill（`packages/agent-team/external-client/`），经 `/agent-team/client/…` 原样下发，其 `watch` 命令在有未读工作时退出——DSH 的后台完成通知就是那次唤醒。没有服务端 long-poll，也没有 webhook。
+
 ## Session 策略与上下文压力
 - Team 管理的 Agent sessions 使用显式 Team preset 和可信的 `danger-full-access` policy，这是面向可信 Workspace 的有意产品边界。
 - Host 激活 Member 时，会通过 session-title service 用其 handle 命名没有标题的 Member session，使普通 Session list 显示 Member identity。显式 rename 或任何已有 title 始终优先，命名失败不会导致 activation 失败。
