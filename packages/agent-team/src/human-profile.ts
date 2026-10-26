@@ -76,6 +76,14 @@ export const HUMAN_PROFILE_SETTINGS_SCHEMA = z.object({
    * renders as a settings control.
    */
   ledgerDirectory: z.string(),
+  /**
+   * Not profile fields: the external-agent HTTP gateway boot inputs (see
+   * external-api.ts). Static like `ledgerDirectory` — the port and boot secret
+   * are fixed at boot; an enabled gateway without a token refuses the boot.
+   */
+  externalApiEnabled: z.boolean().default(false),
+  externalApiPort: z.number().default(43110),
+  externalApiToken: z.string(),
 })
 
 /** Normalize one candidate display name the way Member handles normalize. */

@@ -59,7 +59,9 @@ import { StoredSessionReadError, StoredSessionReader, sessionFailureOf } from '.
 import { doctorAnalysisPrompt, humanTranscriptEntriesOf, renderFailureTranscript, type TranscriptEntry, type TranscriptEvent } from './failure-transcript.ts'
 import { agentTeamDomainSpec } from './spec.ts'
 import { formatTeamTimestamp } from './time-format.ts'
+import { AgentTeamExternalApi, type AgentTeamExternalCore } from './external-api.ts'
 import type {
+  AgentTeamAddExternalMemberRequest,
   AgentTeamAddMemberRequest,
   AgentTeamAddMemberResult,
   AgentTeamAgentMember,
@@ -282,6 +284,13 @@ const DOCTOR_HANDLE = 'doctor'
 const DOCTOR_PRESET_ID = 'team-member'
 const DOCTOR_DESCRIPTION = 'Team doctor: diagnoses a failed Member on the Human\'s ask and reports the root cause by direct message and a Thread in the failed Member\'s Channel.'
 const DOCTOR_DIAGNOSTIC_SUMMARY = 'Doctor dispatch: analyze a failed Member'
+
+/**
+ * The preset id stamped on external-agent Members at gateway join. The roster
+ * requires a non-empty preset, but an external Member never gets a live
+ * session, so the preset never mounts — it is durable identity only.
+ */
+const EXTERNAL_MEMBER_PRESET_ID = DOCTOR_PRESET_ID
 
 /**
  * A preset mount/validation failure during activation, carrying its own class
@@ -565,6 +574,15 @@ export interface Config {
   name: Volatile<string>
   avatarRef: Volatile<string | undefined>
   ledgerDirectory?: string
+  /**
+   * External-agent HTTP gateway boot inputs (see external-api.ts). Static by
+   * design like `ledgerDirectory`: the port and boot secret are fixed at boot,
+   * and an enabled gateway without a token refuses the boot instead of serving
+   * an unauthenticated port.
+   */
+  externalApiEnabled?: boolean
+  externalApiPort?: number
+  externalApiToken?: string
 }
 
 /** Host owner of the single Agent Team in one dshHome. */
@@ -584,6 +602,7 @@ export default class AgentTeam extends TypertRemoteService {
 
   private domain?: Domain<typeof agentTeamDomainSpec>
   private ledger?: AgentTeamLedger
+  private externalApi: AgentTeamExternalApi | undefined = undefined
   private readonly handles = new Map<AgentTeamMemberId, AgentHandle>()
   /** Live Member per session id; drives the root session/event listener. */
   private readonly memberBySessionId = new Map<SessionId, AgentTeamMemberId>()
@@ -1206,6 +1225,8 @@ export default class AgentTeam extends TypertRemoteService {
     const domain = await this.ctx.storageDomain.open(agentTeamDomainSpec)
     this.ctx.effect(() => async () => {
       this.accepting = false
+      await this.externalApi?.stop()
+      this.externalApi = undefined
       this.recovery.dispose()
       this.responseGuard.dispose()
       this.supervisor.dispose()
@@ -1274,6 +1295,47 @@ export default class AgentTeam extends TypertRemoteService {
     // Standing watches restore with the roster, so their first pass samples a
     // settled Team instead of an activating one.
     this.memberWatch.start()
+    // The gateway rides the same restore gate: it serves only after the roster
+    // is settled, and its listener closes with the Host.
+    await this.startExternalApi()
+  }
+
+  /**
+   * Boot the external-agent gateway when enabled. A boot without the secret is
+   * a boot failure, not a degraded start: serving an unauthenticated port is
+   * the one failure mode this surface must never reach.
+   */
+  private async startExternalApi(): Promise<void> {
+    if (this.config.externalApiEnabled !== true) return
+    const token = this.config.externalApiToken?.trim()
+    if (token === undefined || token === '') {
+      throw new Error('agent-team: the external API is enabled but externalApiToken is empty; set the boot token or disable the gateway')
+    }
+    const port = this.config.externalApiPort ?? 43110
+    this.externalApi = await new AgentTeamExternalApi(this.externalCore(), { port, token }).start()
+    this.ctx.logger.info(`agent-team: external agent gateway listening on ${this.externalApi.boundPort ?? port}`)
+  }
+
+  /** The Host's member-keyed surface as the gateway's core, with DM delivery folded into results. */
+  private externalCore(): AgentTeamExternalCore {
+    const host = this
+    return {
+      addExternalMember: request => host.addExternalMember(request),
+      inboxForMember: (memberId, request) => host.inboxForMember(memberId, request),
+      viewForMember: (memberId, request) => host.viewForMember(memberId, request),
+      readThreadForMember: (memberId, request) => host.readThreadForMember(memberId, request),
+      threadHistoryForMember: (memberId, request) => host.threadHistoryForMember(memberId, request),
+      sendMessageForMember: (memberId, request) => host.sendMessageForMember(memberId, request),
+      replyForMember: (memberId, request) => host.replyForMember(memberId, request),
+      dmForMember: async (memberId, request) => {
+        try {
+          return await host.dmForMember(memberId, request)
+        } catch (error) {
+          if (!(error instanceof AgentTeamDmDeliveryError)) throw error
+          return { kind: 'dm-sent', recipientMemberId: error.recipientMemberId, recipientHandle: error.recipientHandle, delivered: false, deliveryNote: error.message }
+        }
+      },
+    }
   }
 
   /**
@@ -1901,6 +1963,40 @@ export default class AgentTeam extends TypertRemoteService {
       if (!this.handles.has(stored.memberId)) await this.activateMember(stored, workspace.path)
       // Creation seeds exactly the creation Workspace participation; attach it
       // here (like membersForClient) so the Client never synthesizes it.
+      return Object.freeze({ receipt: result.value.receipt, status: this.memberStatus(stored), workspaceIds: ledger.workspacesOf(stored.memberId) })
+    })
+  }
+
+  /**
+   * Provision one external-agent Member through the gateway: the same durable
+   * roster facts as {@link addMember}, but the Member's session is never
+   * activated — it reads and writes through the external HTTP surface by
+   * polling, and shows unavailable presence like any Member without a live
+   * session. Channel reach is granted once at creation, because an external
+   * Member has no session through which to join Channels later.
+   */
+  async addExternalMember(request: AgentTeamAddExternalMemberRequest): Promise<AgentTeamAddMemberResult> {
+    return this.enqueueLifecycle(async () => {
+      this.requireWorkspace(request.workspaceId)
+      const ledger = this.requireLedger()
+      const memberId = `member:${randomUUID()}` as AgentTeamMemberId
+      const member: AgentTeamAgentMember = Object.freeze({
+        memberId,
+        sessionId: SessionId(`agent-team-${randomUUID()}`),
+        workspaceId: request.workspaceId,
+        handle: request.handle,
+        description: request.description ?? '',
+        presetId: EXTERNAL_MEMBER_PRESET_ID,
+        privateMemoryPath: dshHomePath('agent-team', 'members', memberMemoryDirectoryName(memberId)),
+        state: 'enabled',
+      })
+      const channelRefs = request.channelRefs ?? ledger.channelsInWorkspace(request.workspaceId).map(channel => channel.channelRef)
+      const result = await ledger.addMember({
+        requestId: request.requestId, workspaceId: request.workspaceId, handle: member.handle,
+        description: member.description, presetId: member.presetId, channelRefs, actor: agentTeamHumanActor(), member,
+      })
+      if (result.committed) this.emitCommitted(result.value.receipt)
+      const stored = result.value.member
       return Object.freeze({ receipt: result.value.receipt, status: this.memberStatus(stored), workspaceIds: ledger.workspacesOf(stored.memberId) })
     })
   }
@@ -4217,6 +4313,16 @@ export default class AgentTeam extends TypertRemoteService {
     return this.replyAs(this.memberCall(agent, request.workspaceId), request)
   }
 
+  /** External-gateway new-Thread start: the same commit, keyed by authenticated Member id. */
+  async sendMessageForMember(memberId: AgentTeamMemberId, request: AgentTeamSendMessageRequest): Promise<AgentTeamSendMessageResult> {
+    return this.sendMessageAs(this.memberCallById(memberId, request.workspaceId), request)
+  }
+
+  /** External-gateway existing-Thread reply. */
+  async replyForMember(memberId: AgentTeamMemberId, request: AgentTeamReplyRequest): Promise<AgentTeamReplyResult> {
+    return this.replyAs(this.memberCallById(memberId, request.workspaceId), request)
+  }
+
   /** Agent-only personal Attention change. */
   async changeAttentionForAgent(agent: Agent, request: AgentTeamThreadAttentionRequest): Promise<AgentTeamThreadAttentionResult> {
     const actor = this.memberCall(agent, request.workspaceId)
@@ -4253,6 +4359,14 @@ export default class AgentTeam extends TypertRemoteService {
 
   inboxForAgent(agent: Agent, request: { readonly workspaceId?: WorkspaceId; readonly limit?: number }): AgentTeamInbox {
     const actor = this.memberActor(agent)
+    if (request.workspaceId === undefined) return this.requireLedger().memberInbox(actor, request)
+    this.requireAgentWorkspace(actor, request.workspaceId)
+    return this.requireLedger().inbox(actor, { ...request, workspaceId: request.workspaceId })
+  }
+
+  /** External-gateway inbox triage: same fences, keyed by authenticated Member id. */
+  inboxForMember(memberId: AgentTeamMemberId, request: { readonly workspaceId?: WorkspaceId; readonly limit?: number }): AgentTeamInbox {
+    const actor = this.memberActorById(memberId)
     if (request.workspaceId === undefined) return this.requireLedger().memberInbox(actor, request)
     this.requireAgentWorkspace(actor, request.workspaceId)
     return this.requireLedger().inbox(actor, { ...request, workspaceId: request.workspaceId })
@@ -4298,6 +4412,20 @@ export default class AgentTeam extends TypertRemoteService {
       pendingInterrupts,
       guidance: `${advice.guidance} You have ${pendingInterrupts} pending interrupted session(s): before closing, run the pre-completion analysis — post this work's completion report first, then context_interrupt list and resume the newest restorable entry with a context_rollover citing its exact anchor ref, or release it if it no longer needs returning.`,
     })
+  }
+
+  /**
+   * External-gateway durable read. The ForAgent surface's private post-read
+   * context pricing is skipped: an external caller has no live Session to
+   * measure, and the committed read must never depend on one.
+   */
+  async readThreadForMember(memberId: AgentTeamMemberId, request: AgentTeamThreadReadRequest): Promise<AgentTeamThreadReadResult> {
+    const actor = this.memberCallById(memberId, request.workspaceId)
+    const result = await this.requireLedger().readThread({ ...request, actor })
+    // A read that made no progress commits no operation and carries no receipt.
+    const receipt = result.committed ? result.value.receipt : undefined
+    if (receipt !== undefined) this.emitCommitted(receipt)
+    return result.value
   }
 
   /** Price the reading Member's context against its current route's budgets. */
@@ -4393,14 +4521,27 @@ export default class AgentTeam extends TypertRemoteService {
   }
 
   /**
-   * Agent-only direct message: append the audit-only dm-sent operation, then
+   * Agent-only direct message, fences resolved from the live Member binding.
+   */
+  async dmForAgent(agent: Agent, request: AgentTeamDmRequest): Promise<AgentTeamDmResult> {
+    return this.dmAs(this.memberCall(agent, request.workspaceId), request)
+  }
+
+  /** External-gateway direct message: the same commit-and-relay, keyed by authenticated Member id. */
+  async dmForMember(memberId: AgentTeamMemberId, request: AgentTeamDmRequest): Promise<AgentTeamDmResult> {
+    return this.dmAs(this.memberCallById(memberId, request.workspaceId), request)
+  }
+
+  /**
+   * Shared direct-message commit: append the audit-only dm-sent operation, then
    * inject the body into the recipient's live session. The ledger commit is
    * the durable fact; the injection is a transient runtime effect, so a
    * missing handle or a failed wake returns a structured delivery error while
-   * the recorded DM stays durable for the recipient's recovery path.
+   * the recorded DM stays durable for the recipient's recovery path. An
+   * external recipient has no handle by construction, so a DM addressed to it
+   * is always exactly that recorded-not-delivered shape.
    */
-  async dmForAgent(agent: Agent, request: AgentTeamDmRequest): Promise<AgentTeamDmResult> {
-    const actor = this.memberCall(agent, request.workspaceId)
+  private async dmAs(actor: AgentTeamMemberActor, request: AgentTeamDmRequest): Promise<AgentTeamDmResult> {
     const result = await this.requireLedger().sendDm({ ...request, actor })
     if (!result.committed) return result.value
     this.emitCommitted(result.value.receipt)
@@ -4411,7 +4552,7 @@ export default class AgentTeam extends TypertRemoteService {
     }
     try {
       const message = createUserMessage({
-        content: [{ type: 'text', text: this.dmRelayText(agent, recipient, request.body.trim(), result.value.receipt.occurredAt, result.value.receipt.operationId, request.workspaceId) }],
+        content: [{ type: 'text', text: this.dmRelayText(actor, recipient, request.body.trim(), result.value.receipt.occurredAt, result.value.receipt.operationId, request.workspaceId) }],
         source: { kind: AGENT_TEAM_PLUGIN_ID, form: 'relay' },
       })
       // An idle recipient gets one ordinary turn; a busy one is steered into
@@ -4425,10 +4566,9 @@ export default class AgentTeam extends TypertRemoteService {
   }
 
   /** Relay body: the DM itself plus one bounded line of adjacent context. */
-  private dmRelayText(senderAgent: Agent, recipient: AgentTeamAgentMember, body: string, occurredAt: string, excluding: AgentTeamOperationId, workspaceId: WorkspaceId): string {
-    const sender = this.memberForAgent(senderAgent)
-    const prior = this.requireLedger().dmHistoryBetween(senderAgent.id, recipient.memberId, excluding)
-    const header = `Direct message from @${sender?.handle ?? 'a Team Member'} at ${formatTeamTimestamp(occurredAt)}:`
+  private dmRelayText(sender: AgentTeamMemberActor, recipient: AgentTeamAgentMember, body: string, occurredAt: string, excluding: AgentTeamOperationId, workspaceId: WorkspaceId): string {
+    const prior = this.requireLedger().dmHistoryBetweenMembers(sender.memberId, recipient.memberId, excluding)
+    const header = `Direct message from @${sender.handle} at ${formatTeamTimestamp(occurredAt)}:`
     const context = prior === undefined ? '' : `\n\n[most recent prior DM between you: ${prior}]`
     return `${header}\nWorkspace: ${workspaceId}\n\n${body}${context}`
   }
@@ -4575,6 +4715,13 @@ export default class AgentTeam extends TypertRemoteService {
     return this.requireLedger().threadHistory(actor, request)
   }
 
+  /** External-gateway bounded history page: same read-only fence, keyed by authenticated Member id. */
+  threadHistoryForMember(memberId: AgentTeamMemberId, request: AgentTeamThreadHistoryRequest): AgentTeamThreadHistory {
+    const actor = this.memberActorById(memberId)
+    this.requireAgentWorkspace(actor, request.workspaceId)
+    return this.requireLedger().threadHistory(actor, request)
+  }
+
   /** Live participation addresses; paths remain owned by the Harness registry. */
   workspacesForAgent(agent: Agent): readonly { readonly workspaceId: WorkspaceId; readonly path: string | undefined; readonly default: boolean }[] {
     const actor = this.memberActor(agent)
@@ -4588,6 +4735,12 @@ export default class AgentTeam extends TypertRemoteService {
   viewForAgent(agent: Agent, request: AgentTeamViewRequest): AgentTeamView {
     const member = this.memberForAgent(agent)
     if (member === undefined) throw new Error('Agent is not an active Team Member')
+    return this.viewForMember(member.memberId, request)
+  }
+
+  /** External-gateway bounded discovery projection: same view, keyed by authenticated Member id. */
+  viewForMember(memberId: AgentTeamMemberId, request: AgentTeamViewRequest): AgentTeamView {
+    const member = this.memberActorById(memberId)
     if (!this.requireLedger().participatesIn(member.memberId, request.workspaceId)) throw new Error('Member cannot view another Workspace')
     const view = this.requireLedger().view(request, member.memberId)
     return Object.freeze({ ...view, workspaces: Object.freeze(view.workspaces.map(participation => {
@@ -5473,6 +5626,27 @@ export default class AgentTeam extends TypertRemoteService {
   private memberActor(agent: Agent): AgentTeamMemberActor {
     const member = this.memberForAgent(agent)
     if (member === undefined) throw new Error('Agent is not an active Team Member')
+    return Object.freeze({ kind: 'member', memberId: member.memberId, handle: member.handle })
+  }
+
+  /**
+   * Fence one external gateway call: accepting Host, verified enabled Member
+   * binding, matching Workspace participation. The caller brings no live
+   * Session — authentication happened at the gateway, so this fence only
+   * re-checks the durable facts the ledger already holds.
+   */
+  private memberCallById(memberId: AgentTeamMemberId, workspaceId: AgentTeamViewRequest['workspaceId']): AgentTeamMemberActor {
+    this.requireAccepting()
+    this.requireWorkspace(workspaceId)
+    const actor = this.memberActorById(memberId)
+    this.requireAgentWorkspace(actor, workspaceId)
+    return actor
+  }
+
+  /** Resolve one authenticated external caller to its durable enabled Team Member. */
+  private memberActorById(memberId: AgentTeamMemberId): AgentTeamMemberActor {
+    const member = this.requireLedger().getMember(memberId)
+    if (member === undefined || member.state !== 'enabled') throw new Error('Agent is not an active Team Member')
     return Object.freeze({ kind: 'member', memberId: member.memberId, handle: member.handle })
   }
 

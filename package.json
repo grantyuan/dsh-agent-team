@@ -14,6 +14,7 @@
     "cordis.patch.yml",
     "packages/agent-team/lib/**/*",
     "packages/agent-team/core-skills/**/*",
+    "packages/agent-team/external-client/**/*",
     "packages/tool-agent-team/lib/**/*",
     "packages/client-agent-team/lib/**/*",
     "README.md",

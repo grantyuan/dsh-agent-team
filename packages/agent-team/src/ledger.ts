@@ -1396,6 +1396,21 @@ export class AgentTeamLedger {
   }
 
   /**
+   * Every active Channel of one Workspace, oldest first. Read-only enumeration
+   * for the external-agent join grant: a Member that never gets a live session
+   * cannot ask to join Channels later, so creation seeds the same reach a
+   * Human-invited Member would have been given.
+   */
+  channelsInWorkspace(workspaceId: WorkspaceId): readonly AgentTeamChannel[] {
+    const channels: AgentTeamChannel[] = []
+    for (const channel of this.state.channels.values()) {
+      if (channel.workspaceId !== workspaceId || channel.state !== 'active') continue
+      channels.push(channel)
+    }
+    return Object.freeze(channels.sort((a, b) => a.createdAtSequence - b.createdAtSequence))
+  }
+
+  /**
    * The active Channels one Member belongs to inside one Workspace, oldest
    * first. Read-only projection over the membership index — the supervised
    * handover uses it to give a replacement the same reach its predecessor had.
@@ -2277,11 +2292,25 @@ export class AgentTeamLedger {
   dmHistoryBetween(senderSessionId: SessionId, recipientMemberId: AgentTeamMemberId, excluding?: AgentTeamOperationId): string | undefined {
     const sender = [...this.state.members.values()].find(member => member.sessionId === senderSessionId)
     if (sender === undefined) return undefined
+    return this.dmHistoryBetweenMembers(sender.memberId, recipientMemberId, excluding)
+  }
+
+  /**
+   * The rendered one-line most recent earlier DM between two Members, newest
+   * first — the memberId-keyed form the external gateway's DM relay reads, since
+   * an external sender has no live Session id to resolve. Returns undefined
+   * when this is their first exchange. `excluding` skips the operation id of
+   * the DM being delivered right now, so the context line is the adjacent
+   * prior exchange rather than a self-reference. Direction labels are from the
+   * reader's perspective: the reader is the recipient of the DM being
+   * delivered, so messages the reader sent are `you → them`.
+   */
+  dmHistoryBetweenMembers(senderMemberId: AgentTeamMemberId, recipientMemberId: AgentTeamMemberId, excluding?: AgentTeamOperationId): string | undefined {
     for (let index = this.state.ordered.length - 1; index >= 0; index -= 1) {
       const operation = this.state.ordered[index]!
       if (operation.kind !== 'team/dm-sent' || operation.operationId === excluding) continue
-      const pair = operation.data.senderMemberId === sender.memberId && operation.data.recipientMemberId === recipientMemberId
-      const mirror = operation.data.senderMemberId === recipientMemberId && operation.data.recipientMemberId === sender.memberId
+      const pair = operation.data.senderMemberId === senderMemberId && operation.data.recipientMemberId === recipientMemberId
+      const mirror = operation.data.senderMemberId === recipientMemberId && operation.data.recipientMemberId === senderMemberId
       if (!pair && !mirror) continue
       // pair: the other Member sent it to the reader → (them → you);
       // mirror: the reader sent it to the other Member → (you → them).

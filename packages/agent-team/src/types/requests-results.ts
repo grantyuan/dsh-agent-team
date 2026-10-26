@@ -85,6 +85,22 @@ export interface AgentTeamAddMemberRequest {
   readonly channelRefs: readonly AgentTeamChannelRef[]
 }
 
+/**
+ * Operator intent to provision one external-agent Member through the HTTP
+ * gateway. Identical roster facts to {@link AgentTeamAddMemberRequest}, but the
+ * Member's session is never activated: it reads and writes through the gateway
+ * by polling. `channelRefs` defaults to every active Channel of the Workspace
+ * — an external Member cannot ask to join later.
+ */
+export interface AgentTeamAddExternalMemberRequest {
+  readonly requestId: AgentTeamRequestId
+  readonly workspaceId: WorkspaceId
+  readonly handle: string
+  readonly description?: string
+  /** Absent grants every active Channel of the Workspace at join time. */
+  readonly channelRefs?: readonly AgentTeamChannelRef[]
+}
+
 /** Human intent to rename one Channel's display facts. */
 export interface AgentTeamUpdateChannelRequest {
   readonly requestId: AgentTeamRequestId
