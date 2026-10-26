@@ -575,14 +575,15 @@ export interface Config {
   avatarRef: Volatile<string | undefined>
   ledgerDirectory?: string
   /**
-   * External-agent HTTP gateway boot inputs (see external-api.ts). Static by
-   * design like `ledgerDirectory`: the port and boot secret are fixed at boot,
-   * and an enabled gateway without a token refuses the boot instead of serving
-   * an unauthenticated port.
+   * External-agent HTTP gateway controls (see external-api.ts). Volatile like
+   * the profile fields: they render as Team settings controls, and the Host
+   * reconciles the listener live on each volatile update — enable starts it,
+   * disable stops it, a port or token edit retunes it. An enabled gateway
+   * with an empty token never serves; the reconcile warns and leaves it off.
    */
-  externalApiEnabled?: boolean
-  externalApiPort?: number
-  externalApiToken?: string
+  externalApiEnabled: Volatile<boolean>
+  externalApiPort: Volatile<number>
+  externalApiToken: Volatile<string | undefined>
 }
 
 /** Host owner of the single Agent Team in one dshHome. */
@@ -603,6 +604,8 @@ export default class AgentTeam extends TypertRemoteService {
   private domain?: Domain<typeof agentTeamDomainSpec>
   private ledger?: AgentTeamLedger
   private externalApi: AgentTeamExternalApi | undefined = undefined
+  private externalApiPort: number | undefined = undefined
+  private externalApiToken: string | undefined = undefined
   private readonly handles = new Map<AgentTeamMemberId, AgentHandle>()
   /** Live Member per session id; drives the root session/event listener. */
   private readonly memberBySessionId = new Map<SessionId, AgentTeamMemberId>()
@@ -1006,7 +1009,15 @@ export default class AgentTeam extends TypertRemoteService {
       settingsCtx.effect(() => settingsCtx.settings.configure({ auto: false }, this.ctx.fiber))
       this.adoptLegacyHumanProfile()
     })
-    this.ctx.on('loader/volatile-update', () => { this.syncHumanHandle() })
+    this.ctx.on('loader/volatile-update', () => {
+      this.syncHumanHandle()
+      // The gateway controls are volatile: an edit lands here, so this is
+      // where the listener starts, stops, or retunes. Reconcile failures log
+      // and leave the previous state standing, like the handle sync.
+      this.reconcileExternalApi().catch(error => {
+        this.ctx.logger.warn(`agent-team: external gateway reconcile failed: ${error instanceof Error ? error.message : String(error)}`)
+      })
+    })
   }
 
   /** Current human display name; the single source for team_view and @ matching. */
@@ -1225,8 +1236,7 @@ export default class AgentTeam extends TypertRemoteService {
     const domain = await this.ctx.storageDomain.open(agentTeamDomainSpec)
     this.ctx.effect(() => async () => {
       this.accepting = false
-      await this.externalApi?.stop()
-      this.externalApi = undefined
+      await this.stopExternalApi()
       this.recovery.dispose()
       this.responseGuard.dispose()
       this.supervisor.dispose()
@@ -1297,23 +1307,49 @@ export default class AgentTeam extends TypertRemoteService {
     this.memberWatch.start()
     // The gateway rides the same restore gate: it serves only after the roster
     // is settled, and its listener closes with the Host.
-    await this.startExternalApi()
+    await this.reconcileExternalApi()
   }
 
   /**
-   * Boot the external-agent gateway when enabled. A boot without the secret is
-   * a boot failure, not a degraded start: serving an unauthenticated port is
-   * the one failure mode this surface must never reach.
+   * Bring the external-agent gateway in line with its volatile settings. This
+   * is the one hand the operator has, so it must work live: enable starts the
+   * listener, disable stops it, and a port or token edit retunes it without a
+   * remount. An enabled gateway with an empty token never serves — the
+   * non-negotiable property is that no unauthenticated port ever opens, so
+   * that state warns and stays off instead of refusing anything.
    */
-  private async startExternalApi(): Promise<void> {
-    if (this.config.externalApiEnabled !== true) return
-    const token = this.config.externalApiToken?.trim()
-    if (token === undefined || token === '') {
-      throw new Error('agent-team: the external API is enabled but externalApiToken is empty; set the boot token or disable the gateway')
+  private async reconcileExternalApi(): Promise<void> {
+    if (!this.accepting) return
+    if (this.config.externalApiEnabled.get() !== true) {
+      await this.stopExternalApi()
+      return
     }
-    const port = this.config.externalApiPort ?? 43110
-    this.externalApi = await new AgentTeamExternalApi(this.externalCore(), { port, token }).start()
-    this.ctx.logger.info(`agent-team: external agent gateway listening on ${this.externalApi.boundPort ?? port}`)
+    const token = this.config.externalApiToken.get()?.trim()
+    if (token === undefined || token === '') {
+      await this.stopExternalApi()
+      this.ctx.logger.warn('agent-team: the external API is enabled but its token is empty; the gateway stays off until a boot token is set')
+      return
+    }
+    const port = this.config.externalApiPort.get() ?? 43110
+    if (this.externalApi !== undefined && this.externalApiPort === port && this.externalApiToken === token) return
+    await this.stopExternalApi()
+    try {
+      this.externalApi = await new AgentTeamExternalApi(this.externalCore(), { port, token }).start()
+      this.externalApiPort = port
+      this.externalApiToken = token
+      this.ctx.logger.info(`agent-team: external agent gateway listening on ${this.externalApi.boundPort ?? port}`)
+    } catch (error) {
+      this.externalApi = undefined
+      this.ctx.logger.warn(`agent-team: the external gateway could not listen on port ${port}: ${error instanceof Error ? error.message : String(error)}`)
+    }
+  }
+
+  private async stopExternalApi(): Promise<void> {
+    const api = this.externalApi
+    this.externalApi = undefined
+    this.externalApiPort = undefined
+    this.externalApiToken = undefined
+    await api?.stop()
   }
 
   /** The Host's member-keyed surface as the gateway's core, with DM delivery folded into results. */

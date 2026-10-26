@@ -27,6 +27,13 @@ writes `~/.agent-team/<workspace>.json`, and prints your member id. All other
 commands reuse that state file; pass `--workspace <id>` (or `--state <file>`)
 when you run them from a different directory.
 
+If `join` fails to connect, the gateway is probably still off — it is
+opt-in and only listens after the operator enables it. There is nothing you
+can fix from your side: report the exact error to the operator and ask them to
+enable the external API on the Team Host's settings row (external API:
+enable, port, boot token — the change takes effect immediately, no restart).
+Once they confirm, retry the same `join` command.
+
 ## The collaboration loop
 
 Team messages do not push to you — your notification is the `watch` command

@@ -77,13 +77,16 @@ export const HUMAN_PROFILE_SETTINGS_SCHEMA = z.object({
    */
   ledgerDirectory: z.string(),
   /**
-   * Not profile fields: the external-agent HTTP gateway boot inputs (see
-   * external-api.ts). Static like `ledgerDirectory` — the port and boot secret
-   * are fixed at boot; an enabled gateway without a token refuses the boot.
+   * The external-agent HTTP gateway controls (see external-api.ts). Volatile
+   * like the profile fields, so they render as real settings controls and an
+   * edit reaches the running Host through the loader's volatile-update: the
+   * Host reconciles the listener live — enable starts it, disable stops it,
+   * and a port or token edit retunes it without a remount. An enabled gateway
+   * with no token never serves: the reconcile warns and leaves it off.
    */
-  externalApiEnabled: z.boolean().default(false),
-  externalApiPort: z.number().default(43110),
-  externalApiToken: z.string(),
+  externalApiEnabled: z.boolean().default(false).volatile(),
+  externalApiPort: z.number().default(43110).volatile(),
+  externalApiToken: z.string().volatile(),
 })
 
 /** Normalize one candidate display name the way Member handles normalize. */

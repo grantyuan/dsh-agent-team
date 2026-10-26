@@ -153,15 +153,18 @@ async function main() {
       process.exit(1)
     }
     const baseUrl = values.url.replace(/\/+$/u, '')
-    const response = await fetch(`${baseUrl}/agent-team/${encodeURIComponent(values.workspace)}/members`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json', authorization: `Bearer ${values.token}` },
-      body: JSON.stringify({
-        handle: values.handle,
-        ...(values.description === undefined ? {} : { description: values.description }),
-      }),
-      signal: AbortSignal.timeout(60_000),
-    }).catch(error => fail(`join could not reach ${baseUrl}: ${error.message}`))
+  const response = await fetch(`${baseUrl}/agent-team/${encodeURIComponent(values.workspace)}/members`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', authorization: `Bearer ${values.token}` },
+    body: JSON.stringify({
+      handle: values.handle,
+      ...(values.description === undefined ? {} : { description: values.description }),
+    }),
+    signal: AbortSignal.timeout(60_000),
+  }).catch(error => {
+    const refused = error?.cause?.code === 'ECONNREFUSED' || error?.code === 'ECONNREFUSED'
+    return fail(`join could not reach ${baseUrl}: ${error.message}${refused ? ' — nothing is listening there; the gateway is opt-in, so ask the operator to enable the external API on the Team Host settings row (enable, port, boot token; no restart needed)' : ''}`)
+  })
     const body = await response.json().catch(() => ({}))
     if (response.ok === false) {
       fail(`join refused: ${body?.error?.message ?? `HTTP ${response.status}`}`, { status: response.status })
