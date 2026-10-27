@@ -72,6 +72,15 @@ export interface AgentTeamExternalCore {
    */
   heartbeatForMember(memberId: AgentTeamMemberId, request: AgentTeamHeartbeatRequest): Promise<AgentTeamExternalContextResult>
   /**
+   * The member's DM poll: DMs reach internal members through their live
+   * sessions and never enter the Inbox, so this is how an external member
+   * ever sees one. Ascending, cursor-keyed by ledger sequence.
+   */
+  dmsForMember(memberId: AgentTeamMemberId, request: { readonly workspaceId: AgentTeamViewRequest['workspaceId']; readonly afterSequence?: number; readonly limit?: number }): {
+    readonly dms: readonly { readonly operationId: string; readonly sequence: number; readonly occurredAt: string; readonly direction: 'in' | 'out'; readonly peerMemberId: AgentTeamMemberId; readonly body: string }[]
+    readonly hasMore: boolean
+  }
+  /**
    * DM commit for an external sender. A recipient with no live session yields
    * the recorded-not-delivered outcome (the tool surface's shape), never a
    * thrown delivery error: the gateway maps results to statuses, and a DM
@@ -175,6 +184,18 @@ export class AgentTeamExternalApi {
         const limit = url.searchParams.get('limit')
         return this.respond(response, 200, this.core.inboxForMember(memberId, {
           workspaceId, ...(limit === null ? {} : { limit: this.positiveInt(limit, 'limit') }),
+        }))
+      }
+      if (request.method === 'GET' && segments[2] === 'dms' && segments.length === 3) {
+        const after = url.searchParams.get('after')
+        const limit = url.searchParams.get('limit')
+        // The cursor is a ledger high-water mark: 0 is the valid "from the
+        // beginning" start, unlike a page size.
+        const afterSequence = after === null ? undefined : this.cursorInt(after, 'after')
+        return this.respond(response, 200, this.core.dmsForMember(memberId, {
+          workspaceId,
+          ...(afterSequence === undefined ? {} : { afterSequence }),
+          ...(limit === null ? {} : { limit: this.positiveInt(limit, 'limit') }),
         }))
       }
       if (request.method === 'POST' && segments[2] === 'threads' && segments.length === 4) {
@@ -380,6 +401,13 @@ export class AgentTeamExternalApi {
   private positiveInt(value: string, field: string): number {
     const parsed = Number(value)
     if (!Number.isSafeInteger(parsed) || parsed < 1) throw new RequestError(400, 'bad-request', `${field} must be a positive integer`)
+    return parsed
+  }
+
+  /** A sequence cursor: a safe non-negative integer, 0 meaning from the beginning. */
+  private cursorInt(value: string, field: string): number {
+    const parsed = Number(value)
+    if (!Number.isSafeInteger(parsed) || parsed < 0) throw new RequestError(400, 'bad-request', `${field} must be a non-negative integer`)
     return parsed
   }
 

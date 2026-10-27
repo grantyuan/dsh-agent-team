@@ -48,6 +48,7 @@ function stubCore(overrides: Partial<AgentTeamExternalCore> = {}): AgentTeamExte
     sendMessageForMember: async () => ({ kind: 'committed' }) as AgentTeamSendMessageResult,
     replyForMember: async () => ({ kind: 'committed' }) as AgentTeamSendMessageResult,
     heartbeatForMember: async () => ({}) as never,
+    dmsForMember: () => ({ dms: [], hasMore: false }),
     dmForMember: async () => ({ receipt: {}, recipient: {}, relayed: true }) as never,
     ...overrides,
   }

@@ -185,6 +185,33 @@ describe('external member ledger semantics', () => {
     // The session-keyed form still resolves the same exchange for live members.
     expect(ledger.dmHistoryBetween(SessionId('session:' + externalId), scoutId)).toContain('quick sync?')
   })
+
+  it('polls DM history per member with an exclusive sequence cursor', async () => {
+    const { ledger } = await openLedger()
+    const channelRef = await seedTeam(ledger)
+    await addExternalMember(ledger, [channelRef])
+    await ledger.sendDm({ requestId: requestId('dm-in'), workspaceId: alpha, recipientMemberId: externalId, body: 'first inbound', actor: scout })
+    const out = await ledger.sendDm({ requestId: requestId('dm-out'), workspaceId: alpha, recipientMemberId: scoutId, body: 'outbound reply', actor: visitor })
+    await ledger.sendDm({ requestId: requestId('dm-in-2'), workspaceId: alpha, recipientMemberId: externalId, body: 'second inbound', actor: scout })
+
+    // Both directions, ascending, direction-labeled; peers resolve to scout.
+    const all = ledger.dmsForMember(externalId, { workspaceId: alpha })
+    expect(all.dms.map(entry => entry.direction)).toEqual(['in', 'out', 'in'])
+    expect(all.dms.map(entry => entry.body)).toEqual(['first inbound', 'outbound reply', 'second inbound'])
+    expect(all.dms.every(entry => entry.peerMemberId === scoutId)).toBe(true)
+    expect(all.hasMore).toBe(false)
+
+    // The cursor is exclusive; the limit reports hasMore.
+    const afterFirst = ledger.dmsForMember(externalId, { workspaceId: alpha, afterSequence: all.dms[0]!.sequence })
+    expect(afterFirst.dms.map(entry => entry.body)).toEqual(['outbound reply', 'second inbound'])
+    const bounded = ledger.dmsForMember(externalId, { workspaceId: alpha, afterSequence: all.dms[0]!.sequence, limit: 1 })
+    expect(bounded.dms.map(entry => entry.body)).toEqual(['outbound reply'])
+    expect(bounded.hasMore).toBe(true)
+    expect(ledger.dmsForMember(externalId, { workspaceId: alpha, afterSequence: out.value.receipt.sequence }).dms.map(entry => entry.body)).toEqual(['second inbound'])
+    // The other side of the pair sees the same three; strangers see none.
+    expect(ledger.dmsForMember(scoutId, { workspaceId: alpha }).dms).toHaveLength(3)
+    expect(ledger.dmsForMember('member:agent-stranger' as AgentTeamMemberId, { workspaceId: alpha }).dms).toHaveLength(0)
+  })
 })
 
 describe('client script end-to-end', () => {
@@ -223,6 +250,7 @@ describe('client script end-to-end', () => {
         if (member === undefined || member.external !== true) throw new Error(`Agent Member '${memberId}' is not an external member`)
         return { lastBeatAt: new Date().toISOString(), ...(request.note === undefined ? {} : { note: request.note }), ...(request.entries === undefined ? {} : { entries: request.entries }) }
       },
+      dmsForMember: (memberId, request) => ledger.dmsForMember(memberId, request),
       dmForMember: async (memberId, request) => (await ledger.sendDm({ ...request, actor: actorOf(memberId) })).value,
     }
   }
@@ -346,5 +374,41 @@ describe('client script end-to-end', () => {
     const quiet = await run(process.execPath, [scriptPath, 'watch', '--interval', '1', '--timeout', '2', '--state', stateFile])
     expect(JSON.parse(quiet.stdout)).toMatchObject({ kind: 'quiet' })
     expect(ledger.inbox(memberActor(joined.memberId, 'visitor'), { workspaceId: alpha }).totalUnreadCount).toBe(0)
+  })
+
+  it('wakes on a DM addressed to it even with an empty inbox', async () => {
+    const { ledger } = await openLedger()
+    const channelRef = await seedTeam(ledger)
+    const api = await new AgentTeamExternalApi(ledgerCore(ledger), { port: 0, token: 'test-secret' }).start()
+    cleanups.push(() => api.stop())
+    const port = api.boundPort
+    if (port === undefined) throw new Error('gateway did not bind')
+    const stateFile = join(await mkdtemp(join(tmpdir(), 'agent-team-client-')), 'state.json')
+    cleanups.push(() => rm(stateFile, { force: true }))
+
+    const joinOut = await run(process.execPath, [scriptPath, 'join', '--url', `http://127.0.0.1:${port}`, '--workspace', alpha,
+      '--token', 'test-secret', '--handle', 'visitor', '--state', stateFile])
+    const joined = JSON.parse(joinOut.stdout) as { memberId: string }
+
+    // The bug this pins: a DM never enters the Inbox projection, and the
+    // external member has no live session for the relay — the watch must
+    // surface it anyway, or the message is invisible to a poller forever.
+    await ledger.sendDm({ requestId: requestId('dm-wake'), workspaceId: alpha, recipientMemberId: joined.memberId as never, body: 'direct question for you', actor: scout })
+    const wake = await run(process.execPath, [scriptPath, 'watch', '--interval', '1', '--timeout', '20', '--state', stateFile])
+    const wakeBody = JSON.parse(wake.stdout) as { kind: string; reads: unknown[]; dms: { from: string; body: string }[] }
+    expect(wakeBody.kind).toBe('messages')
+    expect(wakeBody.reads).toEqual([])
+    expect(wakeBody.dms).toHaveLength(1)
+    expect(wakeBody.dms[0]).toMatchObject({ from: scoutId, body: 'direct question for you' })
+
+    // The cursor advanced with the wake: the next watch is quiet again.
+    const state = JSON.parse(await readFile(stateFile, 'utf8')) as { lastDmSequence?: number }
+    expect(state.lastDmSequence).toBeGreaterThan(0)
+    const quiet = await run(process.execPath, [scriptPath, 'watch', '--interval', '1', '--timeout', '2', '--state', stateFile])
+    expect(JSON.parse(quiet.stdout)).toMatchObject({ kind: 'quiet' })
+
+    // The standalone dms command still lists history on demand.
+    const listed = await run(process.execPath, [scriptPath, 'dms', '--state', stateFile])
+    expect(JSON.parse(listed.stdout).dms).toHaveLength(1)
   })
 })

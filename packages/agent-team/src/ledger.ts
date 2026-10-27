@@ -2322,6 +2322,44 @@ export class AgentTeamLedger {
   }
 
   /**
+   * One Member's DM history, ascending, bounded: the poll surface an external
+   * Member consumes its direct messages through. DMs never enter the Inbox
+   * projection (they are not Thread facts), and an external Member has no live
+   * session for the point-to-point relay, so this query — with the caller's
+   * own high-water sequence cursor — is the only way it ever sees one.
+   * `afterSequence` is exclusive; the result reports where to resume.
+   */
+  dmsForMember(memberId: AgentTeamMemberId, request: { readonly workspaceId?: WorkspaceId; readonly afterSequence?: number; readonly limit?: number }): {
+    readonly dms: readonly { readonly operationId: AgentTeamOperationId; readonly sequence: number; readonly occurredAt: string; readonly direction: 'in' | 'out'; readonly peerMemberId: AgentTeamMemberId; readonly body: string }[]
+    readonly hasMore: boolean
+  } {
+    const afterSequence = request.afterSequence ?? 0
+    const limit = request.limit ?? 20
+    const dms: { operationId: AgentTeamOperationId; sequence: number; occurredAt: string; direction: 'in' | 'out'; peerMemberId: AgentTeamMemberId; body: string }[] = []
+    let hasMore = false
+    for (const operation of this.state.ordered) {
+      if (operation.kind !== 'team/dm-sent' || operation.sequence <= afterSequence) continue
+      const incoming = operation.data.recipientMemberId === memberId
+      const outgoing = operation.data.senderMemberId === memberId
+      if (incoming === false && outgoing === false) continue
+      if (request.workspaceId !== undefined && operation.data.workspaceId !== request.workspaceId) continue
+      if (dms.length >= limit) {
+        hasMore = true
+        break
+      }
+      dms.push(Object.freeze({
+        operationId: operation.operationId,
+        sequence: operation.sequence,
+        occurredAt: operation.occurredAt,
+        direction: incoming ? 'in' : 'out',
+        peerMemberId: incoming ? operation.data.senderMemberId : operation.data.recipientMemberId,
+        body: operation.data.body,
+      }))
+    }
+    return Object.freeze({ dms: Object.freeze(dms), hasMore })
+  }
+
+  /**
    * The ledger boundary to scan a Member's post-completion report from when
    * the completion itself is a Session timestamp rather than an operation:
    * the sequence of the last operation committed at or before the given

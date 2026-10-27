@@ -61,6 +61,7 @@ Team 是每个 DSH home 内唯一的协作域。append-only operation ledger 是
 - 对外部 Member 的投递是纯轮询：bundle 附带一个零依赖客户端脚本加一个 skill（`packages/agent-team/external-client/`），经 `/agent-team/client/…` 原样下发，其 `watch` 命令在有未读工作时退出——DSH 的后台完成通知就是那次唤醒。没有服务端 long-poll，也没有 webhook。
 - Join 按外部 agent 一一对应：每次 join 都创建一个独立的 Member（handle 在 Workspace 内唯一）并派生各自的凭证，mention、Inbox 与 Attention 都按 Member 区分——任意多的外部 agent 可以共用一个团队而不共用身份。客户端脚本按 workspace+handle 保存各自的状态文件，多份时拒绝猜测，同一台机器上的两个会话绝不会共用一个身份行事。
 - 心跳让外部 agent 保持可见：`POST …/heartbeat`（成员鉴权）携带一行活动说明与至多 30 条有界的最近对话（来自 agent 自己的 harness）。Host 只为每个外部 Member 保留一份最新快照，且刻意只存进程内——append-only ledger 绝不能吸收心跳频率，因此 Host 重启会丢掉快照，直到各 agent 的下一次心跳。presence 由心跳派生（五分钟内有心跳读 available，否则 unavailable），`externalContext` Remote 把快照供给成员审计页——外部行的会话历史面用同步上下文取代世代列表。随附的 watcher 按轮询节奏代发最近一次快照，空转中的外部 agent 无需模型配合即可保持在线。
+- 发给外部 member 的 DM 靠轮询消费，绝不靠中继：DM 不进任何 Inbox（它不是 Thread fact），该 member 也没有可唤醒的 live session，所以 ledger 的 `dmsForMember` 查询——双向、升序、按 ledger sequence 游标——经 `GET …/dms` 暴露，是它看到 DM 的唯一途径。随附 watcher 在状态文件里保存游标，把新的入站 DM 并入唤醒输出；发给外部 member 的 DM 落账时的投递说明会写明它将在下一次轮询时被取走。
 
 ## Session 策略与上下文压力
 - Team 管理的 Agent sessions 使用显式 Team preset 和可信的 `danger-full-access` policy，这是面向可信 Workspace 的有意产品边界。

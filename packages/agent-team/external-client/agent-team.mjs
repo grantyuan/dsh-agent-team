@@ -49,6 +49,7 @@ Commands:
   send reply --thread REF | --task REF --body TEXT --base-revision N [--client-request-id ID]
   send dm    --member REF --body TEXT [--client-request-id ID]
   heartbeat [--note TEXT] [--entries JSON | --entries-file PATH] [--handle H] [--state FILE]
+  dms     [--after N] [--limit N] [--handle H] [--state FILE]
   watch   [--interval SEC] [--timeout SEC] [--max-reads N] [--heartbeat-seconds SEC] [--handle H] [--state FILE]
 
 State defaults to ~/.agent-team/<workspace>.<handle>.json — one file per agent,
@@ -57,7 +58,7 @@ identity. Pass --handle with every command, or --state to name the file
 directly. JSON in, JSON out.`
 }
 
-const COMMANDS = ['join', 'view', 'inbox', 'read', 'history', 'send', 'watch', 'heartbeat']
+const COMMANDS = ['join', 'view', 'inbox', 'read', 'history', 'send', 'watch', 'heartbeat', 'dms']
 const [command, subcommand] = process.argv.slice(2)
 if (command === undefined || COMMANDS.includes(command) === false) {
   process.stderr.write(`${usage()}\n`)
@@ -91,6 +92,7 @@ const { values } = parseArgs({
     entries: { type: 'string' },
     'entries-file': { type: 'string' },
     'heartbeat-seconds': { type: 'string', default: '30' },
+    after: { type: 'string' },
   },
   strict: false,
 })
@@ -305,6 +307,11 @@ async function main() {
     // fresh with the same snapshot between explicit heartbeats.
     await saveState(state.path, { ...state, lastHeartbeat: payload })
     process.stdout.write(`${JSON.stringify(result, null, 2)}\n`)
+  } else if (command === 'dms') {
+    const state = await loadState(values)
+    const after = values.after === undefined ? '' : `&after=${positiveInt(values.after, 'after')}`
+    const limit = values.limit === undefined ? '' : `&limit=${positiveInt(values.limit, 'limit')}`
+    process.stdout.write(`${JSON.stringify(await api(state, 'GET', `/agent-team/${encodeURIComponent(state.workspaceId)}/dms?${after}${limit}`), null, 2)}\n`)
   } else if (command === 'watch') {
     const state = await loadState(values)
     const intervalMs = positiveInt(values.interval, 'interval') * 1000
@@ -313,6 +320,11 @@ async function main() {
     const heartbeatSeconds = positiveInt(values['heartbeat-seconds'], 'heartbeat-seconds')
     const heartbeatEveryMs = heartbeatSeconds * 1000
     const inboxPath = `/agent-team/${encodeURIComponent(state.workspaceId)}/inbox`
+    const dmsPath = `/agent-team/${encodeURIComponent(state.workspaceId)}/dms`
+    // The DM cursor is the one read-state a poller owns: DMs never enter the
+    // Inbox and are never acknowledged by reads, so the watcher tracks the
+    // ledger sequence it last surfaced and includes everything newer.
+    let dmCursor = state.lastDmSequence ?? 0
     // The first piggyback beat fires right away: mounting the watcher IS a
     // live signal, even before any quiet cadence elapses.
     let nextBeatAt = 0
@@ -322,7 +334,9 @@ async function main() {
         nextBeatAt = Date.now() + heartbeatEveryMs
       }
       const inbox = await api(state, 'GET', inboxPath)
-      if (inbox.totalUnreadCount > 0) {
+      const poll = await api(state, 'GET', `${dmsPath}?after=${dmCursor}`)
+      const incoming = poll.dms.filter(dm => dm.direction === 'in')
+      if (inbox.totalUnreadCount > 0 || incoming.length > 0) {
         const reads = []
         for (const item of inbox.items.slice(0, maxReads)) {
           const read = await api(state, 'POST', `/agent-team/${encodeURIComponent(state.workspaceId)}/threads/read`, { threadRef: item.thread.threadRef })
@@ -346,11 +360,16 @@ async function main() {
             })),
           })
         }
+        // Advance past everything this wake surfaced — incoming DMs included.
+        for (const dm of poll.dms) dmCursor = Math.max(dmCursor, dm.sequence)
+        await saveState(state.path, { ...state, lastDmSequence: dmCursor })
         process.stdout.write(`${JSON.stringify({
           kind: 'messages',
           totalUnreadCount: inbox.totalUnreadCount,
           note: inbox.items.length > maxReads ? 'more unread Threads beyond this wake; run watch again' : undefined,
           reads,
+          dms: incoming.map(dm => ({ from: dm.peerMemberId, body: dm.body, occurredAt: dm.occurredAt })),
+          dmNote: incoming.length > 0 ? 'DMs have no thread: answer with `send dm` back to the sender, or start a Thread if the work needs the team' : undefined,
         }, null, 2)}\n`)
         process.exit(0)
       }

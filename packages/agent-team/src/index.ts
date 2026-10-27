@@ -1395,6 +1395,7 @@ export default class AgentTeam extends TypertRemoteService {
       sendMessageForMember: (memberId, request) => host.sendMessageForMember(memberId, request),
       replyForMember: (memberId, request) => host.replyForMember(memberId, request),
       heartbeatForMember: (memberId, request) => host.heartbeatForMember(memberId, request),
+      dmsForMember: (memberId, request) => host.dmsForMember(memberId, request),
       dmForMember: async (memberId, request) => {
         try {
           return await host.dmForMember(memberId, request)
@@ -4229,6 +4230,19 @@ export default class AgentTeam extends TypertRemoteService {
     return this.externalContextOf(request.memberId)
   }
 
+  /**
+   * One external Member's DM poll: DMs reach an internal Member through its
+   * live-session relay and never enter the Inbox projection, so an external
+   * Member — no session, Thread-only inbox — consumes them here, through the
+   * caller's own high-water sequence cursor.
+   */
+  dmsForMember(memberId: AgentTeamMemberId, request: { readonly workspaceId: AgentTeamViewRequest['workspaceId']; readonly afterSequence?: number; readonly limit?: number }) {
+    this.requireAccepting()
+    const member = this.requireLedger().getMember(memberId)
+    if (member === undefined || member.state !== 'enabled') throw new Error('Agent is not an active Team Member')
+    return this.requireLedger().dmsForMember(memberId, request)
+  }
+
   /** Human existing-Thread reply; unread and revision conflicts are business outcomes. */
   @Remote('reply')
   async reply(request: AgentTeamReplyRequest): Promise<AgentTeamReplyResult> {
@@ -4722,7 +4736,13 @@ export default class AgentTeam extends TypertRemoteService {
     const recipient = result.value.recipient
     const handle = this.handles.get(recipient.memberId)
     if (handle === undefined) {
-      throw new AgentTeamDmDeliveryError(recipient.memberId, recipient.handle, `DM recorded but not delivered: Agent Member '${recipient.handle}' has no live session; it will find the message in its DM history after recovery`)
+      // An external Member has no session by design and consumes DMs by
+      // polling — the recorded-not-delivered note says so instead of hinting
+      // at a recovery that will never run.
+      const reason = recipient.external === true
+        ? `DM recorded: Agent Member '${recipient.handle}' is an external member with no live session; it picks the message up on its next poll`
+        : `DM recorded but not delivered: Agent Member '${recipient.handle}' has no live session; it will find the message in its DM history after recovery`
+      throw new AgentTeamDmDeliveryError(recipient.memberId, recipient.handle, reason)
     }
     try {
       const message = createUserMessage({

@@ -78,6 +78,20 @@ keep a heartbeat flowing:
   not a Team message: it never lands in anyone's inbox and commits nothing to
   the ledger.
 
+## Direct messages reach you through the wake
+
+DMs never enter the Inbox (they are not Threads) and you have no live session
+for the instant relay — so your `watch` also polls for DMs and includes any
+new **incoming** ones in its wake output under `dms` (with `from` and `body`).
+A wake can carry `reads` and `dms` together, or only `dms` when a teammate DMs
+you without touching any Thread. React accordingly:
+
+- Answer a DM with `send dm` back to `from` — quick clarifications only; move
+  real work to a Thread.
+- `node agent-team.mjs dms` lists your DM history on demand (both directions,
+  oldest first); the watcher's cursor lives in your state file, so a wake
+  never repeats a DM it already showed you.
+
 ## The collaboration loop
 
 Team messages do not push to you — your notification is the `watch` command
@@ -139,7 +153,9 @@ as soon as something arrives.
 | `send start --channel <ref> --body "…"` | New Thread; `--as-task` also opens a Task |
 | `send reply --thread <ref> --base-revision N --body "…"` | Reply with the write token |
 | `send dm --member <ref> --body "…"` | Private quick sync; delivered into a live session |
-| `watch` | Block until unread work, then read (bounded) and exit — this is your wake |
+| `heartbeat` | Sync status + recent conversation turns so the Human sees them in the team UI |
+| `dms` | List your DM history (both directions); the wake's `dms` array is the push form |
+| `watch` | Block until unread work or a DM, then read (bounded) and exit — this is your wake |
 
 Attachments are not supported over the gateway yet; share absolute file paths
 in message bodies instead. All durable facts you see are the team's ledger —
