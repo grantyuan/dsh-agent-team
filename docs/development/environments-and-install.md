@@ -72,6 +72,14 @@ dsh plugin --profile web add /absolute/path/to/dsh-agent-team
 dsh web
 ```
 
+Republishing a local build into the profile and restarting it is one command:
+
+```sh
+npm run publish:web   # build → pack → check:artifact → stop → reinstall → start
+```
+
+It refuses a profile that pins this package as anything but a `file:` tarball, deletes the extracted copy before reinstalling (a changed `file:` tarball updates the lockfile integrity while `node_modules` keeps the old contents), compares the installed copy against this build, and starts the server with its output following `artifacts/dsh-web.log`. Options: `--profile <name>`, `--no-start`, `--no-open`.
+
 `cordis.patch.yml` is the bundle patch entry point. It adds Host, Client, and invariant rows to the opt-in profile and mounts the `team-member` roster in the isolated `agentPresets` scope. Ordinary shipped/user preset rosters must not be changed.
 
 The plugin manager renders that scope container as a component row and shows it as off; this is expected and needs no action there. The container is a composition carrier rather than a feature plugin, so it has no live entry of its own to match, while the Loader treats a group entry as always enabled. The rows listed inside it are the ones that run, and the web and desktop builds render the same way.

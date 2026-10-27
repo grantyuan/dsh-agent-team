@@ -34,6 +34,7 @@
     "test": "npm run generate:typert && npm run check:facades && npm run check:docs && npm run check:core-skills && npm run check:boundaries && npm run check:versions && vitest run",
     "test:browser": "npm run build && node scripts/run-browser-test.mjs",
     "preview": "node scripts/check-preview-credentials.mjs && npm run build && node scripts/run-preview.mjs",
+    "publish:web": "node scripts/publish-web-profile.mjs",
     "preview:ui": "npm run build && node scripts/run-ui-preview.mjs",
     "lint": "corepack pnpm dlx oxlint@1.76.0 --disable-typescript-plugin packages scripts",
     "duplication": "jscpd --config .jscpd.json packages scripts",

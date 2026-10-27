@@ -58,6 +58,14 @@ dsh plugin --profile web add /absolute/path/to/dsh-agent-team
 dsh web
 ```
 
+把本地构建重新发布进 profile 并重启，只需一条命令：
+
+```sh
+npm run publish:web   # build → pack → check:artifact → 关闭 → 重装 → 启动
+```
+
+它拒绝依赖不是 `file:` tarball 的 profile；重装前先删除已解压副本（变更后的 `file:` tarball 只更新 lockfile integrity，`node_modules` 里的内容可能仍是旧的）；随后逐文件比对已装副本与本次构建，并启动服务、把输出写入 `artifacts/dsh-web.log`。可用选项：`--profile <name>`、`--no-start`、`--no-open`。
+
 `cordis.patch.yml` 是 bundle patch 的入口。它将 Host、Client 和 invariant rows 加入 opt-in profile，并在隔离的 `agentPresets` scope 中挂载 `team-member` roster。普通 Session 的 shipped/user preset roster 不应被 Team bundle 改写。
 
 插件页会把这个 scope 容器渲染成一个组件行并显示「已关闭」；这是预期现象，无需在这里做任何操作。容器是组合载体而不是功能插件，它自身没有可匹配的 live entry，而 Loader 对 group 条目一律按启用处理；真正在运行的是它内部列出的那几行。web 与桌面构建的渲染一致。
