@@ -4236,7 +4236,10 @@ export default class AgentTeam extends TypertRemoteService {
    * Member — no session, Thread-only inbox — consumes them here, through the
    * caller's own high-water sequence cursor.
    */
-  dmsForMember(memberId: AgentTeamMemberId, request: { readonly workspaceId: AgentTeamViewRequest['workspaceId']; readonly afterSequence?: number; readonly limit?: number }) {
+  dmsForMember(memberId: AgentTeamMemberId, request: { readonly workspaceId: AgentTeamViewRequest['workspaceId']; readonly afterSequence?: number; readonly limit?: number }): {
+    readonly dms: readonly { readonly operationId: AgentTeamOperationId; readonly sequence: number; readonly occurredAt: string; readonly direction: 'in' | 'out'; readonly peerMemberId: AgentTeamMemberId; readonly body: string }[]
+    readonly hasMore: boolean
+  } {
     this.requireAccepting()
     const member = this.requireLedger().getMember(memberId)
     if (member === undefined || member.state !== 'enabled') throw new Error('Agent is not an active Team Member')
