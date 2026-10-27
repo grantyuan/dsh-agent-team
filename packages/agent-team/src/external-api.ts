@@ -26,6 +26,9 @@ import type {
   AgentTeamAddMemberResult,
   AgentTeamDmRequest,
   AgentTeamDmResult,
+  AgentTeamExternalContextEntry,
+  AgentTeamExternalContextResult,
+  AgentTeamHeartbeatRequest,
   AgentTeamInbox,
   AgentTeamMemberId,
   AgentTeamReplyRequest,
@@ -62,6 +65,12 @@ export interface AgentTeamExternalCore {
   threadHistoryForMember(memberId: AgentTeamMemberId, request: AgentTeamThreadHistoryRequest): AgentTeamThreadHistory
   sendMessageForMember(memberId: AgentTeamMemberId, request: AgentTeamSendMessageRequest): Promise<AgentTeamSendMessageResult>
   replyForMember(memberId: AgentTeamMemberId, request: AgentTeamReplyRequest): Promise<AgentTeamReplyResult>
+  /**
+   * Record one heartbeat (activity note + bounded conversation snapshot).
+   * Latest-wins per Member; the Host keeps it process-local and derives the
+   * Member's presence freshness from it.
+   */
+  heartbeatForMember(memberId: AgentTeamMemberId, request: AgentTeamHeartbeatRequest): Promise<AgentTeamExternalContextResult>
   /**
    * DM commit for an external sender. A recipient with no live session yields
    * the recorded-not-delivered outcome (the tool surface's shape), never a
@@ -184,6 +193,9 @@ export class AgentTeamExternalApi {
       if (request.method === 'POST' && segments[2] === 'messages' && segments.length === 3) {
         return await this.sendMessage(memberId, workspaceId, await this.readJsonBody(request), response)
       }
+      if (request.method === 'POST' && segments[2] === 'heartbeat' && segments.length === 3) {
+        return this.respond(response, 200, await this.core.heartbeatForMember(memberId, this.heartbeatOf(await this.readJsonBody(request))))
+      }
       this.respond(response, 404, { error: { kind: 'not-found', message: 'unknown route' } })
     } catch (error) {
       if (error instanceof RequestError) return this.respond(response, error.status, { error: { kind: error.kind, message: error.message } })
@@ -297,6 +309,27 @@ export class AgentTeamExternalApi {
   private messageOutcome(result: AgentTeamSendMessageResult | AgentTeamReplyResult, response: ServerResponse): void {
     if (result.kind === 'committed') return this.respond(response, 200, result)
     this.respond(response, 409, result)
+  }
+
+  /** Heartbeat payload bounds live here so a bad beat is a 400, not a host error. */
+  private heartbeatOf(body: Record<string, unknown>): AgentTeamHeartbeatRequest {
+    const note = body.note
+    if (note !== undefined && (typeof note !== 'string' || note.length > 1000)) {
+      throw new RequestError(400, 'bad-request', 'note must be a string of at most 1000 characters')
+    }
+    if (body.entries === undefined) return note === undefined ? {} : { note }
+    if (Array.isArray(body.entries) === false || body.entries.length > 30) {
+      throw new RequestError(400, 'bad-request', 'entries must be an array of at most 30 turns')
+    }
+    const entries: AgentTeamExternalContextEntry[] = []
+    for (const raw of body.entries) {
+      if (typeof raw !== 'object' || raw === null) throw new RequestError(400, 'bad-request', 'each entry must be an object with role and text')
+      const { role, text } = raw as Record<string, unknown>
+      if (typeof role !== 'string' || role.trim() === '' || role.length > 16) throw new RequestError(400, 'bad-request', 'each entry needs a role of 1-16 characters')
+      if (typeof text !== 'string' || text.length > 4000) throw new RequestError(400, 'bad-request', 'each entry text must be a string of at most 4000 characters')
+      entries.push({ role, text })
+    }
+    return { ...(note === undefined ? {} : { note }), entries }
   }
 
   private threadRequest(memberId: AgentTeamMemberId, workspaceId: AgentTeamViewRequest['workspaceId'], body: Record<string, unknown>): AgentTeamThreadReadRequest {

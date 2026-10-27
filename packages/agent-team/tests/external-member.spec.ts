@@ -203,7 +203,7 @@ describe('client script end-to-end', () => {
     return {
       addExternalMember: async request => {
         const memberId = `member:${randomUUID()}` as AgentTeamMemberId
-        const member = agentMember(memberId, request.handle)
+        const member = { ...agentMember(memberId, request.handle), external: true }
         const result = await ledger.addMember({
           requestId: request.requestId, workspaceId: request.workspaceId, handle: request.handle,
           description: request.description ?? '', presetId: member.presetId,
@@ -218,6 +218,11 @@ describe('client script end-to-end', () => {
       threadHistoryForMember: (memberId, request) => ledger.threadHistory(actorOf(memberId), request),
       sendMessageForMember: async (memberId, request) => (await ledger.sendMessage({ ...request, actor: actorOf(memberId) })).value,
       replyForMember: async (memberId, request) => (await ledger.reply({ ...request, actor: actorOf(memberId) })).value,
+      heartbeatForMember: async (memberId, request) => {
+        const member = ledger.getMember(memberId)
+        if (member === undefined || member.external !== true) throw new Error(`Agent Member '${memberId}' is not an external member`)
+        return { lastBeatAt: new Date().toISOString(), ...(request.note === undefined ? {} : { note: request.note }), ...(request.entries === undefined ? {} : { entries: request.entries }) }
+      },
       dmForMember: async (memberId, request) => (await ledger.sendDm({ ...request, actor: actorOf(memberId) })).value,
     }
   }
@@ -305,5 +310,41 @@ describe('client script end-to-end', () => {
       '--body', 'ack from visitor-a'], { env })
     expect(JSON.parse(reply.stdout)).toMatchObject({ kind: 'committed' })
     expect(ledger.inbox(scout, { workspaceId: alpha }).totalUnreadCount).toBeGreaterThan(0)
+  })
+
+  it('syncs a heartbeat snapshot and caches it for the watch piggyback', async () => {
+    const { ledger } = await openLedger()
+    const channelRef = await seedTeam(ledger)
+    const api = await new AgentTeamExternalApi(ledgerCore(ledger), { port: 0, token: 'test-secret' }).start()
+    cleanups.push(() => api.stop())
+    const port = api.boundPort
+    if (port === undefined) throw new Error('gateway did not bind')
+    const stateFile = join(await mkdtemp(join(tmpdir(), 'agent-team-client-')), 'state.json')
+    cleanups.push(() => rm(stateFile, { force: true }))
+
+    const joinOut = await run(process.execPath, [scriptPath, 'join', '--url', `http://127.0.0.1:${port}`, '--workspace', alpha,
+      '--token', 'test-secret', '--handle', 'visitor', '--state', stateFile])
+    const joined = JSON.parse(joinOut.stdout) as { memberId: string }
+
+    // A heartbeat without any payload refuses before any round trip.
+    const empty = await run(process.execPath, [scriptPath, 'heartbeat', '--state', stateFile]).catch(error => error)
+    expect(String(empty.stderr)).toContain('heartbeat requires --note')
+
+    const beat = await run(process.execPath, [scriptPath, 'heartbeat', '--state', stateFile,
+      '--note', 'fixing the login bug',
+      '--entries', JSON.stringify([{ role: 'user', text: 'fix login' }, { role: 'assistant', text: 'on it' }])])
+    const beatBody = JSON.parse(beat.stdout) as { lastBeatAt: string; note?: string }
+    expect(beatBody.lastBeatAt).toBeDefined()
+    expect(beatBody.note).toBe('fixing the login bug')
+    // The snapshot rides the state file, so a later watch keeps presence fresh
+    // with the same payload without the model doing anything.
+    const state = JSON.parse(await readFile(stateFile, 'utf8')) as { lastHeartbeat?: { note?: string } }
+    expect(state.lastHeartbeat?.note).toBe('fixing the login bug')
+
+    // A quiet watch with the cached snapshot still exits quiet — the beats are
+    // invisible to the inbox (they are not Team messages).
+    const quiet = await run(process.execPath, [scriptPath, 'watch', '--interval', '1', '--timeout', '2', '--state', stateFile])
+    expect(JSON.parse(quiet.stdout)).toMatchObject({ kind: 'quiet' })
+    expect(ledger.inbox(memberActor(joined.memberId, 'visitor'), { workspaceId: alpha }).totalUnreadCount).toBe(0)
   })
 })

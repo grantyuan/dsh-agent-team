@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type {
+  AgentTeamExternalContextResult,
   AgentTeamMemberId,
   AgentTeamMemberSessionSummary,
   AgentTeamMemberSessionTranscriptEntry,
@@ -20,9 +21,12 @@ interface TranscriptPage {
 
 interface TeamSessionHistoryPageProps {
   readonly memberId: AgentTeamMemberId
+  /** The selected Workspace, when the seat has one; the external-context read scopes to it. */
+  readonly workspaceId?: string
   readonly loadMembers: TeamConversationProps['loadMembers']
   readonly loadMemberSessions: TeamConversationProps['loadMemberSessions']
   readonly loadMemberSessionTranscript: TeamConversationProps['loadMemberSessionTranscript']
+  readonly loadExternalContext: TeamConversationProps['loadExternalContext']
   readonly exitSessionHistory: TeamConversationProps['exitSessionHistory']
   readonly t: TeamConversationProps['t']
 }
@@ -38,8 +42,10 @@ interface TeamSessionHistoryPageProps {
  * resumes, or writes a Member Session, which is why archived generations stay
  * browsable even though Harness refuses to open them as live conversations.
  */
-export function TeamSessionHistoryPage({ memberId, loadMembers, loadMemberSessions, loadMemberSessionTranscript, exitSessionHistory, t }: TeamSessionHistoryPageProps) {
+export function TeamSessionHistoryPage({ memberId, workspaceId, loadMembers, loadMemberSessions, loadMemberSessionTranscript, loadExternalContext, exitSessionHistory, t }: TeamSessionHistoryPageProps) {
   const [handleName, setHandleName] = useState<string>()
+  // Undefined until the roster answers; true only for an external Member.
+  const [rosterExternal, setRosterExternal] = useState<boolean>()
   const [generations, setGenerations] = useState<readonly AgentTeamMemberSessionSummary[]>()
   const [sessionsError, setSessionsError] = useState<string>()
   const [selected, setSelected] = useState<string>()
@@ -57,15 +63,29 @@ export function TeamSessionHistoryPage({ memberId, loadMembers, loadMemberSessio
     loadMembers({})
       .then(result => {
         if (!alive) return
-        if (!result.ok) return
+        if (!result.ok) {
+          // An unreadable roster must not freeze the ordinary page: fall back
+          // to the generation read, which answers for itself.
+          setRosterExternal(false)
+          return
+        }
         const found = result.value.find(status => status.member.memberId === memberId)
-        if (found !== undefined) setHandleName(found.member.handle)
+        if (found !== undefined) {
+          setHandleName(found.member.handle)
+          setRosterExternal(found.member.external === true)
+        } else setRosterExternal(false)
       })
-      .catch(() => {})
+      .catch(() => {
+        if (alive) setRosterExternal(false)
+      })
     return () => { alive = false }
   }, [loadMembers, memberId])
 
   useEffect(() => {
+    // The roster answer decides the page shape: an external Member owns no
+    // stored Session (skip the read), any other answer — including an
+    // unreadable roster, which falls back to false — loads the generations.
+    if (rosterExternal !== false) return
     let alive = true
     loadMemberSessions({ memberId })
       .then(result => {
@@ -89,7 +109,7 @@ export function TeamSessionHistoryPage({ memberId, loadMembers, loadMemberSessio
         if (alive) setSessionsError(cause instanceof Error ? cause.message : String(cause))
       })
     return () => { alive = false }
-  }, [loadMemberSessions, memberId])
+  }, [loadMemberSessions, memberId, rosterExternal])
 
   const loadPage = useCallback(async (sessionId: string, beforeSeq?: number): Promise<void> => {
     setLoadingTranscript(true)
@@ -135,6 +155,31 @@ export function TeamSessionHistoryPage({ memberId, loadMembers, loadMemberSessio
     code: { copyLabel: t('copyCode'), copiedLabel: t('copiedCode') },
     footnotes: t('markdownFootnotes'),
   }), [t])
+
+  // An external Member owns no stored Session — its audit page renders the
+  // heartbeat-synced context instead of the generation list.
+  if (rosterExternal === true) {
+    return (
+      <main className={conversationCss.surface} data-team-session-history>
+        <div className={conversationCss.surfaceHeader}>
+          <div className={conversationCss.backRow}>
+            <Button size="sm" icon={<IconChevronLeftOutlineRegular />} onClick={exitSessionHistory}>{t('sessionHistoryBack')}</Button>
+          </div>
+          <header className={conversationCss.headerRow}>
+            <div className={conversationCss.headerCopy}>
+              <h1>{t('sessionHistoryTitle', { name: handleName ?? memberId })}</h1>
+            </div>
+          </header>
+        </div>
+        <ExternalContextPanel
+          memberId={memberId}
+          {...(workspaceId === undefined ? {} : { workspaceId })}
+          loadExternalContext={loadExternalContext}
+          t={t}
+        />
+      </main>
+    )
+  }
 
   return (
     <main className={conversationCss.surface} data-team-session-history>
@@ -249,4 +294,79 @@ const ROLE_LABEL_KEYS: Record<AgentTeamMemberSessionTranscriptEntry['role'], Tea
   'tool-result': 'historyRoleToolResult',
   error: 'historyRoleError',
   warning: 'historyRoleWarning',
+}
+
+/**
+ * The external Member's audit face: the agent's own harness conversation,
+ * synced by its heartbeat (activity note + bounded recent turns). The Host
+ * keeps one latest-wins snapshot, so the panel polls on a slow interval while
+ * mounted — a fresh beat replaces the whole view, and after a Host restart
+ * the panel stays on "no heartbeat" until the agent beats again.
+ */
+function ExternalContextPanel({ memberId, workspaceId, loadExternalContext, t }: {
+  readonly memberId: AgentTeamMemberId
+  readonly workspaceId?: string
+  readonly loadExternalContext: TeamConversationProps['loadExternalContext']
+  readonly t: TeamConversationProps['t']
+}) {
+  const [context, setContext] = useState<AgentTeamExternalContextResult>()
+  const [error, setError] = useState<string>()
+  const loadToken = useRef(0)
+
+  const load = useCallback(() => {
+    if (workspaceId === undefined) return
+    const token = loadToken.current += 1
+    loadExternalContext({ workspaceId, memberId } as never)
+      .then(result => {
+        if (token !== loadToken.current) return
+        if (!result.ok) {
+          setError(result.error.message)
+          return
+        }
+        setError(undefined)
+        setContext(result.value)
+      })
+      .catch(cause => {
+        if (token === loadToken.current) setError(cause instanceof Error ? cause.message : String(cause))
+      })
+  }, [loadExternalContext, memberId, workspaceId])
+
+  useEffect(() => {
+    load()
+    const timer = setInterval(load, 10_000)
+    return () => { clearInterval(timer); loadToken.current += 1 }
+  }, [load])
+
+  return (
+    <div className={css.externalShell} data-external-context>
+      <div className={css.externalHeader}>
+        <div>
+          <h2 className={css.externalTitle}>{t('externalContextTitle')}</h2>
+          <p className={css.externalIntro}>{t('externalContextIntro')}</p>
+        </div>
+        <Button size="sm" variant="outline" onClick={load}>{t('externalContextRefresh')}</Button>
+      </div>
+      {error !== undefined && <p className={conversationCss.errorState} role="alert">{t('externalContextLoadFailed', { message: error })}</p>}
+      {context === undefined && error === undefined && <p className={css.emptyNote}>{t('sessionHistoryLoading')}</p>}
+      {context !== undefined && (context.lastBeatAt === undefined
+        ? <p className={css.emptyNote}>{t('externalContextNever')}</p>
+        : <>
+            <p className={css.externalBeat}>{t('externalContextLastBeat', { time: new Date(context.lastBeatAt).toLocaleString() })}</p>
+            {context.note !== undefined && (
+              <div className={css.externalNote}>
+                <span className={css.externalNoteLabel}>{t('externalContextNoteLabel')}</span>
+                <span>{context.note}</span>
+              </div>
+            )}
+            <div className={css.externalTurns} role="log" aria-live="polite">
+              {context.entries?.map((entry, index) => (
+                <article key={index} className={css.externalTurn} data-role={entry.role}>
+                  <span className={css.externalTurnRole}>{entry.role}</span>
+                  <p className={css.externalTurnText}>{entry.text}</p>
+                </article>
+              ))}
+            </div>
+          </>)}
+    </div>
+  )
 }

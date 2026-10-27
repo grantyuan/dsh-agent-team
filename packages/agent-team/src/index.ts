@@ -65,6 +65,10 @@ import type {
   AgentTeamAddMemberRequest,
   AgentTeamAddMemberResult,
   AgentTeamGatewayConfig,
+  AgentTeamExternalContextEntry,
+  AgentTeamExternalContextRequest,
+  AgentTeamExternalContextResult,
+  AgentTeamHeartbeatRequest,
   AgentTeamAgentMember,
   AgentTeamAgentMemberStatus,
   AgentTeamArchiveChannelRequest,
@@ -294,6 +298,14 @@ const DOCTOR_DIAGNOSTIC_SUMMARY = 'Doctor dispatch: analyze a failed Member'
  * session, so the preset never mounts — it is durable identity only.
  */
 const EXTERNAL_MEMBER_PRESET_ID = DOCTOR_PRESET_ID
+
+/**
+ * How long one heartbeat keeps an external Member's presence fresh: the poll
+ * watcher beats every ~30s while its agent idles, and the skill has the agent
+ * beat at its own turn boundaries while working. Past this window without a
+ * beat, the external Member reads unavailable — an honest "no signal".
+ */
+const EXTERNAL_HEARTBEAT_FRESH_MS = 5 * 60_000
 
 /**
  * A preset mount/validation failure during activation, carrying its own class
@@ -609,6 +621,13 @@ export default class AgentTeam extends TypertRemoteService {
   private externalApi: AgentTeamExternalApi | undefined = undefined
   private externalApiPort: number | undefined = undefined
   private externalApiToken: string | undefined = undefined
+  /**
+   * Latest heartbeat per external Member, process-local by design: the
+   * append-only ledger must not absorb a heartbeat cadence, so a Host restart
+   * drops the snapshots until each external agent's next beat. Presence and
+   * the Member audit page read this; nothing else does.
+   */
+  private readonly externalHeartbeats = new Map<AgentTeamMemberId, { at: number; note?: string; entries?: readonly AgentTeamExternalContextEntry[] }>()
   private readonly handles = new Map<AgentTeamMemberId, AgentHandle>()
   /** Live Member per session id; drives the root session/event listener. */
   private readonly memberBySessionId = new Map<SessionId, AgentTeamMemberId>()
@@ -1375,6 +1394,7 @@ export default class AgentTeam extends TypertRemoteService {
       threadHistoryForMember: (memberId, request) => host.threadHistoryForMember(memberId, request),
       sendMessageForMember: (memberId, request) => host.sendMessageForMember(memberId, request),
       replyForMember: (memberId, request) => host.replyForMember(memberId, request),
+      heartbeatForMember: (memberId, request) => host.heartbeatForMember(memberId, request),
       dmForMember: async (memberId, request) => {
         try {
           return await host.dmForMember(memberId, request)
@@ -3862,6 +3882,7 @@ export default class AgentTeam extends TypertRemoteService {
     return this.enqueueLifecycle(async () => {
       const result = await this.requireLedger().archiveMember({ ...request, actor: agentTeamHumanActor() })
       if (result.committed) this.emitCommitted(result.value.receipt)
+      this.externalHeartbeats.delete(request.memberId)
       await this.disposeMemberSession(request.memberId, result.value.member)
       await this.ctx.workspaceRegistry.archiveSession(result.value.member.sessionId)
       return result.value
@@ -4159,6 +4180,53 @@ export default class AgentTeam extends TypertRemoteService {
     if (ops.length !== 0) await settings.mutate(HUMAN_PROFILE_SETTINGS_NAMESPACE, ops)
     await this.reconcileExternalApi()
     return this.gatewayConfigForClient()
+  }
+
+  /**
+   * Record one external agent's heartbeat: the gateway forwards it after its
+   * own payload bounding. Latest-wins per Member, process-local; the beat
+   * refreshes presence (see memberStatus) and replaces the snapshot the
+   * Member's audit page renders.
+   */
+  async heartbeatForMember(memberId: AgentTeamMemberId, request: AgentTeamHeartbeatRequest): Promise<AgentTeamExternalContextResult> {
+    this.requireAccepting()
+    const member = this.requireLedger().getMember(memberId)
+    if (member === undefined || member.external !== true) throw new Error(`Agent Member '${memberId}' is not an external member`)
+    if (member.state !== 'enabled') throw new Error(`Agent Member '${member.handle}' is ${member.state}`)
+    const note = request.note?.trim()
+    const entries = request.entries?.map(entry => Object.freeze({
+      role: entry.role.trim().slice(0, 16) || 'assistant',
+      text: entry.text.slice(0, 4000),
+    }))
+    const stored = Object.freeze({
+      at: Date.now(),
+      ...(note === undefined || note === '' ? {} : { note: note.slice(0, 1000) }),
+      ...(entries === undefined || entries.length === 0 ? {} : { entries: Object.freeze(entries.slice(0, 30)) }),
+    })
+    this.externalHeartbeats.set(memberId, stored)
+    return this.externalContextOf(memberId)
+  }
+
+  /** The stored snapshot for one external Member, exactly as the audit page renders it. */
+  private externalContextOf(memberId: AgentTeamMemberId): AgentTeamExternalContextResult {
+    const beat = this.externalHeartbeats.get(memberId)
+    if (beat === undefined) return Object.freeze({})
+    return Object.freeze({
+      lastBeatAt: new Date(beat.at).toISOString(),
+      ...('note' in beat ? { note: beat.note } : {}),
+      ...('entries' in beat ? { entries: beat.entries } : {}),
+    })
+  }
+
+  /** The Human audit page's view of one external Member's synced context. */
+  @Remote('externalContext')
+  externalContextForClient(request: AgentTeamExternalContextRequest): AgentTeamExternalContextResult {
+    this.requireAccepting()
+    this.requireWorkspace(request.workspaceId)
+    const member = this.requireLedger().getMember(request.memberId)
+    if (member === undefined || member.external !== true) throw new Error(`Agent Member '${request.memberId}' is not an external member`)
+    if (!this.requireLedger().participatesIn(request.memberId, request.workspaceId)) throw new Error('Member is not a participant of this Workspace')
+    return this.externalContextOf(request.memberId)
   }
 
   /** Human existing-Thread reply; unread and revision conflicts are business outcomes. */
@@ -6113,6 +6181,12 @@ export default class AgentTeam extends TypertRemoteService {
     if (member.state === 'suspended') return Object.freeze({ member, availability: 'suspended', presence: 'unavailable' })
     const failures = this.memberFailures.get(member.memberId)
     if (failures?.activation !== undefined) return Object.freeze({ member, availability: 'unavailable', presence: 'unavailable', diagnostic: failures.activation })
+    // An external Member owns no session ever; its presence is its heartbeat.
+    if (member.external === true) {
+      const beat = this.externalHeartbeats.get(member.memberId)
+      const fresh = beat !== undefined && Date.now() - beat.at < EXTERNAL_HEARTBEAT_FRESH_MS
+      return Object.freeze({ member, availability: 'unavailable', presence: fresh ? 'available' : 'unavailable' })
+    }
     const handle = this.handles.get(member.memberId)
     if (handle === undefined) return Object.freeze({ member, availability: 'unavailable', presence: 'unavailable' })
     // A rollover commits its ledger binding before the old generation retires

@@ -33,6 +33,7 @@ describe('Agent Team generated Typert boundary', () => {
       'diagnoseMember',
       'editMessage',
       'environment',
+      'externalContext',
       'gatewayConfig',
       'getAttachment',
       'getHumanAvatar',

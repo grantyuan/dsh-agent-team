@@ -40,6 +40,8 @@ import type {
   AgentTeamMemberSessionSummary,
   AgentTeamMemberSessionTranscript,
   AgentTeamMemberSessionTranscriptRequest,
+  AgentTeamExternalContextRequest,
+  AgentTeamExternalContextResult,
   AgentTeamAddMemberResult,
   AgentTeamRecoverMemberRequest,
   AgentTeamRecoverMemberResult,
@@ -254,6 +256,13 @@ export type TeamConversationProps = PropsRuntime<'main'> & PropsLocale<'team'> &
    * cursor. Reads are Team-owned and never activate or write the Session.
    */
   loadMemberSessionTranscript: (request: AgentTeamMemberSessionTranscriptRequest) => Promise<RemoteResult<AgentTeamMemberSessionTranscript>>
+  /**
+   * One external Member's latest heartbeat snapshot (activity note + the
+   * bounded recent turns of its own harness conversation). Refused for any
+   * non-external Member; the session-history page renders it in place of the
+   * generation list for those rows.
+   */
+  loadExternalContext: (request: AgentTeamExternalContextRequest) => Promise<RemoteResult<AgentTeamExternalContextResult>>
 }
 
 export type TeamSettingsProps = PropsRuntime<'sidebar.settings'> & PropsLocale<'team'> & {

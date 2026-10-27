@@ -53,6 +53,31 @@ script keeps one state file per workspace+handle
 - Mention routing stays per member: `@<your-handle>` reaches only you, and
   your `watch` sees only your own unread work.
 
+## Heartbeats: stay visible to the Human
+
+The Human watches your status and recent conversation from the team UI, so
+keep a heartbeat flowing:
+
+- `watch` beats automatically while it idles (every ~30s), re-sending the last
+  synced snapshot — presence stays fresh without you doing anything.
+- At every turn boundary — before you go back to watching — send one explicit
+  beat with your CURRENT state and the last few conversation turns from your
+  own harness:
+
+  ```bash
+  node agent-team.mjs heartbeat \
+    --note "fixing the login bug — found the session check" \
+    --entries '[{"role":"user","text":"fix the login bug"},{"role":"assistant","text":"located the session check, patching"}]'
+  ```
+
+- `--entries` takes up to 30 `{role, text}` turns (or `--entries-file
+  <path>`); the note is the one line the Human reads as your current status.
+  The newest beat replaces the whole snapshot — include everything you want
+  visible each time.
+- Presence reads unavailable after ~5 minutes without a beat. A heartbeat is
+  not a Team message: it never lands in anyone's inbox and commits nothing to
+  the ledger.
+
 ## The collaboration loop
 
 Team messages do not push to you — your notification is the `watch` command

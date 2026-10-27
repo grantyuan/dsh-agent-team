@@ -47,6 +47,7 @@ function stubCore(overrides: Partial<AgentTeamExternalCore> = {}): AgentTeamExte
     threadHistoryForMember: () => ({}) as never,
     sendMessageForMember: async () => ({ kind: 'committed' }) as AgentTeamSendMessageResult,
     replyForMember: async () => ({ kind: 'committed' }) as AgentTeamSendMessageResult,
+    heartbeatForMember: async () => ({}) as never,
     dmForMember: async () => ({ receipt: {}, recipient: {}, relayed: true }) as never,
     ...overrides,
   }
@@ -214,6 +215,32 @@ describe('external gateway — messages', () => {
     const [first, second] = sendMessageForMember.mock.calls as unknown as [[string, { requestId: string }], [string, { requestId: string }]]
     expect(first![1].requestId).toBe(`agent-team:http:member:a:attempt-1`)
     expect(second![1].requestId).toBe(first![1].requestId)
+  })
+})
+
+describe('external gateway — heartbeat', () => {
+  it('forwards a bounded heartbeat and answers with the stored snapshot', async () => {
+    const heartbeatForMember = vi.fn(async () => ({ lastBeatAt: '2026-01-01T00:00:00Z', note: 'working' }) as never)
+    const { port } = await startGateway(stubCore({ heartbeatForMember }))
+    const response = await post(port, `/agent-team/${encodeURIComponent(alpha)}/heartbeat`, memberHeaders('member:a'),
+      { note: 'working', entries: [{ role: 'user', text: 'fix the bug' }, { role: 'assistant', text: 'on it' }] })
+    expect(response.status).toBe(200)
+    expect(await response.json()).toMatchObject({ lastBeatAt: '2026-01-01T00:00:00Z' })
+    expect(heartbeatForMember).toHaveBeenCalledWith('member:a', { note: 'working', entries: [{ role: 'user', text: 'fix the bug' }, { role: 'assistant', text: 'on it' }] })
+  })
+
+  it('refuses an oversized note, too many turns, or a malformed entry with 400', async () => {
+    const heartbeatForMember = vi.fn(stubCore().heartbeatForMember)
+    const { port } = await startGateway(stubCore({ heartbeatForMember }))
+    const headers = memberHeaders('member:a')
+    const longNote = await post(port, `/agent-team/${encodeURIComponent(alpha)}/heartbeat`, headers, { note: 'x'.repeat(1001) })
+    expect(longNote.status).toBe(400)
+    const manyTurns = await post(port, `/agent-team/${encodeURIComponent(alpha)}/heartbeat`, headers,
+      { entries: Array.from({ length: 31 }, () => ({ role: 'user', text: 'x' })) })
+    expect(manyTurns.status).toBe(400)
+    const badEntry = await post(port, `/agent-team/${encodeURIComponent(alpha)}/heartbeat`, headers, { entries: [{ role: 'user' }] })
+    expect(badEntry.status).toBe(400)
+    expect(heartbeatForMember).not.toHaveBeenCalled()
   })
 })
 

@@ -674,6 +674,42 @@ export interface AgentTeamSetGatewayConfigResult {
   readonly boundPort?: number
 }
 
+/** One synced conversation turn from an external agent's own harness. */
+export interface AgentTeamExternalContextEntry {
+  /** Free-form speaker label, bounded to 16 characters (`user`, `assistant`, `tool`, …). */
+  readonly role: string
+  /** The turn's text, bounded to 4000 characters. */
+  readonly text: string
+}
+
+/**
+ * An external agent's heartbeat payload: a one-line activity note plus the
+ * bounded recent turns of its own harness conversation. Latest-wins — the
+ * Host keeps exactly one snapshot per external Member, process-local (never a
+ * ledger fact; the append-only ledger must not absorb a heartbeat cadence).
+ */
+export interface AgentTeamHeartbeatRequest {
+  readonly note?: string
+  readonly entries?: readonly AgentTeamExternalContextEntry[]
+}
+
+/**
+ * The Team settings seat's view of one external Member's last heartbeat: what
+ * the Human sees when opening the Member's audit page. Absent fields mean the
+ * Member has never heartbeat (or the Host restarted since and no beat has
+ * landed yet).
+ */
+export interface AgentTeamExternalContextRequest {
+  readonly workspaceId: WorkspaceId
+  readonly memberId: AgentTeamMemberId
+}
+
+export interface AgentTeamExternalContextResult {
+  readonly lastBeatAt?: string
+  readonly note?: string
+  readonly entries?: readonly AgentTeamExternalContextEntry[]
+}
+
 /** Local environment read: how the running DSH compares to the declared support line. */
 export interface AgentTeamEnvironmentRequest {
 }

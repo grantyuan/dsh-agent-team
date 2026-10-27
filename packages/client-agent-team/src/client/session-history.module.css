@@ -215,3 +215,84 @@
   line-height: 18px;
   margin: 8px;
 }
+
+/* The external Member's audit face: no stored Session exists, so the page
+ * renders the heartbeat-synced snapshot as one readable column instead of the
+ * two-pane generation/transcript shell. */
+.externalShell {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin: 0 auto;
+  max-width: 760px;
+  padding: 16px 24px 24px;
+  width: 100%;
+}
+
+.externalHeader {
+  align-items: flex-start;
+  display: flex;
+  gap: 12px;
+  justify-content: space-between;
+}
+
+.externalTitle {
+  font-size: 15px;
+  font-weight: 600;
+  margin: 0;
+}
+
+.externalIntro {
+  color: var(--dsw-alias-label-tertiary);
+  font-size: 12px;
+  line-height: 18px;
+  margin: 4px 0 0;
+}
+
+.externalBeat {
+  color: var(--dsw-alias-label-tertiary);
+  font-size: 12px;
+  line-height: 18px;
+  margin: 0;
+}
+
+.externalNote {
+  background: var(--dsw-alias-fill-l1, rgba(127, 127, 127, 0.08));
+  border-radius: 8px;
+  display: flex;
+  font-size: 13px;
+  gap: 8px;
+  line-height: 20px;
+  padding: 8px 12px;
+}
+
+.externalNoteLabel {
+  color: var(--dsw-alias-label-tertiary);
+  flex: none;
+}
+
+.externalTurns {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.externalTurn {
+  border: 1px solid var(--dsw-alias-border-l2);
+  border-radius: 8px;
+  padding: 8px 12px;
+}
+
+.externalTurnRole {
+  color: var(--dsw-alias-label-tertiary);
+  font-size: 11px;
+  text-transform: uppercase;
+}
+
+.externalTurnText {
+  font-size: 13px;
+  line-height: 20px;
+  margin: 4px 0 0;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}

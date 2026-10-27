@@ -41,14 +41,15 @@ function usage() {
 
 Commands:
   join    --url URL --workspace ID --token BOOT-TOKEN --handle NAME [--description TEXT] [--state FILE]
-  view    [--state FILE]
-  inbox   [--limit N] [--state FILE]
-  read    --thread REF | --task REF [--state FILE]
-  history --thread REF | --task REF [--before N] [--limit N] [--state FILE]
+  view    [--handle H] [--state FILE]
+  inbox   [--limit N] [--handle H] [--state FILE]
+  read    --thread REF | --task REF [--handle H] [--state FILE]
+  history --thread REF | --task REF [--before N] [--limit N] [--handle H] [--state FILE]
   send start --channel REF --body TEXT [--as-task] [--parent-task REF] [--client-request-id ID]
   send reply --thread REF | --task REF --body TEXT --base-revision N [--client-request-id ID]
   send dm    --member REF --body TEXT [--client-request-id ID]
-  watch   [--interval SEC] [--timeout SEC] [--max-reads N] [--state FILE]
+  heartbeat [--note TEXT] [--entries JSON | --entries-file PATH] [--handle H] [--state FILE]
+  watch   [--interval SEC] [--timeout SEC] [--max-reads N] [--heartbeat-seconds SEC] [--handle H] [--state FILE]
 
 State defaults to ~/.agent-team/<workspace>.<handle>.json — one file per agent,
 so several external agents (or sessions) on this machine each keep their own
@@ -56,7 +57,7 @@ identity. Pass --handle with every command, or --state to name the file
 directly. JSON in, JSON out.`
 }
 
-const COMMANDS = ['join', 'view', 'inbox', 'read', 'history', 'send', 'watch']
+const COMMANDS = ['join', 'view', 'inbox', 'read', 'history', 'send', 'watch', 'heartbeat']
 const [command, subcommand] = process.argv.slice(2)
 if (command === undefined || COMMANDS.includes(command) === false) {
   process.stderr.write(`${usage()}\n`)
@@ -86,6 +87,10 @@ const { values } = parseArgs({
     interval: { type: 'string', default: '3' },
     timeout: { type: 'string', default: '600' },
     'max-reads': { type: 'string', default: '5' },
+    note: { type: 'string' },
+    entries: { type: 'string' },
+    'entries-file': { type: 'string' },
+    'heartbeat-seconds': { type: 'string', default: '30' },
   },
   strict: false,
 })
@@ -177,6 +182,45 @@ function positiveInt(value, name) {
   return parsed
 }
 
+/** Build one heartbeat payload from --note plus --entries / --entries-file. */
+async function heartbeatPayloadOf(values) {
+  if (values.note === undefined && values.entries === undefined && values['entries-file'] === undefined) {
+    return fail('heartbeat requires --note and/or --entries (or --entries-file); the note is what the team reads as your current status')
+  }
+  let entries
+  if (values['entries-file'] !== undefined) {
+    try {
+      entries = JSON.parse(await readFile(resolve(values['entries-file']), 'utf8'))
+    } catch (error) {
+      return fail(`--entries-file could not be read as JSON: ${error.message}`)
+    }
+  } else if (values.entries !== undefined) {
+    try {
+      entries = JSON.parse(values.entries)
+    } catch (error) {
+      return fail(`--entries is not valid JSON: ${error.message}`)
+    }
+  }
+  if (entries !== undefined && Array.isArray(entries) === false) return fail('--entries must be a JSON array of {role, text} turns')
+  return {
+    ...(values.note === undefined ? {} : { note: values.note }),
+    ...(entries === undefined ? {} : { entries }),
+  }
+}
+
+/**
+ * One piggyback heartbeat: watch sends the last synced snapshot on its poll
+ * cadence so presence stays fresh while the agent idles, without the model
+ * having to do anything. A beat failure never breaks the watch loop — the
+ * next cadence tick retries.
+ */
+async function piggybackHeartbeat(state, payload) {
+  if (payload === undefined) return
+  try {
+    await api(state, 'POST', `/agent-team/${encodeURIComponent(state.workspaceId)}/heartbeat`, payload)
+  } catch { /* the next cadence tick retries; the watch loop continues */ }
+}
+
 async function main() {
     if (command === 'join') {
     if (values.url === undefined || values.workspace === undefined || values.token === undefined || values.handle === undefined) {
@@ -253,13 +297,30 @@ async function main() {
       payload.baseRevision = positiveInt(values['base-revision'], 'base-revision')
     }
     process.stdout.write(`${JSON.stringify(await api(state, 'POST', `/agent-team/${encodeURIComponent(state.workspaceId)}/messages`, payload), null, 2)}\n`)
+  } else if (command === 'heartbeat') {
+    const state = await loadState(values)
+    const payload = await heartbeatPayloadOf(values)
+    const result = await api(state, 'POST', `/agent-team/${encodeURIComponent(state.workspaceId)}/heartbeat`, payload)
+    // Remember what the team last saw, so the watch loop can keep presence
+    // fresh with the same snapshot between explicit heartbeats.
+    await saveState(state.path, { ...state, lastHeartbeat: payload })
+    process.stdout.write(`${JSON.stringify(result, null, 2)}\n`)
   } else if (command === 'watch') {
     const state = await loadState(values)
     const intervalMs = positiveInt(values.interval, 'interval') * 1000
     const deadline = Date.now() + positiveInt(values.timeout, 'timeout') * 1000
     const maxReads = positiveInt(values['max-reads'], 'max-reads')
+    const heartbeatSeconds = positiveInt(values['heartbeat-seconds'], 'heartbeat-seconds')
+    const heartbeatEveryMs = heartbeatSeconds * 1000
     const inboxPath = `/agent-team/${encodeURIComponent(state.workspaceId)}/inbox`
+    // The first piggyback beat fires right away: mounting the watcher IS a
+    // live signal, even before any quiet cadence elapses.
+    let nextBeatAt = 0
     while (Date.now() < deadline) {
+      if (Date.now() >= nextBeatAt) {
+        await piggybackHeartbeat(state, state.lastHeartbeat)
+        nextBeatAt = Date.now() + heartbeatEveryMs
+      }
       const inbox = await api(state, 'GET', inboxPath)
       if (inbox.totalUnreadCount > 0) {
         const reads = []
