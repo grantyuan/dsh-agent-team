@@ -283,7 +283,7 @@ export const zh = {
   memberContextPolicy: '任务启动上下文',
   contextPolicyContinue: '延续当前上下文',
   contextPolicyFresh: '每个任务全新上下文',
-  memberContextPolicyHint: '“每个任务全新上下文”在该成员正常完成任务后的下一次分配生效：认领任务、被队友 @ 派发、或 Human 原子开始时，只要 Workspace 有指定团队负责人，Host 就发起一次模型判定，判断这条任务与它近期内容（最近 5 条发言 + 最近认领的任务）的相关性——达到 60% 直接投进当前会话，否则（含无负责人、判定失败）先换新会话再投递，判定分数写入日志。handle、设置与私有记忆不变。',
+  memberContextPolicyHint: '“每个任务全新上下文”在该成员被安排新任务时生效：认领任务、Human 原子开始、或被 @ 派发时先换新会话再投递。只要 Workspace 有指定团队负责人，Host 就对每次 @ 派发发起一次模型判定，判断这条任务与它近期内容（最近 5 条发言 + 最近认领的任务）的相关性——达到 60% 直接投进当前会话，低于阈值先换新会话；判定调用失败时，正常完成过的成员照常换新，可能仍有未完成工作的成员保守保留。没有负责人的 Workspace 只在无歧义缝隙（认领、Human 原子开始、正常完成后的下一次 @ 派发）换新，其余派发照旧投进当前会话。handle、设置与私有记忆不变，判定分数写入日志。',
   memberContextWindow: '上下文窗口覆盖',
   contextWindowPlaceholder: '跟随模型路由窗口',
   memberContextWindowHint: '以 token 计；只会收窄模型路由窗口，不会放大（最低 8192）。',

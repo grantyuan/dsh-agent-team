@@ -970,8 +970,12 @@ export default class AgentTeam extends TypertRemoteService {
    * completion marker): the next dispatch — an Inbox wake carrying new unread
    * work — renews their context first and the task is delivered into the fresh
    * generation, so every task really starts from system context plus that
-   * task. A completion alone never renews; the arm waits for dispatch. Restored
-   * over a marker tail by a later boot as well, so a restart keeps the promise.
+   * task. A completion alone never renews; the arm waits for dispatch. The arm
+   * also sets the dispatch judgement's failure side (an armed Session holds
+   * only finished work, so a failed call renews) and keeps the no-leader
+   * renewal seam; with a designated leader present the gate judges unarmed
+   * dispatches too. Restored over a marker tail by a later boot as well, so a
+   * restart keeps the promise.
    */
   private readonly armedFreshStartReset = new Set<AgentTeamMemberId>()
   /**
@@ -983,6 +987,17 @@ export default class AgentTeam extends TypertRemoteService {
    * carries a higher sequence — so one exemption can never cover a second task.
    */
   private readonly keptDispatchSequence = new Map<AgentTeamMemberId, number>()
+  /**
+   * Per Member, the ledger sequence of the newest dispatch a keep-or-renew
+   * judgement answered with a renewal: the scheduled reset is FOR that
+   * delivery, so the gate never re-judges work at or below the sequence — the
+   * post-renewal re-derived delivery of the very dispatch that scheduled the
+   * reset would otherwise meet the gate again, score low against the stale
+   * history, and schedule an unbounded chain of renewals. Monotone like
+   * {@link keptDispatchSequence} and never cleared: a later dispatch always
+   * carries a higher sequence and is judged fresh.
+   */
+  private readonly renewedDispatchSequence = new Map<AgentTeamMemberId, number>()
   /**
    * Per Member, the dispatch whose keep-or-renew judgement is in flight at the
    * model. The Inbox gate holds every wake while one is running — the answer
@@ -1281,6 +1296,7 @@ export default class AgentTeam extends TypertRemoteService {
       this.handles.clear()
       this.armedFreshStartReset.clear()
       this.keptDispatchSequence.clear()
+      this.renewedDispatchSequence.clear()
       this.judgingFreshStart.clear()
       this.renewedSessionByMember.clear()
       this.modelSelections.clear()
@@ -2348,9 +2364,9 @@ export default class AgentTeam extends TypertRemoteService {
   /**
    * Schedule the context reset one Member's fresh-start task-start policy
    * calls for. Claim and Human atomic-start boundaries schedule it directly;
-   * an armed Member (its last turn completed with the marker) schedules it
-   * when its next dispatch delivers new unread work. continue policy (the
-   * absent default) never does. One in-flight body per Member: concurrently
+   * a dispatch whose keep-or-renew judgement (or the no-leader armed path)
+   * answers renew schedules it from the gate. continue policy (the absent
+   * default) never does. One in-flight body per Member: concurrently
    * overlapping schedules merge into a single reset. Returns whether a reset
    * is now scheduled or already in flight — a false tells the caller to keep
    * its own delivery (there is nothing to wait behind).
@@ -2396,14 +2412,16 @@ export default class AgentTeam extends TypertRemoteService {
    * Ask the model whether the incoming assignment continues the work this Member
    * already holds: its last {@link DISPATCH_HISTORY_MESSAGE_LIMIT} authored
    * Messages plus the content of the Task it most recently claimed. A score of
-   * {@link CONTEXT_RELEVANCE_THRESHOLD} or above keeps the live Session; every
-   * other outcome — a lower score, a reply with no usable number, a provider
-   * error, a timeout, or no LLM service at all — renews, because the Member's
-   * own configuration promises a fresh context per task and the judgement is only
-   * an exception to it. The score is logged so each erase-or-keep call stays
-   * auditable.
+   * {@link CONTEXT_RELEVANCE_THRESHOLD} or above keeps the live Session. Every
+   * failed outcome — a lower score, a reply with no usable number, a provider
+   * error, a timeout, or no LLM service at all — falls back to
+   * {@link failureKeeps}: a completion-armed Session only holds finished work,
+   * so the failure side renews (the Member's own configuration promises a fresh
+   * context per task), while an unarmed Session may still hold unfinished work a
+   * failed call must not erase. A real low score always renews. The score is
+   * logged so each erase-or-keep call stays auditable.
    */
-  private async dispatchRelevanceKeepsContext(member: AgentTeamAgentMember, assignment: string): Promise<boolean> {
+  private async dispatchRelevanceKeepsContext(member: AgentTeamAgentMember, assignment: string, failureKeeps: boolean): Promise<boolean> {
     const memberId = member.memberId
     const ledger = this.requireLedger()
     const history = [...ledger.recentMemberMessageBodies(memberId, DISPATCH_HISTORY_MESSAGE_LIMIT)]
@@ -2415,8 +2433,8 @@ export default class AgentTeam extends TypertRemoteService {
     }
     const llm = this.ctx.get('llm')
     if (llm === undefined) {
-      this.ctx.logger.warn(`agent-team: dispatch context judgement for member '${member.handle}': no LLM service is available — renewing before delivery`)
-      return false
+      this.ctx.logger.warn(`agent-team: dispatch context judgement for member '${member.handle}': no LLM service is available — ${failureKeeps ? 'keeping the live context' : 'renewing before delivery'}`)
+      return failureKeeps
     }
     const selection = this.currentModelSelectionOf(memberId)
     const { system, messages } = buildRelevanceJudge({ handle: member.handle, task: assignment, history })
@@ -2425,23 +2443,23 @@ export default class AgentTeam extends TypertRemoteService {
     try {
       for await (const chunk of llm.stream({ provider: selection.provider, model: selection.model, messages: [...messages], system, maxTokens: RELEVANCE_JUDGE_MAX_TOKENS, signal })) assembler.push(chunk)
     } catch (error) {
-      this.ctx.logger.warn(`agent-team: dispatch context judgement for member '${member.handle}' failed: ${error instanceof Error ? error.message : String(error)} — renewing before delivery`)
-      return false
+      this.ctx.logger.warn(`agent-team: dispatch context judgement for member '${member.handle}' failed: ${error instanceof Error ? error.message : String(error)} — ${failureKeeps ? 'keeping the live context' : 'renewing before delivery'}`)
+      return failureKeeps
     }
     if (signal.aborted) {
-      this.ctx.logger.warn(`agent-team: dispatch context judgement for member '${member.handle}' timed out — renewing before delivery`)
-      return false
+      this.ctx.logger.warn(`agent-team: dispatch context judgement for member '${member.handle}' timed out — ${failureKeeps ? 'keeping the live context' : 'renewing before delivery'}`)
+      return failureKeeps
     }
     const finish = assembler.finish
     if (finish.kind === 'error' || finish.kind === 'aborted') {
-      this.ctx.logger.warn(`agent-team: dispatch context judgement for member '${member.handle}' failed: ${finish.failure.message} — renewing before delivery`)
-      return false
+      this.ctx.logger.warn(`agent-team: dispatch context judgement for member '${member.handle}' failed: ${finish.failure.message} — ${failureKeeps ? 'keeping the live context' : 'renewing before delivery'}`)
+      return failureKeeps
     }
     const text = assembler.blocks().filter(block => block.type === 'text').map(block => block.text).join('')
     const score = parseRelevanceScore(text)
     if (score === undefined) {
-      this.ctx.logger.warn(`agent-team: dispatch context judgement for member '${member.handle}' returned no usable score — renewing before delivery`)
-      return false
+      this.ctx.logger.warn(`agent-team: dispatch context judgement for member '${member.handle}' returned no usable score — ${failureKeeps ? 'keeping the live context' : 'renewing before delivery'}`)
+      return failureKeeps
     }
     const keeps = score >= CONTEXT_RELEVANCE_THRESHOLD
     this.ctx.logger.info(`agent-team: dispatch context judgement for member '${member.handle}': relevance ${score.toFixed(2)} of ${history.length} recent item(s) — ${keeps ? 'keeping the live context' : 'renewing before delivery'}`)
@@ -2470,11 +2488,15 @@ export default class AgentTeam extends TypertRemoteService {
   /** Background body of one dispatch judgement: decide, release the hold, deliver. */
   private async runFreshStartJudgement(member: AgentTeamAgentMember, sequence: number, assignment: string): Promise<void> {
     const memberId = member.memberId
+    // An unarmed Session may hold unfinished work, so a failed call keeps it;
+    // a completion-armed Session only holds finished work and renews.
+    const failureKeeps = !this.armedFreshStartReset.has(memberId)
     let keeps = false
     try {
-      keeps = await this.dispatchRelevanceKeepsContext(member, assignment)
+      keeps = await this.dispatchRelevanceKeepsContext(member, assignment, failureKeeps)
     } catch (error) {
-      this.ctx.logger.warn(`agent-team: dispatch context judgement for member '${member.handle}' errored: ${error instanceof Error ? error.message : String(error)} — renewing before delivery`)
+      this.ctx.logger.warn(`agent-team: dispatch context judgement for member '${member.handle}' errored: ${error instanceof Error ? error.message : String(error)} — ${failureKeeps ? 'keeping the live context' : 'renewing before delivery'}`)
+      keeps = failureKeeps
     } finally {
       if ((this.judgingFreshStart.get(memberId) ?? 0) <= sequence) this.judgingFreshStart.delete(memberId)
     }
@@ -2483,6 +2505,9 @@ export default class AgentTeam extends TypertRemoteService {
       // keepContext uses, so it covers this delivery and never the next task.
       this.keptDispatchSequence.set(memberId, sequence)
     } else {
+      // The scheduled reset is for THIS delivery: record the sequence so the
+      // post-renewal re-derived delivery never re-judges it into a renewal loop.
+      this.renewedDispatchSequence.set(memberId, sequence)
       this.scheduleFreshStartReset(memberId)
       if (this.pendingPolicyResets.has(memberId)) return
     }
@@ -6398,9 +6423,13 @@ export default class AgentTeam extends TypertRemoteService {
     if (member.contextStartPolicy === 'fresh') {
       const renewalLanded = this.renewedSessionByMember.get(member.memberId) === member.sessionId
       // A sender that declared this work needs the Member's live context
-      // exempts the direct work it named: only a mention newer than that
-      // declaration is a fresh task seam worth judging at all.
-      const keptSequence = this.keptDispatchSequence.get(member.memberId) ?? 0
+      // exempts the direct work it named; a renewal verdict covers its own
+      // delivery the same way. Only a mention newer than the decided frontier
+      // is a fresh task seam worth judging at all.
+      const decidedSequence = Math.max(
+        this.keptDispatchSequence.get(member.memberId) ?? 0,
+        this.renewedDispatchSequence.get(member.memberId) ?? 0,
+      )
       // The judgement is about THIS dispatch, never about the backlog: an older
       // mention the Member has read around without closing is still unread, and
       // folding it in would let one related message keep every later unrelated
@@ -6408,18 +6437,23 @@ export default class AgentTeam extends TypertRemoteService {
       const directMessages = notifications
         .flatMap(({ item, facts }) => item.directCount > 0 ? facts : [])
         .filter((fact): fact is AgentTeamThreadReadFact & { readonly fact: Extract<AgentTeamStoredThreadFact, { kind: 'message' }> } =>
-          fact.direct && fact.fact.kind === 'message' && fact.fact.sequence > keptSequence)
+          fact.direct && fact.fact.kind === 'message' && fact.fact.sequence > decidedSequence)
       const newestSequence = directMessages.reduce((highest, fact) => Math.max(highest, fact.fact.sequence), 0)
       const assignment = directMessages
         .filter(fact => fact.fact.sequence === newestSequence)
         .map(fact => fact.fact.message.body)
         .join('\n')
-      // Whether this dispatch continues the Member's finished work is a semantic
-      // call, so the model makes it — but only when the Workspace has a designated
-      // leader who owns that judgement. The wake stays held while the call runs:
-      // a keep exempts this delivery, anything else renews before it lands.
+      // Whether this dispatch continues the Member's work is a semantic call,
+      // so the model makes it — when the Workspace has a designated leader who
+      // owns that judgement, or when the arm says the live Session only holds
+      // finished work. Judging every dispatched assignment (not just an armed
+      // Member's) is the point: an unarmed Member is exactly the busy or
+      // unclosed case whose new tasks must not silently land in a stale
+      // context. The wake stays held while the call runs: a keep exempts this
+      // delivery, anything else renews before it lands.
       if (this.judgingFreshStart.has(member.memberId)) return
-      if (assignment !== '' && this.armedFreshStartReset.has(member.memberId)) {
+      if (assignment !== '' && newestSequence > decidedSequence
+        && (this.armedFreshStartReset.has(member.memberId) || this.hasDesignatedLeader(member.memberId))) {
         this.judgeFreshStartDispatch(member, newestSequence, assignment)
         return
       }

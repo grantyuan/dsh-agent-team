@@ -5696,6 +5696,125 @@ describe('Agent Team member context control (ticket 01)', () => {
     expect(() => ctx.agentTeam.validateLedger()).not.toThrow()
   })
 
+  it('judges an unarmed fresh Member\'s dispatched task instead of silently continuing', async () => {
+    const adapter = new JudgingAdapter()
+    const { ctx, workspaceId, archived } = await realHarness(adapter)
+    const channel = await ctx.agentTeam.createChannel({ requestId: requestId('unarmed-channel'), workspaceId, name: 'engineering', description: 'Engineering work' })
+    const mgr = await ctx.agentTeam.addMember({ requestId: requestId('unarmed-mgr'), workspaceId, handle: 'manager', description: 'Dispatches work', presetId: 'team-member', channelRefs: [channel.channel.channelRef] })
+    const designated = await ctx.agentTeam.updateMember({ requestId: requestId('unarmed-designate'), memberId: mgr.status.member.memberId, handle: 'manager', description: 'Dispatches work', leader: true })
+    if (!designated.status.member.leader) throw new Error('the roster never gained a designated leader')
+    const worker = await ctx.agentTeam.addMember({ requestId: requestId('unarmed-worker'), workspaceId, handle: 'worker', description: 'Executes dispatched work', presetId: 'team-member', channelRefs: [channel.channel.channelRef], contextStartPolicy: 'fresh' })
+    const workerId = worker.status.member.memberId
+    for (let turn = 0; turn < 16; turn += 1) adapter.enqueue(textResponse('Acknowledged.'))
+    const sessionOf = (): SessionId => ctx.agentTeam.members().find(status => status.member.memberId === workerId)!.member.sessionId
+    const session0 = worker.status.member.sessionId
+
+    // The worker holds authored history but has never finished a turn on the
+    // marker, so the completion arm is NOT set — the shape of a Member that is
+    // mid-task or stopped without closing. The dispatched assignment is still
+    // new work: the leader's judgement must decide instead of the dispatch
+    // silently landing in the live Session.
+    const workerAgent = ctx.agents.get(session0)!
+    const authored = await ctx.tools.execute({ signal: new AbortController().signal, callId: ToolCallId('unarmed-author'), name: 'team_message',
+      arguments: { action: 'start', channelRef: channel.channel.channelRef, body: '旧任务：装配 kv_cache_unified.rs 的三跳配置' }, agent: workerAgent })
+    expect(authored.isError, authored.isError ? authored.error.message : 'ok').toBe(false)
+
+    // The model reads the assignment as brand-new work: the renewal lands
+    // first and the dispatch reaches the fresh generation.
+    adapter.verdict(0.05)
+    const mgrAgent = ctx.agents.get(mgr.status.member.sessionId)!
+    const dispatched = await ctx.agentTeam.sendMessageForAgent(mgrAgent, { requestId: requestId('unarmed-new'), workspaceId, channelRef: channel.channel.channelRef, body: '新任务：把 README 的安装段落重写成三步 @worker' })
+    expect(dispatched.kind).toBe('committed')
+    const session1 = await waitFor(() => sessionOf() !== session0 ? sessionOf() : undefined)
+    await waitForArchived(archived, session0)
+    expect(adapter.judgements).toHaveLength(1)
+    expect(session1).not.toBe(session0)
+
+    // The judgement was for THIS delivery only: the post-renewal delivery of
+    // the same dispatch must not start a second call, let alone a renewal loop.
+    await waitForIdle(ctx, ctx.agents.get(session1)!)
+    expect(adapter.judgements).toHaveLength(1)
+    expect(() => ctx.agentTeam.validateLedger()).not.toThrow()
+  })
+
+  it('keeps an unarmed fresh Member\'s Session when the judgement fails, and renews a finished one', async () => {
+    const adapter = new JudgingAdapter()
+    const { ctx, workspaceId, archived } = await realHarness(adapter)
+    const channel = await ctx.agentTeam.createChannel({ requestId: requestId('unarmedfault-channel'), workspaceId, name: 'engineering', description: 'Engineering work' })
+    const mgr = await ctx.agentTeam.addMember({ requestId: requestId('unarmedfault-mgr'), workspaceId, handle: 'manager', description: 'Dispatches work', presetId: 'team-member', channelRefs: [channel.channel.channelRef] })
+    await ctx.agentTeam.updateMember({ requestId: requestId('unarmedfault-designate'), memberId: mgr.status.member.memberId, handle: 'manager', description: 'Dispatches work', leader: true })
+    const worker = await ctx.agentTeam.addMember({ requestId: requestId('unarmedfault-worker'), workspaceId, handle: 'worker', description: 'Executes dispatched work', presetId: 'team-member', channelRefs: [channel.channel.channelRef], contextStartPolicy: 'fresh' })
+    const workerId = worker.status.member.memberId
+    for (let turn = 0; turn < 16; turn += 1) adapter.enqueue(textResponse('Acknowledged.'))
+    const sessionOf = (): SessionId => ctx.agentTeam.members().find(status => status.member.memberId === workerId)!.member.sessionId
+    const session0 = worker.status.member.sessionId
+
+    // Unarmed with maybe-unfinished work: a judgement that returns no usable
+    // score must NOT erase the Session on an infra whim — the delivery rides
+    // into the live Session instead.
+    const workerAgent = ctx.agents.get(session0)!
+    const authored = await ctx.tools.execute({ signal: new AbortController().signal, callId: ToolCallId('unarmedfault-author'), name: 'team_message',
+      arguments: { action: 'start', channelRef: channel.channel.channelRef, body: '旧任务：装配 kv_cache_unified.rs 的三跳配置' }, agent: workerAgent })
+    expect(authored.isError, authored.isError ? authored.error.message : 'ok').toBe(false)
+    adapter.verdict('the judge replied with prose only')
+    const mgrAgent = ctx.agents.get(mgr.status.member.sessionId)!
+    const dispatched = await ctx.agentTeam.sendMessageForAgent(mgrAgent, { requestId: requestId('unarmedfault-new'), workspaceId, channelRef: channel.channel.channelRef, body: '新任务：把 README 的安装段落重写成三步 @worker' })
+    expect(dispatched.kind).toBe('committed')
+    const liveTexts = (): string => workerAgent.session.ownEvents()
+      .filter(event => event.type === 'user/message')
+      .map(event => (event as { data: { content: ReadonlyArray<{ type: string; text?: string }> } }).data.content.map(block => block.text ?? '').join(''))
+      .join('\n')
+    await waitFor(() => (liveTexts().includes('把 README 的安装段落重写成三步') ? true : undefined))
+    expect(adapter.judgements).toHaveLength(1)
+    expect(sessionOf()).toBe(session0)
+    expect(archived).not.toContain(session0)
+
+    // Finishing the turn on the marker arms the policy: the next dispatch with
+    // a failing judgement renews again — the armed Session only holds finished
+    // work, so the failure-side default flips back to renew.
+    workerAgent.followup(createUserMessage({ content: [{ type: 'text', text: 'finish current work' }], source: { kind: 'user' } }))
+    await waitForIdle(ctx, ctx.agents.get(session0)!)
+    adapter.verdict('the judge replied with prose only')
+    const next = await ctx.agentTeam.sendMessageForAgent(mgrAgent, { requestId: requestId('unarmedfault-next'), workspaceId, channelRef: channel.channel.channelRef, body: '另一张新卡：清理构建脚本的缓存目录 @worker' })
+    expect(next.kind).toBe('committed')
+    const session1 = await waitFor(() => sessionOf() !== session0 ? sessionOf() : undefined)
+    await waitForArchived(archived, session0)
+    expect(adapter.judgements).toHaveLength(2)
+    expect(() => ctx.agentTeam.validateLedger()).not.toThrow()
+  })
+
+  it('keeps delivering an unarmed fresh Member\'s dispatch live when no leader owns the judgement', async () => {
+    const adapter = new JudgingAdapter()
+    const { ctx, workspaceId, archived } = await realHarness(adapter)
+    const channel = await ctx.agentTeam.createChannel({ requestId: requestId('noleader-channel'), workspaceId, name: 'engineering', description: 'Engineering work' })
+    const mgr = await ctx.agentTeam.addMember({ requestId: requestId('noleader-mgr'), workspaceId, handle: 'manager', description: 'Dispatches work', presetId: 'team-member', channelRefs: [channel.channel.channelRef] })
+    const worker = await ctx.agentTeam.addMember({ requestId: requestId('noleader-worker'), workspaceId, handle: 'worker', description: 'Executes dispatched work', presetId: 'team-member', channelRefs: [channel.channel.channelRef], contextStartPolicy: 'fresh' })
+    const workerId = worker.status.member.memberId
+    for (let turn = 0; turn < 16; turn += 1) adapter.enqueue(textResponse('Acknowledged.'))
+    const sessionOf = (): SessionId => ctx.agentTeam.members().find(status => status.member.memberId === workerId)!.member.sessionId
+    const session0 = worker.status.member.sessionId
+
+    // Nobody owns the judgement call, and the arm is not set: the dispatch
+    // degrades to today's live delivery — the unambiguous boundaries (claim,
+    // Human atomic start, the armed next dispatch) stay the renewal seams.
+    const workerAgent = ctx.agents.get(session0)!
+    const authored = await ctx.tools.execute({ signal: new AbortController().signal, callId: ToolCallId('noleader-author'), name: 'team_message',
+      arguments: { action: 'start', channelRef: channel.channel.channelRef, body: '旧任务：装配 kv_cache_unified.rs 的三跳配置' }, agent: workerAgent })
+    expect(authored.isError, authored.isError ? authored.error.message : 'ok').toBe(false)
+    const mgrAgent = ctx.agents.get(mgr.status.member.sessionId)!
+    const dispatched = await ctx.agentTeam.sendMessageForAgent(mgrAgent, { requestId: requestId('noleader-new'), workspaceId, channelRef: channel.channel.channelRef, body: '新任务：把 README 的安装段落重写成三步 @worker' })
+    expect(dispatched.kind).toBe('committed')
+    const liveTexts = (): string => workerAgent.session.ownEvents()
+      .filter(event => event.type === 'user/message')
+      .map(event => (event as { data: { content: ReadonlyArray<{ type: string; text?: string }> } }).data.content.map(block => block.text ?? '').join(''))
+      .join('\n')
+    await waitFor(() => (liveTexts().includes('把 README 的安装段落重写成三步') ? true : undefined))
+    expect(adapter.judgements).toHaveLength(0)
+    expect(sessionOf()).toBe(session0)
+    expect(archived).not.toContain(session0)
+    expect(() => ctx.agentTeam.validateLedger()).not.toThrow()
+  })
+
   it('skips the atomic-start renewal only for the Message that declared the exemption', async () => {
     const adapter = new ScriptedAdapter()
     const { ctx, workspaceId, archived } = await realHarness(adapter)

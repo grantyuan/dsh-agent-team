@@ -91,9 +91,9 @@ Team 是每个 DSH home 内唯一的协作域。append-only operation ledger 是
 - 窗口覆盖只会从路由向下收窄压力预算、绝不放大：`routeLimitsForAgent` 以覆盖值与实时路由窗口的较小者计算预算，超过路由的覆盖值等于没有设置。未设置覆盖的 Member 行为与之前完全一致。
 - `fresh` 策略只在「被安排新任务」时重续 Member 上下文：Member 认领任务时、Human 原子开始的 committed 直接提及点名该 Member 时、或队友的直接派发（mention 的 Inbox wake 携带未读 direct work）送达时。DM 是纯会话中继，不经这道门，也绝不消耗 arm。
 - 续期经序列化 lifecycle 队列执行，走 Human 重置路径使用的同一个 `renewMemberContextNow` 持久操作；调度器等待 Member 的 turn 边界，像 member transition 一样收敛运行中的 Agent。
-- 续期在完成时被「武装」而非立即触发：`completed` 停止且末轮以完成标记收尾会把 Member 置为 armed（activation 尾部扫描发现最后一次持久停止就是标记收尾时同样置为 armed），任务完成本身从不当场续期。
+- 续期在完成时被「武装」而非立即触发：`completed` 停止且末轮以完成标记收尾会把 Member 置为 armed（activation 尾部扫描发现最后一次持久停止就是标记收尾时同样置为 armed），任务完成本身从不当场续期。arm 决定判定失败时的落点，并保留无负责人场景的续期缝隙；有负责人时，派发判定本身不再被 arm 门槛限制。
 - 派发门会扣住携带 direct work 的 wake，直到续期落地——重置通知与全新系统上下文先于任务正文出现在新代际里；不携带 direct work 的通知（Thread 闲聊、Task activity 流转）绝不消耗 arm。续期落地后经同一道门重新推导那被扣住的 wake（landed-renewal 放行避免 signature dedupe 把它吞掉），重置 body 退出时也会再 flush 一次仍未送出的投递，因此 gating 从不丢失工作。
-- 该不该重置只在当前 Workspace 存在指定团队负责人时鉴别：派发门上 Host 发起一次有界模型判定，把这条派发正文与该 Member 的近期工作比对——它最近 5 条自己发的 Message，加上它最近 Claim 的那个 Task 的内容——得分达到 60% 判定为同一件工作的续作，直接投进 live Session 而不续期；没有负责人，或调用失败、超时、无历史、低于阈值，都花掉 arm 先续期。判定只看本次派发（sequence 最新的 direct work），未读积压不参与，否则一条相关消息会把后续无关任务一起保住。每次判定的分数都写日志。
+- 派发门对每一次被派发的任务都做判定，不论 armed 与否：「这条任务是否延续该 Member 正在做的事」是语义问题，因此只要 Workspace 存在指定团队负责人，Host 就发起一次有界模型判定，把这条派发正文与该 Member 的近期工作比对——它最近 5 条自己发的 Message，加上它最近 Claim 的那个 Task 的内容——得分达到 60% 判定为同一件工作的续作，直接投进 live Session 而不续期；低于阈值一律续期。调用失败（出错、超时、无可解析分数、无 LLM 服务）时，armed 会话只装着已完成的工作，落向续期；未 armed 的会话可能还装着未完成的工作，失败绝不擦除，落向保留。没有负责人时判定无人做主：只有无歧义的缝隙续期（认领、Human 原子开始、armed 成员的下一次派发），其余直接派发照旧投进 live Session。每次判定的分数与 keep/renew 结论都写日志。
 - 派发方仍可显式否决这道判断：committed Message 携带 `keepContext` 时（`team_message` 的 start/reply，或 Human 原子开始），Host 在 emit 之前记下该 operation sequence 对这些 direct markers 的豁免，跳过判断直接保留上下文。豁免与续期判断都是进程内意图，绝不写成 ledger fact；豁免绑定 sequence，因此只覆盖这一条投递，下一次派发重新判定。`team_view` 的 Agent 行显示 `contextStartPolicy`，让派发方先看清谁会续期。
 - 最终放弃（give-up）则释放 arm、让该派发降级到旧上下文投递，而不是热循环重排。已排期的重置若在此期间遭遇 live handle 换代——restart、rollover 或 dispose——body 会重绑到当前 handle 并继续重试，上限五轮绑定，绝不把已排期的续期连同旧 handle 一起丢弃。
 - 完成工作不是分配：Claim 标 done 或 Task 被验收都不提交任何续期；读时验收指引对 `fresh` Member 也改为 keep 当前上下文而非建议 rollover，让完成总结在下一次分配续期前始终可在 live 日志中读到。
