@@ -66,6 +66,7 @@ import { TeamDraftStore } from './drafts.ts'
 import { TeamDockStore } from './dock.ts'
 import { TeamFooterAction } from './TeamFooterAction.tsx'
 import { TeamMembersAction } from './TeamMembersAction.tsx'
+import { TeamHumanToast } from './TeamHumanToast.tsx'
 import { TeamPageDock } from './TeamPageDock.tsx'
 import { TeamWorkspaceBrowser } from './TeamWorkspaceBrowser.tsx'
 import { en, zh, type TeamKey } from './locales.ts'
@@ -392,6 +393,24 @@ function applyUi(ctx: ClientContext): void {
   }))
   registerModeShadow(ctx, navigation, 'rightbar', TeamPageDock as never, dockInject)
   registerModeShadow(ctx, navigation, 'sidebar.settings', TeamMembersAction as never, () => ({ loadMemberGroups }))
+
+  // The Human's new-message banner rides the frame's overlay seat, mounted in
+  // both modes: an assistant notice or a teammate mention addressed to the
+  // Human slides a ten-second banner across the window, and its action jumps
+  // to the Thread (entering Team mode when needed). The reads it watches are
+  // the same durable Inbox the sidebar badge sums.
+  ctx.slots.inject('shell.overlay', () => ctx.slots.register({
+    name: 'shell.overlay',
+    id: 'agent-team-human-toast',
+    locale: NS,
+    inject: () => ({
+      navigation,
+      ...navigation.actions(),
+      loadInbox: (request: AgentTeamInboxRequest) => ctx.remote.agentTeam.inbox(request),
+      subscribeChanges: (scope: TeamChangeScope, listener: TeamChangeListener) => changes.subscribe(scope, listener),
+      subscribeReads: (listener: () => void) => reads.subscribe(listener),
+    }),
+  }, TeamHumanToast as never))
 
   // The Human profile page: one settings section, ordered between General (0)
   // and Models (10) so identity sits near the top. Writes go through the Team

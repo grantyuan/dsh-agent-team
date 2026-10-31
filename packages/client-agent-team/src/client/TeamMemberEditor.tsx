@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import type { AgentTeamClientMemberStatus, AgentTeamCurateMemberPromptProposal, AgentTeamMemberId, AgentTeamMemberPromptProfile, AgentTeamMemberPromptSectionEntry, AgentTeamMemberPromptView, AgentTeamModelSelection, AgentTeamUpdateMemberRequest } from '@wowyuarm/dsh-agent-team/types'
 import type { RemoteResult } from '@deepseek-ai/dsh-typert-protocol'
 import type { TeamModelCatalog, TeamModelEffortOption, TeamModelProviderGroup, TeamSidebarProps } from './slots.ts'
-import { Button, Checkbox, IconChevronDownOutlineRegular, Input, Menu, Modal } from '@deepseek-ai/dsh-client-ui-primitives'
+import { Button, Checkbox, IconChevronDownOutlineRegular, IconChevronUpOutlineRegular, IconCloseOutlineRegular, Input, Menu, Modal } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { MenuEntry } from '@deepseek-ai/dsh-client-ui-primitives'
 import { mintRequestId } from './requests.ts'
 import { useEditDialogSave } from './team-dialog-save.ts'
@@ -76,10 +76,12 @@ export function warmModelCatalog(loadModels: TeamSidebarProps['loadModels']): vo
  * failed read with no warmed value renders a retryable error instead of
  * stranding the field on "loading".
  */
-export function ModelPickerField({ model, onModelChange, loadModels, disabled, t, defaultLabel }: {
+export function ModelPickerField({ model, onModelChange, loadModels, disabled, t, defaultLabel, fieldLabel }: {
   readonly model: AgentTeamModelSelection | undefined
   readonly onModelChange: (choice: AgentTeamModelSelection | undefined) => void
   readonly loadModels: TeamSidebarProps['loadModels']
+  /** Row label override; the shared picker names itself for the primary route. */
+  readonly fieldLabel?: string
   readonly disabled: boolean
   readonly t: TeamSidebarProps['t']
   /** Overrides the follow-default option's label when the picker's fallback reads differently. */
@@ -148,7 +150,7 @@ export function ModelPickerField({ model, onModelChange, loadModels, disabled, t
     : efforts.find(effort => effort.id === selectedEffort)?.name ?? selectedEffort
 
   return <div className={createCss.field}>
-    <span>{t('memberModel')}</span>
+    <span>{fieldLabel ?? t('memberModel')}</span>
     {groups === undefined && modelsError === undefined && <small className={css.editHint}>{t('modelsLoading')}</small>}
     {modelsError !== undefined && (
       <p className={css.editHint}>
@@ -181,7 +183,7 @@ export function ModelPickerField({ model, onModelChange, loadModels, disabled, t
           <button
             type="button"
             className={createCss.selectTrigger!}
-            aria-label={t('memberModel')}
+            aria-label={fieldLabel ?? t('memberModel')}
             aria-haspopup="menu"
             aria-expanded={open}
             disabled={disabled}
@@ -223,6 +225,70 @@ export function ModelPickerField({ model, onModelChange, loadModels, disabled, t
         }
       />
     )}
+  </div>
+}
+
+/** Backup routes one Member may pin, in failover order. */
+export const MODEL_FALLBACK_MAX = 4
+
+/**
+ * The ordered backup-route editor shared by the create and edit forms: one
+ * row per pinned candidate (movable up, removable) plus one trailing picker
+ * that appends the next candidate. The list rides the same absent-clears
+ * discipline as `model`: an empty list clears the failover pin, and the
+ * ledger refuses a candidate that repeats the primary.
+ */
+export function ModelFallbackPickerField({ fallbacks, onChange, primary, loadModels, disabled, t }: {
+  readonly fallbacks: readonly AgentTeamModelSelection[]
+  readonly onChange: (next: readonly AgentTeamModelSelection[]) => void
+  readonly primary: AgentTeamModelSelection | undefined
+  readonly loadModels: TeamSidebarProps['loadModels']
+  readonly disabled: boolean
+  readonly t: TeamSidebarProps['t']
+}) {
+  const replaceAt = (index: number, choice: AgentTeamModelSelection | undefined): void => {
+    if (choice === undefined) { onChange(fallbacks.filter((_, entryIndex) => entryIndex !== index)); return }
+    onChange(fallbacks.map((entry, entryIndex) => entryIndex === index ? choice : entry))
+  }
+  const moveUp = (index: number): void => {
+    if (index === 0) return
+    const next = [...fallbacks]
+    const [moved] = next.splice(index, 1)
+    next.splice(index - 1, 0, moved!)
+    onChange(next)
+  }
+  return <div className={createCss.field}>
+    <span>{t('modelFallbacks')}</span>
+    <small className={css.editHint}>{t('modelFallbacksHint')}</small>
+    {fallbacks.map((fallback, index) => <div key={`${fallback.provider}\u0000${fallback.model}`} className={createCss.fallbackRow}>
+      <ModelPickerField
+        model={fallback}
+        fieldLabel={t('modelFallbackCandidate', { index: index + 1 })}
+        onModelChange={choice => { replaceAt(index, choice) }}
+        loadModels={loadModels}
+        disabled={disabled}
+        t={t}
+      />
+      <button type="button" className={createCss.fallbackAction!} aria-label={t('modelFallbackMoveUp')} disabled={disabled || index === 0} onClick={() => { moveUp(index) }}>
+        <IconChevronUpOutlineRegular size={14} />
+      </button>
+      <button type="button" className={createCss.fallbackAction!} aria-label={t('modelFallbackRemove')} disabled={disabled} onClick={() => { onChange(fallbacks.filter((_, entryIndex) => entryIndex !== index)) }}>
+        <IconCloseOutlineRegular size={14} />
+      </button>
+    </div>)}
+    {fallbacks.length < MODEL_FALLBACK_MAX && <ModelPickerField
+      model={undefined}
+      fieldLabel={t('modelFallbackAdd')}
+      defaultLabel={t('modelFallbackAdd')}
+      onModelChange={choice => {
+        if (choice === undefined) return
+        if (primary !== undefined && choice.provider === primary.provider && choice.model === primary.model) return
+        onChange([...fallbacks, choice])
+      }}
+      loadModels={loadModels}
+      disabled={disabled}
+      t={t}
+    />}
   </div>
 }
 
@@ -562,6 +628,7 @@ function EditPromptDialog({ memberId, loadPromptView, curateMemberPrompt, update
       // over the stored capabilities — the other subfields (tools.allow)
       // survive untouched; an untouched list keeps the stored object itself.
       ...(view.model === undefined ? {} : { model: view.model }),
+      ...(view.modelFallbacks === undefined || view.modelFallbacks.length === 0 ? {} : { modelFallbacks: view.modelFallbacks }),
       ...(skillsAllow === undefined || skillsAllow === storedSkillsAllow
         ? (view.capabilities === undefined ? {} : { capabilities: view.capabilities })
         : { capabilities: { ...view.capabilities, skills: { allow: skillsAllow } } }),
@@ -577,6 +644,7 @@ function EditPromptDialog({ memberId, loadPromptView, curateMemberPrompt, update
       && previous.prompt?.autoExecutePrune === payload.prompt?.autoExecutePrune
       && previous.prompt?.customPrompt === payload.prompt?.customPrompt
       && previous.model === payload.model && previous.capabilities === payload.capabilities
+      && JSON.stringify(previous.modelFallbacks ?? []) === JSON.stringify(payload.modelFallbacks ?? [])
       && (previous.contextStartPolicy ?? undefined) === (payload.contextStartPolicy ?? undefined)
       && (previous.contextWindow ?? undefined) === (payload.contextWindow ?? undefined)
     committedRef.current = reconciled
@@ -845,6 +913,7 @@ export function AgentEditorDialog({ status, updateMember, loadPromptView, curate
   const [handle, setHandle] = useState(status.member.handle)
   const [description, setDescription] = useState(status.member.description)
   const [model, setModel] = useState<AgentTeamModelSelection | undefined>(status.member.model)
+  const [fallbacks, setFallbacks] = useState<readonly AgentTeamModelSelection[]>(status.member.modelFallbacks ?? [])
   const [leader, setLeader] = useState(status.member.leader === true)
   const [promptOpen, setPromptOpen] = useState(false)
   // The profile the Prompt dialog last committed, kept separate from the row
@@ -865,6 +934,7 @@ export function AgentEditorDialog({ status, updateMember, loadPromptView, curate
   const dirty = handle.trim() !== status.member.handle || description.trim() !== status.member.description
     || !sameModel(model, status.member.model) || leader !== storedLeader
     || policy !== (status.member.contextStartPolicy ?? 'continue') || parsedWindow !== status.member.contextWindow
+    || JSON.stringify(fallbacks) !== JSON.stringify(status.member.modelFallbacks ?? [])
   const submit = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault()
     const normalizedHandle = handle.trim()
@@ -875,6 +945,9 @@ export function AgentEditorDialog({ status, updateMember, loadPromptView, curate
       handle: normalizedHandle,
       description: normalizedDescription,
       ...(model === undefined ? {} : { model }),
+      // The editor owns the backup list: an emptied list clears the pin
+      // (absent-clears, like `model`), a non-empty one rides in order.
+      ...(fallbacks.length === 0 ? {} : { modelFallbacks: fallbacks }),
       // The editor owns no capabilities UI, but an absent field would clear a
       // Remote-written override; echo the stored intent through the edit.
       ...(status.member.capabilities === undefined ? {} : { capabilities: status.member.capabilities }),
@@ -898,6 +971,7 @@ export function AgentEditorDialog({ status, updateMember, loadPromptView, curate
     const samePending = pendingRequest.current !== undefined && pendingRequest.current.memberId === payload.memberId
       && pendingRequest.current.handle === payload.handle && pendingRequest.current.description === payload.description
       && sameModel(pendingRequest.current.model, model)
+      && JSON.stringify(pendingRequest.current.modelFallbacks ?? []) === JSON.stringify(fallbacks)
       && (pendingRequest.current.contextStartPolicy ?? 'continue') === policy
       && pendingRequest.current.contextWindow === parsedWindow
       && (pendingRequest.current.leader ?? false) === leader
@@ -928,6 +1002,7 @@ export function AgentEditorDialog({ status, updateMember, loadPromptView, curate
           <Input className={createCss.input!} value={description} placeholder={t('agentDescriptionPlaceholder')} onChange={event => { setDescription(event.target.value); pendingRequest.current = undefined }} disabled={saving} />
         </label>
         <ModelPickerField model={model} onModelChange={choice => { pendingRequest.current = undefined; setModel(choice) }} loadModels={loadModels} disabled={saving} t={t} />
+        <ModelFallbackPickerField fallbacks={fallbacks} onChange={next => { pendingRequest.current = undefined; setFallbacks(next) }} primary={model} loadModels={loadModels} disabled={saving} t={t} />
         <ContextPickerField
           policy={policy}
           onPolicyChange={next => { pendingRequest.current = undefined; setPolicy(next) }}

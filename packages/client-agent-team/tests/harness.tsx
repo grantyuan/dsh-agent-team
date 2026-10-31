@@ -22,7 +22,7 @@ class ResizeObserverStub {
 }
 vi.stubGlobal('ResizeObserver', ResizeObserverStub)
 
-type FrameProps = PropsRenderSlots<'sidebar' | 'main' | 'rightbar'>
+type FrameProps = PropsRenderSlots<'sidebar' | 'main' | 'rightbar' | 'shell.overlay'>
 function Frame({ renderSlot }: FrameProps) {
   const [collapsed, setCollapsed] = useState(false)
   return <>
@@ -30,6 +30,7 @@ function Frame({ renderSlot }: FrameProps) {
     {renderSlot('sidebar', { collapsed, width: collapsed ? 56 : 280 })}
     {renderSlot('main', {}, { entryKey: 'conversation' })}
     {renderSlot('rightbar', { width: 400, viewportWidth: 1440, canShow: true })}
+    {renderSlot('shell.overlay', {})}
   </>
 }
 
@@ -114,6 +115,13 @@ export async function runtimeWithTeam(options?: { mode?: 'team'; workspaceId?: s
     cancel: vi.fn(async () => {}),
     loadOlder: vi.fn(async () => {}),
     send: vi.fn(async () => {}),
+    // The composer bar's session branch reads fileUploads as an observable
+    // hook source (a by-id record, like the real service) and resolves draft
+    // attachments synchronously; without live uploads the empty record is the
+    // truth the bar renders.
+    fileUploads: { getSnapshot: () => ({}), subscribe: () => () => {} },
+    resolveDraftAttachments: () => [],
+    releaseDraftAttachment: () => {},
   } as never)
   const status = (memberId: string, workspaceId: string, handle: string, presence: 'available' | 'working' | 'error' | 'unavailable', diagnostic?: AgentTeamMemberDiagnostic) => ({
     member: {
@@ -684,6 +692,7 @@ export async function runtimeWithTeam(options?: { mode?: 'team'; workspaceId?: s
     sidebar: { kind: 'single', scope: 'root' },
     main: { kind: 'keyed', scope: 'root' },
     rightbar: { kind: 'single', scope: 'root' },
+    'shell.overlay': { kind: 'list', scope: 'root' },
   } as never, Frame as never)
   await runtime.mount({ inject: [...injectSidebar], apply: applySidebar })
   // The shipped ConversationRoot occupies the conversation seat — the same

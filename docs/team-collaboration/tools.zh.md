@@ -68,6 +68,14 @@ watch 是 durable 的 ledger 状态（`team/member-watch-started` / `team/member
 
 每条通知报告监督所读的同一份证据——状态、presence、失败诊断、相对 route 窗口的上下文 token、跨整个 rollover 血统的已完成对话回合数，以及该 Member 正在运行的任务——所以「停止了五分钟」只到一次，而不是每趟 pass 一次。watch 在效果上是只读的：它绝不重置、打断或私信被监控的 Member，也不授予 leader 此前没有的权限。`status` 立即采样一个被监控的 Member；它报告的「状态时长」是最近一次采样所观察到的那个状态已持续多久，而不是 watch 建立了多久——刚迁移的状态只有在真正持续了那么久之后才会读成对应分钟数。`list` 列出 leader 持有的全部 watch。
 
+## `team_job`
+
+`team_job` 代表 Member 在后台运行一条长命令，并在它等待的工作结束时由 Agent Team 把该 Member 拉回来。任何 enabled Member 都能为自己启动 job；job 按 Member 归属并设上限（每个 Member 少量并发，全 Team 有总量上限）。`start` 给出 name、program 与参数数组——不经过 shell，需要管道就显式传 `bash`。Host 直接 spawn 子进程，并向其环境注入 `AGENT_TEAM_JOB_ID`、一次性的 `AGENT_TEAM_JOB_TOKEN`，以及（外部 gateway 在服务时）`AGENT_TEAM_GATEWAY_URL`；工具结果返回 `jobRef` 并说明脚本能否回报。
+
+脚本用 `node agent-team.mjs job message "<text>"`（或直接 POST `<gatewayUrl>/jobs/<jobRef>/message`，以 job token 作 bearer 认证）回报进度。每条回报都成为 owner Member 自己口吻的普通 Message，落在 owner 的 Channel 里——teammate 看得见，正文里的 `@mention` 也照常唤醒对应 Member；owner 不会被自己 job 的回报唤醒。进程退出时，Host 向 owner 的 Channel 发一条署名 Team Assistant 的完成通知（结果、时长、最后一条回报、有界输出尾部）并把 owner 拉起来，由它 `team_job action=status` 读取输出并继续工作。`cancel` 结束运行中的 job（先 SIGTERM 再 SIGKILL）并照常发通知；`list` 列出自己的 job 与剩余额度。
+
+registry 按设计是 process-local 的：一个 job 一生的 durable 记录是它产生的 Messages，而非 ledger operation。Host 关停会杀掉活着的子进程且不发通知——团队不能丢的工作属于 Task，不属于 job。
+
 ## `context_rollover`
 
 `context_rollover` 为调用的 Member 安排一次进入全新上下文的 rollover。Agent 传入私有 `handoff`（及可选 `relatedFiles`；传入 `checkpointRef` 则改为回返到已记录的 checkpoint）。`checkpointRef` 在工具与参数两级 description 上做了 copy hardening：普通续代与压力换窗必须省略，只有引用 `context_timeline` 结果中列为 restorable 的精确 ref 时才提供——绝不合成或猜测。工具只做校验并返回 `status: 'scheduled'`，同时结束当前 turn——工具体本身不做任何 lifecycle 或 Inbox 副作用。

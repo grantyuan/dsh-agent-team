@@ -274,6 +274,19 @@ export type TeamPagePayload = PropsRuntime<'rightbar'> & PropsLocale<'team'> & T
   loadExternalContext: (request: AgentTeamExternalContextRequest) => Promise<RemoteResult<AgentTeamExternalContextResult>>
 }
 
+/**
+ * The Human's new-message banner: a frame-level overlay seat that watches the
+ * same durable Inbox the sidebar badge reads and toasts each new direct
+ * arrival. It mounts in both modes, so it needs the navigation actions and the
+ * read surface, nothing more.
+ */
+export type TeamToastProps = PropsRuntime<'shell.overlay'> & PropsLocale<'team'> & TeamNavigationActions & {
+  navigation: TeamNavigationSource
+  loadInbox: (request: AgentTeamInboxRequest) => Promise<RemoteResult<AgentTeamInbox>>
+  subscribeChanges: SubscribeTeamChanges
+  subscribeReads: (listener: () => void) => () => void
+}
+
 /** The presentation the dock reports to the frame's right column. */
 export interface TeamDockPresentation {
   /** Whether the dock is drawn at all. */

@@ -50,6 +50,7 @@ function stubCore(overrides: Partial<AgentTeamExternalCore> = {}): AgentTeamExte
     heartbeatForMember: async () => ({}) as never,
     dmsForMember: () => ({ dms: [], hasMore: false }),
     dmForMember: async () => ({ receipt: {}, recipient: {}, relayed: true }) as never,
+    jobMessageForJob: async (jobId: string) => ({ kind: 'recorded', jobId, deliveredTo: 'channel' }) as never,
     ...overrides,
   }
 }
@@ -261,5 +262,34 @@ describe('external gateway — failure mapping', () => {
       method: 'POST', headers: memberHeaders('member:a'), body: '{not json',
     })
     expect(malformed.status).toBe(400)
+  })
+})
+
+describe('external gateway — background job reports', () => {
+  it('forwards a job-token report to the Host surface', async () => {
+    const jobMessageForJob = vi.fn(async (jobId: string, token: string, body: string) => ({ kind: 'recorded' as const, jobId, deliveredTo: 'channel' as const, seenToken: token, seenBody: body }))
+    const { port } = await startGateway(stubCore({ jobMessageForJob }))
+    const response = await post(port, `/agent-team/${encodeURIComponent(alpha)}/jobs/job%3Aabc/message`,
+      { 'content-type': 'application/json', authorization: 'Bearer jobsecret' }, { body: 'halfway there' })
+    expect(response.status).toBe(200)
+    expect(await response.json()).toMatchObject({ kind: 'recorded', jobId: 'job:abc' })
+    expect(jobMessageForJob).toHaveBeenCalledWith('job:abc', 'jobsecret', 'halfway there')
+  })
+
+  it('refuses a report without a bearer, with an empty body, or past the bound', async () => {
+    const { port } = await startGateway(stubCore())
+    expect((await post(port, `/agent-team/${encodeURIComponent(alpha)}/jobs/job%3A1/message`, { 'content-type': 'application/json' }, { body: 'x' })).status).toBe(401)
+    expect((await post(port, `/agent-team/${encodeURIComponent(alpha)}/jobs/job%3A1/message`, { 'content-type': 'application/json', authorization: 'Bearer t' }, { body: '  ' })).status).toBe(400)
+    expect((await post(port, `/agent-team/${encodeURIComponent(alpha)}/jobs/job%3A1/message`, { 'content-type': 'application/json', authorization: 'Bearer t' }, { body: 'x'.repeat(2001) })).status).toBe(400)
+  })
+
+  it('maps a Host token refusal to 401 so the script can act on it', async () => {
+    const { port } = await startGateway(stubCore({
+      jobMessageForJob: async () => { throw new Error('the job token does not match this job') },
+    }))
+    const response = await post(port, `/agent-team/${encodeURIComponent(alpha)}/jobs/job%3A1/message`,
+      { 'content-type': 'application/json', authorization: 'Bearer wrong' }, { body: 'x' })
+    expect(response.status).toBe(401)
+    expect((await response.json()).error.message).toContain('token')
   })
 })

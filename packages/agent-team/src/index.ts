@@ -56,6 +56,8 @@ import { CONTINUATION_NUDGE_MARKER, TaskContinuationWatcher, continuationNudgeTe
 import { CompletionLiaison, INTERRUPT_PUSH_SUMMARY, liaisonFeedbackText, liaisonReportCheckText, liaisonResumePushText, liaisonTaskPushText, type LiaisonInterrupt, type LiaisonLeader } from './completion-liaison.ts'
 import { TruncationEscalator, truncationEscalationText, type TruncationLeader } from './truncation-escalation.ts'
 import { MemberWatchMonitor, memberWatchNoticeText, type MemberWatchNotice, type MemberWatchSample, type MemberWatchTask } from './member-watch.ts'
+import { clearRouteStreak, modelFailoverNoticeText, noteRouteFailure, routeKeyOf, settlePromotion, supervisionExhaustedNoticeText, type RouteFailureState } from './model-failover.ts'
+import { BackgroundJobRegistry, backgroundJobNoticeText, type BackgroundJob, type BackgroundJobStartInput } from './background-jobs.ts'
 import { StoredSessionReadError, StoredSessionReader, sessionFailureOf } from './stored-session-reader.ts'
 import { doctorAnalysisPrompt, humanTranscriptEntriesOf, renderFailureTranscript, type TranscriptEvent } from './failure-transcript.ts'
 import { agentTeamDomainSpec } from './spec.ts'
@@ -65,6 +67,10 @@ import type {
   AgentTeamAddExternalMemberRequest,
   AgentTeamAddMemberRequest,
   AgentTeamAddMemberResult,
+  AgentTeamBackgroundJobRow,
+  AgentTeamJobMessageResult,
+  AgentTeamStartJobRequest,
+  AgentTeamStartJobResult,
   AgentTeamGatewayConfig,
   AgentTeamExternalContextEntry,
   AgentTeamExternalContextRequest,
@@ -696,6 +702,14 @@ export default class AgentTeam extends TypertRemoteService {
    * archiving it stays the Human's operation alone.
    */
   private readonly supervisionExhausted = new Set<AgentTeamMemberId>()
+  /**
+   * Per-Member LLM route-failure memory for the backup-route failover (see
+   * model-failover.ts). Process-local like every other runtime episode: a
+   * fresh generation activates on the pinned primary again, so a temporarily
+   * dead provider API costs the Team the promotion's own notices, never a
+   * permanent detour.
+   */
+  private readonly routeFailures = new Map<AgentTeamMemberId, RouteFailureState>()
   private readonly pressurePolicy: PressurePolicyCoordinator
   private readonly notifiedInbox = new Map<AgentTeamMemberId, string>()
   private attachmentGcTimer?: ReturnType<typeof setInterval> | undefined
@@ -908,6 +922,21 @@ export default class AgentTeam extends TypertRemoteService {
     leaderHandleOf: memberId => this.ledger?.getMember(memberId)?.handle,
     sampleOf: async (memberId, workspaceId) => this.watchSampleOf(memberId, workspaceId),
     notify: async notice => { await this.notifyLeaderOfWatch(notice) },
+    log: message => { this.ctx.logger.warn(`agent-team: ${message}`) },
+  })
+  /**
+   * Members' background jobs: long-running commands the Host spawns for a
+   * Member and watches. The registry is process-local by design (the durable
+   * record of a job's life is the Messages it produces, like the heartbeat
+   * cadence staying out of the ledger); a Host shutdown kills live children
+   * instead of adopting strangers. Every outcome becomes an ordinary Team
+   * Assistant Message into the owner's Channel — which is what wakes the owner
+   * to handle the finished work — and every script report becomes an ordinary
+   * Message in the owner's voice so teammates can follow along.
+   */
+  private readonly backgroundJobs = new BackgroundJobRegistry({
+    onFinished: async job => { await this.announceBackgroundJobFinished(job) },
+    onScriptMessage: async (job, body) => { await this.relayBackgroundJobMessage(job, body) },
     log: message => { this.ctx.logger.warn(`agent-team: ${message}`) },
   })
   /**
@@ -1190,6 +1219,24 @@ export default class AgentTeam extends TypertRemoteService {
       const kind = classifyRecoverableError(message)
       if (kind !== undefined) this.ctx.logger.warn(`agent-team: member '${member.handle}' hit a recoverable ${kind} error; recording a consecutive error occurrence`)
       this.recovery.onError(member.memberId, message)
+      // A provider-side failure on a Member that pins backup routes is
+      // answered by the route failover, not by supervision: the streak owns
+      // the occurrence, and the switch resets the supervisor's context-
+      // remedy budget so a dead API never also burns a fresh-context reset.
+      if (kind !== undefined && member.modelFallbacks !== undefined && member.modelFallbacks.length > 0) {
+        const current = this.currentModelSelectionOf(member.memberId)
+        const { next, promote } = noteRouteFailure(this.routeFailures.get(member.memberId), current, member.modelFallbacks)
+        this.routeFailures.set(member.memberId, next)
+        if (promote !== undefined) {
+          void this.runModelFailover(member, agent, current, promote, next.promoted, member.modelFallbacks.length)
+          this.emitMemberPresenceChanged(member)
+          return
+        }
+      } else {
+        const cleared = clearRouteStreak(this.routeFailures.get(member.memberId), this.currentModelSelectionOf(member.memberId))
+        if (cleared === undefined) this.routeFailures.delete(member.memberId)
+        else this.routeFailures.set(member.memberId, cleared)
+      }
       this.supervisor.onError(member.memberId, message)
       this.emitMemberPresenceChanged(member)
     })
@@ -1217,6 +1264,12 @@ export default class AgentTeam extends TypertRemoteService {
         if (this.memberFailures.get(member.memberId)?.runtime === undefined) {
           this.recovery.onCleanTurnEnd(member.memberId)
           this.supervisor.onCleanTurn(member.memberId)
+          // A clean turn on the live route ends any failure streak: the
+          // promoted-index stays, so a recovered middle backup is not
+          // re-tried behind a primary that already proved dead this episode.
+          const settled = settlePromotion(clearRouteStreak(this.routeFailures.get(member.memberId), this.currentModelSelectionOf(member.memberId)))
+          if (settled === undefined) this.routeFailures.delete(member.memberId)
+          else this.routeFailures.set(member.memberId, settled)
           // A clean turn is the Member turning healthy again: a
           // supervision-exhausted latch ends here, and the next pass watches
           // the Member with a fresh bring-up budget.
@@ -1296,6 +1349,7 @@ export default class AgentTeam extends TypertRemoteService {
       this.completionLiaison.dispose()
       this.truncationEscalation.dispose()
       this.memberWatch.dispose()
+      this.backgroundJobs.dispose()
       this.contextManagement.dispose()
       this.pressurePolicy.dispose()
       if (this.attachmentGcTimer !== undefined) clearInterval(this.attachmentGcTimer)
@@ -1421,6 +1475,7 @@ export default class AgentTeam extends TypertRemoteService {
       replyForMember: (memberId, request) => host.replyForMember(memberId, request),
       heartbeatForMember: (memberId, request) => host.heartbeatForMember(memberId, request),
       dmsForMember: (memberId, request) => host.dmsForMember(memberId, request),
+      jobMessageForJob: (jobId, token, body) => host.jobMessageForJob(jobId, token, body),
       dmForMember: async (memberId, request) => {
         try {
           return await host.dmForMember(memberId, request)
@@ -1542,6 +1597,7 @@ export default class AgentTeam extends TypertRemoteService {
         ? { pruneCandidates: projection.candidates }
         : {}),
       ...(member.model === undefined ? {} : { model: member.model }),
+      ...(member.modelFallbacks === undefined || member.modelFallbacks.length === 0 ? {} : { modelFallbacks: member.modelFallbacks }),
       ...(member.capabilities === undefined ? {} : { capabilities: member.capabilities }),
       ...(member.contextStartPolicy === undefined ? {} : { contextStartPolicy: member.contextStartPolicy }),
       ...(member.contextWindow === undefined ? {} : { contextWindow: member.contextWindow }),
@@ -3419,7 +3475,71 @@ export default class AgentTeam extends TypertRemoteService {
       this.supervisionEscalation.delete(memberId)
       this.supervisionExhausted.add(memberId)
       this.ctx.logger.warn(`agent-team: supervision exhausted its remedies for member '${memberId}' after ${escalation.trigger}; leaving it to the Human until it turns healthy again`)
+      // The latch is process-local; the notice is its durable counterpart —
+      // without it the give-up would be invisible to the Human who must act.
+      const handle = this.ledger?.getMember(memberId)?.handle ?? memberId
+      await this.postHumanNoticeForMember(memberId, supervisionExhaustedNoticeText({ handle, trigger: escalation.trigger }))
     }
+  }
+
+  /**
+   * Promote one backup LLM route onto the Member's live session and announce
+   * the switch. The session's recorded choice carries the backup for future
+   * steps; the Member's pinned primary stays untouched in the ledger, so the
+   * next fresh generation or a manual edit returns to it. A failed switch
+   * releases the latch and logs — the next streak tries again.
+   */
+  private async runModelFailover(
+    member: AgentTeamAgentMember,
+    agent: Agent,
+    failed: AgentTeamModelSelection,
+    promoted: AgentTeamModelSelection,
+    promotedIndex: number,
+    candidateCount: number,
+  ): Promise<void> {
+    try {
+      await agent.model.select({ provider: promoted.provider, model: promoted.model, ...(promoted.reasoningEffort === undefined ? {} : { reasoningEffort: promoted.reasoningEffort }) })
+      const state = this.routeFailures.get(member.memberId)
+      if (state !== undefined) this.routeFailures.set(member.memberId, settlePromotion(state) ?? state)
+      this.ctx.logger.warn(`agent-team: member '${member.handle}' failed over from ${routeKeyOf(failed)} to backup route ${routeKeyOf(promoted)} (${promotedIndex}/${candidateCount})`)
+      await this.postHumanNoticeForMember(member.memberId, modelFailoverNoticeText({
+        handle: member.handle, failed, promoted, candidateIndex: promotedIndex, candidateCount,
+      }))
+      this.emitMemberPresenceChanged(member)
+    } catch (error) {
+      const state = this.routeFailures.get(member.memberId)
+      if (state !== undefined) this.routeFailures.set(member.memberId, settlePromotion(state) ?? state)
+      this.ctx.logger.warn(`agent-team: model failover for member '${member.handle}' to ${routeKeyOf(promoted)} failed: ${error instanceof Error ? error.message : String(error)}`)
+    }
+  }
+
+  /**
+   * One Team Assistant notice addressed to the Human: posted into the Member's
+   * first Channel with the `@human` mention, so it lands in the Human's Inbox
+   * and 消息中心 like every other coordinator notice. A Member without a
+   * shared Channel is a logged no-op — the durable facts stay in the log.
+   */
+  private async postHumanNoticeForMember(memberId: AgentTeamMemberId, body: string): Promise<void> {
+    const ledger = this.requireLedger()
+    const member = ledger.getMember(memberId)
+    if (member === undefined) return
+    for (const workspaceId of ledger.workspacesOf(memberId)) {
+      const channelRef = ledger.channelsForMember(memberId, workspaceId)[0]
+      if (channelRef === undefined) continue
+      try {
+        await this.sendMessageAs(agentTeamAssistantActor(), {
+          requestId: randomUUID() as AgentTeamRequestId,
+          workspaceId,
+          channelRef,
+          body,
+          asTask: false,
+        })
+      } catch (error) {
+        this.ctx.logger.warn(`agent-team: human notice for member '${member.handle}' failed to post: ${error instanceof Error ? error.message : String(error)}`)
+      }
+      return
+    }
+    this.ctx.logger.warn(`agent-team: human notice for member '${member.handle}' has no Channel to post into`)
   }
 
   /**
@@ -4756,6 +4876,150 @@ export default class AgentTeam extends TypertRemoteService {
   }
 
   /**
+   * Start one background job for the calling Member. The Host spawns the
+   * program directly (no shell is involved; a Member that needs one passes
+   * `bash` explicitly) and watches it: the child carries
+   * `AGENT_TEAM_JOB_ID`/`AGENT_TEAM_JOB_TOKEN` so the script can report
+   * progress through the gateway while the gateway serves, and every outcome
+   * becomes a completion notice that wakes the owner. Budgets and the
+   * accepting fence are the registry's and the member call's respectively.
+   */
+  async startJobForAgent(agent: Agent, request: AgentTeamStartJobRequest): Promise<AgentTeamStartJobResult> {
+    const actor = this.memberCall(agent, request.workspaceId)
+    const name = request.name.trim()
+    if (name === '') throw new Error('a background job needs a non-empty name')
+    const program = request.program.trim()
+    if (program === '') throw new Error('a background job needs a program to run')
+    const port = this.externalApi?.boundPort
+    const gatewayUrl = this.externalApi === undefined || port === undefined
+      ? undefined
+      : `http://127.0.0.1:${port}/agent-team/${encodeURIComponent(request.workspaceId)}`
+    const { job, token } = this.backgroundJobs.start({
+      workspaceId: request.workspaceId,
+      ownerMemberId: actor.memberId,
+      ownerHandle: actor.handle,
+      name,
+      program,
+      ...(request.args === undefined ? {} : { args: request.args }),
+      ...(request.cwd === undefined ? {} : { cwd: request.cwd }),
+      ...(gatewayUrl === undefined ? {} : { env: { AGENT_TEAM_GATEWAY_URL: gatewayUrl } }),
+    } satisfies BackgroundJobStartInput)
+    void token // the child already carries it; the tool result only reports the route
+    const messagingEnabled = gatewayUrl !== undefined
+    return {
+      job: this.backgroundJobRow(job),
+      ...(gatewayUrl === undefined ? {} : { gatewayUrl }),
+      messagingEnabled,
+    }
+  }
+
+  /** One of the caller's own jobs with its bounded output tail. */
+  jobStatusForAgent(agent: Agent, request: { readonly workspaceId: WorkspaceId; readonly jobId: string }): { readonly job: AgentTeamBackgroundJobRow; readonly outputTail: string } {
+    const actor = this.memberCall(agent, request.workspaceId)
+    const job = this.requireOwnBackgroundJob(actor.memberId, request.jobId)
+    return { job: this.backgroundJobRow(job), outputTail: this.backgroundJobs.tailOf(job.jobId) }
+  }
+
+  /** Every job the calling Member owns, newest first, plus remaining capacity. */
+  listJobsForAgent(agent: Agent, request: { readonly workspaceId: WorkspaceId }): { readonly jobs: readonly AgentTeamBackgroundJobRow[]; readonly capacity: number } {
+    const actor = this.memberCall(agent, request.workspaceId)
+    return {
+      jobs: this.backgroundJobs.listForMember(actor.memberId).map(job => this.backgroundJobRow(job)),
+      capacity: this.backgroundJobs.capacityForMember(actor.memberId),
+    }
+  }
+
+  /** End one of the caller's own running jobs; a finished job reports not-cancelled. */
+  cancelJobForAgent(agent: Agent, request: { readonly workspaceId: WorkspaceId; readonly jobId: string }): { readonly job: AgentTeamBackgroundJobRow; readonly cancelled: boolean } {
+    const actor = this.memberCall(agent, request.workspaceId)
+    const job = this.requireOwnBackgroundJob(actor.memberId, request.jobId)
+    const cancelled = this.backgroundJobs.cancel(job.jobId)
+    return { job: this.backgroundJobRow(this.backgroundJobs.get(job.jobId) ?? job), cancelled }
+  }
+
+  /**
+   * The gateway's job-token surface: a script reports progress. The registry
+   * validates the token; a job that left this process is unknown here, and the
+   * gateway maps the throw to a 401/404 the script can act on.
+   */
+  async jobMessageForJob(jobId: string, token: string, body: string): Promise<AgentTeamJobMessageResult> {
+    const job = await this.backgroundJobs.scriptMessage(jobId, token, body)
+    return { kind: 'recorded', jobId: job.jobId, deliveredTo: 'channel' }
+  }
+
+  private requireOwnBackgroundJob(memberId: AgentTeamMemberId, jobId: string): BackgroundJob {
+    const job = this.backgroundJobs.get(jobId)
+    if (job === undefined) throw new Error(`unknown background job '${jobId}' (jobs live only while this Host process runs)`)
+    if (job.ownerMemberId !== memberId) throw new Error(`background job '${jobId}' belongs to another Member`)
+    return job
+  }
+
+  private backgroundJobRow(job: BackgroundJob): AgentTeamBackgroundJobRow {
+    return Object.freeze({
+      jobId: job.jobId,
+      name: job.name,
+      command: job.command,
+      status: job.status,
+      startedAt: job.startedAt,
+      ...(job.exitCode === undefined ? {} : { exitCode: job.exitCode }),
+      ...(job.ranSeconds === undefined ? {} : { ranSeconds: job.ranSeconds }),
+      ...(job.lastScriptMessage === undefined ? {} : { lastScriptMessage: job.lastScriptMessage }),
+    })
+  }
+
+  /**
+   * Post one job notice into the owner's first Channel as an ordinary Team
+   * Assistant Message, addressed to the owner so the commit wakes them — the
+   * same delivery shape every coordinator notice uses. An owner without a
+   * Channel cannot be reached: the outcome is logged and the job row still
+   * reads through team_job.
+   */
+  private async postBackgroundJobNotice(job: BackgroundJob, body: string, wakeOwner: boolean): Promise<void> {
+    const ledger = this.requireLedger()
+    const channelRef = ledger.channelsForMember(job.ownerMemberId, job.workspaceId)[0]
+    if (channelRef === undefined) {
+      this.ctx.logger.warn(`agent-team: background job '${job.jobId}' has no Channel to announce through for member '${job.ownerHandle}'`)
+      return
+    }
+    await this.sendMessageAs(agentTeamAssistantActor(), {
+      requestId: randomUUID() as AgentTeamRequestId,
+      workspaceId: job.workspaceId,
+      channelRef,
+      body,
+      ...(wakeOwner ? { recipients: [job.ownerMemberId] } : {}),
+      asTask: false,
+    })
+  }
+
+  /** The completion notice: outcome, bounded tail, and the wake for the owner. */
+  private async announceBackgroundJobFinished(job: BackgroundJob): Promise<void> {
+    const tail = this.backgroundJobs.tailOf(job.jobId)
+    const body = tail.trim() === ''
+      ? backgroundJobNoticeText(job)
+      : `${backgroundJobNoticeText(job)}\n\nOutput tail:\n\`\`\`\n${tail}\n\`\`\``
+    await this.postBackgroundJobNotice(job, body, true)
+  }
+
+  /**
+   * A script's progress report, posted in the owner Member's own voice so the
+   * Channel sees it as the Member speaking (a `@mention` inside the body wakes
+   * exactly as any ordinary Message would). No recipients: the owner is the
+   * sender and is never woken by their own message.
+   */
+  private async relayBackgroundJobMessage(job: BackgroundJob, body: string): Promise<void> {
+    const ledger = this.requireLedger()
+    const channelRef = ledger.channelsForMember(job.ownerMemberId, job.workspaceId)[0]
+    if (channelRef === undefined) throw new Error(`the job owner '${job.ownerHandle}' has no Channel to report into`)
+    await this.sendMessageAs({ kind: 'member', memberId: job.ownerMemberId, handle: job.ownerHandle }, {
+      requestId: randomUUID() as AgentTeamRequestId,
+      workspaceId: job.workspaceId,
+      channelRef,
+      body: `[job ${job.name}] ${body}`,
+      asTask: false,
+    })
+  }
+
+  /**
    * Run one watch pass now: the periodic timer calls this, and a test or an
    * operator can drive it with a chosen clock.
    */
@@ -5747,6 +6011,9 @@ export default class AgentTeam extends TypertRemoteService {
   }
 
   private async activateMember(member: AgentTeamAgentMember, knownWorkspacePath?: string, knownSessions?: ReadonlySet<SessionId>, forkedFrom?: SessionId, options?: { readonly deferNotify?: boolean; readonly seed?: readonly SessionEvent[]; readonly inheritedEventCount?: SessionLogOffset; readonly carriedSelection?: AgentTeamModelSelection }): Promise<void> {
+    // A fresh generation starts back at the pinned primary: the failover
+    // memory belonged to the previous session's route.
+    this.routeFailures.delete(member.memberId)
     if (this.handles.has(member.memberId)) return
     let created: AgentHandle | undefined
     try {

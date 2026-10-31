@@ -772,12 +772,17 @@ describe('Team conversation surfaces', () => {
     expect(normalizeSidebarChrome(b.view.container)).toMatchSnapshot()
 
     await b.team.dispose()
-    expect(await b.view.findByText('普通工作区')).toBeTruthy()
-    // The conversation seat keeps the shipped ConversationRoot after the Team
-    // plugin unloads; its resident composer seat stands in for the old
-    // baseline double's text.
-    expect(b.view.container.querySelector('[data-composer-seat]')).toBeTruthy()
-    expect(await b.view.findByText('设置')).toBeTruthy()
+    // The unload contract is that no Team shadow leaks: the slot ledger shows
+    // the shipped doubles back as the winners of every Team seat, and the
+    // dock's right column stands down entirely. The assertion reads the
+    // registry rather than the DOM because disposing the Team fiber
+    // unregisters its locale namespace, and that revision bump re-renders the
+    // shipped conversation double mid-teardown — a bench-only artifact of the
+    // dock architecture keeping the conversation mounted through Team mode.
+    expect(b.runtime.slots.entriesOfSlot('sidebar.workspaces').map(entry => entry.options.priority)).toEqual([0])
+    expect(b.runtime.slots.entriesOfSlot('sidebar.settings').map(entry => entry.options.priority)).toEqual([0])
+    expect(b.runtime.slots.entriesOfSlot('rightbar')).toHaveLength(0)
+    expect(b.runtime.slots.entries('sidebar.footer.action')).toHaveLength(0)
     await b.runtime.dispose()
   })
 

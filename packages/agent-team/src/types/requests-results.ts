@@ -73,6 +73,8 @@ export interface AgentTeamAddMemberRequest {
   readonly presetId: string
   /** Absent inherits the Host default model selection. */
   readonly model?: AgentTeamModelSelection
+  /** Ordered backup routes for automatic failover; absent or empty disables it. */
+  readonly modelFallbacks?: readonly AgentTeamModelSelection[]
   /** Durable capability intent; see AgentTeamMemberCapabilities. */
   readonly capabilities?: AgentTeamMemberCapabilities
   /** Durable prompt-shaping intent; see AgentTeamMemberPromptProfile. */
@@ -146,6 +148,8 @@ export interface AgentTeamUpdateMemberRequest {
   /** Display purpose text; may be empty, matching creation. */
   readonly description: string
   readonly model?: AgentTeamModelSelection
+  /** Absent clears the backup-route list back to no failover, matching `model`. */
+  readonly modelFallbacks?: readonly AgentTeamModelSelection[]
   /** Absent clears any capability override, matching `model`. */
   readonly capabilities?: AgentTeamMemberCapabilities
   /** Absent clears any prompt-profile override, matching `model`. */
@@ -230,6 +234,7 @@ export interface AgentTeamMemberPromptView {
   readonly pruneCandidates?: readonly string[]
   /** Stored overrides the dialog's edit echoes verbatim, so absence cannot clear them. */
   readonly model?: AgentTeamModelSelection
+  readonly modelFallbacks?: readonly AgentTeamModelSelection[]
   readonly capabilities?: AgentTeamMemberCapabilities
   readonly contextStartPolicy?: 'continue' | 'fresh'
   readonly contextWindow?: number
@@ -1881,3 +1886,91 @@ export interface AgentTeamMessageCenterMessages {
 
 export type AgentTeamMessageCenter = AgentTeamMessageCenterTopics | AgentTeamMessageCenterMessages
 
+
+/**
+ * One background job as the `team_job` tool and the gateway surface it: the
+ * registry record minus process internals. The output tail is served separately
+ * (bounded) because it can grow while the row stays stable.
+ */
+export interface AgentTeamBackgroundJobRow {
+  readonly jobId: string
+  readonly name: string
+  readonly command: string
+  readonly status: 'running' | 'exited' | 'failed' | 'cancelled'
+  readonly startedAt: number
+  readonly exitCode?: number
+  readonly ranSeconds?: number
+  readonly lastScriptMessage?: string
+}
+
+/** `team_job action=start`: spawn one long-running command in the background. */
+export interface AgentTeamStartJobRequest {
+  readonly requestId: AgentTeamRequestId
+  readonly workspaceId: WorkspaceId
+  /** A short Human-readable name for the job, as notices and rows call it. */
+  readonly name: string
+  /** The program to run; no shell is involved — pass `bash`/`sh` explicitly. */
+  readonly program: string
+  readonly args?: readonly string[]
+  readonly cwd?: string
+}
+
+export interface AgentTeamStartJobResult {
+  readonly job: AgentTeamBackgroundJobRow
+  /**
+   * The job's one-time credential, already exported to the child as
+   * `AGENT_TEAM_JOB_TOKEN`. Present only while the external gateway serves;
+   * without it the script has no reporting route and only the completion
+   * notice applies.
+   */
+  readonly gatewayUrl?: string
+  readonly messagingEnabled: boolean
+}
+
+/** `team_job action=status`: one job's row plus its bounded output tail. */
+export interface AgentTeamJobStatusRequest {
+  readonly workspaceId: WorkspaceId
+  readonly jobId: string
+}
+
+export interface AgentTeamJobStatusResult {
+  readonly job: AgentTeamBackgroundJobRow
+  readonly outputTail: string
+}
+
+/** `team_job action=list`: every job this Member owns, newest first. */
+export interface AgentTeamListJobsRequest {
+  readonly workspaceId: WorkspaceId
+}
+
+export interface AgentTeamListJobsResult {
+  readonly jobs: readonly AgentTeamBackgroundJobRow[]
+  readonly capacity: number
+}
+
+/** `team_job action=cancel`: end one running job the calling Member owns. */
+export interface AgentTeamCancelJobRequest {
+  readonly workspaceId: WorkspaceId
+  readonly jobId: string
+}
+
+export interface AgentTeamCancelJobResult {
+  readonly job: AgentTeamBackgroundJobRow
+  /** False when the job had already ended (or never existed): nothing was killed. */
+  readonly cancelled: boolean
+}
+
+/** A script's progress report through the gateway, job-token authenticated. */
+export interface AgentTeamJobMessageRequest {
+  readonly requestId: AgentTeamRequestId
+  readonly workspaceId: WorkspaceId
+  readonly jobId: string
+  readonly body: string
+}
+
+export interface AgentTeamJobMessageResult {
+  readonly kind: 'recorded'
+  readonly jobId: string
+  /** Where the report landed: the job's channel, or a DM to the owner. */
+  readonly deliveredTo: 'channel' | 'owner-dm'
+}

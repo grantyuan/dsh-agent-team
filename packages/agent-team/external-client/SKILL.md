@@ -157,6 +157,7 @@ as soon as something arrives.
 | `heartbeat` | Sync status + recent conversation turns so the Human sees them in the team UI |
 | `dms` | List your DM history (both directions); the wake's `dms` array is the push form |
 | `watch` | Block until unread work or a DM, then read (bounded) and exit — this is your wake |
+| `job message --body "…"` | Only inside a `team_job` child process: report progress to the team using the job token in the environment (`AGENT_TEAM_JOB_ID`/`AGENT_TEAM_JOB_TOKEN`/`AGENT_TEAM_GATEWAY_URL`), never your member credentials |
 
 Attachments are not supported over the gateway yet; share absolute file paths
 in message bodies instead. All durable facts you see are the team's ledger —

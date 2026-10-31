@@ -33,7 +33,7 @@ Team 是每个 DSH home 内唯一的协作域。append-only operation ledger 是
 - 升级按 (Member, Workspace) 十分钟闩一次：窗口内的再次截断是同一个未决局面，不再重复提醒；以「任务结束」标记收尾的干净停止结束 episode，下一次截断重新升级；没有合格负责人的 Member 每 episode 只记一次日志。闩为进程内，每条提醒都是普通 ledger Message；有意地，activation 尾部扫描不补发跨重启的截断升级——被截断的 Session 恢复后保持安静，直到该 Member 再次运转。
 - watcher 的 open 集合止于 `in_review`：Claims 全部完成的任务在等 Human 验收，这不是要提醒已停止 Agent 的工作，因此只剩这类任务的 Workspace 永不触发——Human 任务列表仍将其显示为进行中。
 - 重置按 escalation 恰好公示一次：以 Team Assistant 口吻向该 Member 所在的每个 Channel 发一条结构化重置公示，列明失败原因，声明重置保留了 Member 的身份（handle、设置、私有记忆、Claims）且没有产生任何替补，并带上 `@human` 的请求——若它持续失败，请人工接管（recover、清空上下文，或归档）。
-- 重置以普通的 member-session renewal operation 落账，因此升级中途崩溃只会按正常台账重放，绝不会留下半真半假的 Team 事实；计数器、未结强制链与 exhausted 闩为进程内，重启即重新挣回预算，与压力策略同构。
+- 重置以普通的 member-session renewal operation 落账，因此升级中途崩溃只会按正常台账重放，绝不会留下半真半假的 Team 事实；计数器、未结强制链与 exhausted 闩为进程内，重启即重新挣回预算，与压力策略同构。 重置未能治愈的 Member 会闭链进入闩，并在其 Channel 里以一条 durable 的 `@human` 通知宣告让位：闩本身是进程内的，通知才是它的 durable 对应物。
 
 ## 变更流与 Projection
 - `changes()` 是流式 Remote，可声明一个 scope（workspace/channel/thread/presence）；省略 scope 时观察共享 Team 投影变化，不包含 presence。Host 先注册监听，再发送当前基线，之后只发送匹配的变更通知；消费者暂停期间仅保留最新待发送版本。取消或 Host 释放时关闭订阅。Thread read 与 `team/dm-sent` 不改变共享投影，因此既不推进其版本也不唤醒订阅者。Presence 使用进程内 epoch，其余 scope 使用最近一次共享投影提交的 ledger sequence。版本只在同一 scope 和 Host 生命周期内有意义。Host 只为受 operation 影响的 Members 重算 Inbox hints。
@@ -60,6 +60,7 @@ Team 是每个 DSH home 内唯一的协作域。append-only operation ledger 是
 - 对外部 Member 的投递是纯轮询：bundle 附带一个零依赖客户端脚本加一个 skill（`packages/agent-team/external-client/`），经 `/agent-team/client/…` 原样下发，其 `watch` 命令在有未读工作时退出——DSH 的后台完成通知就是那次唤醒。没有服务端 long-poll，也没有 webhook。
 - Join 按外部 agent 一一对应：每次 join 都创建一个独立的 Member（handle 在 Workspace 内唯一）并派生各自的凭证，mention、Inbox 与 Attention 都按 Member 区分——任意多的外部 agent 可以共用一个团队而不共用身份。客户端脚本按 workspace+handle 保存各自的状态文件，多份时拒绝猜测，同一台机器上的两个会话绝不会共用一个身份行事。
 - 心跳让外部 agent 保持可见：`POST …/heartbeat`（成员鉴权）携带一行活动说明与至多 30 条有界的最近对话（来自 agent 自己的 harness）。Host 只为每个外部 Member 保留一份最新快照，且刻意只存进程内——append-only ledger 绝不能吸收心跳频率，因此 Host 重启会丢掉快照，直到各 agent 的下一次心跳。presence 由心跳派生（五分钟内有心跳读 available，否则 unavailable），`externalContext` Remote 把快照供给成员审计页——外部行的会话历史面用同步上下文取代世代列表。随附的 watcher 按轮询节奏代发最近一次快照，空转中的外部 agent 无需模型配合即可保持在线。
+- gateway 还承载后台 job 的回报：`POST …/jobs/<jobRef>/message` 用 Host spawn 子进程时签发的一次性 job token 鉴权（绝不是成员凭据），每条被接受的回报都成为 owner Member 自己口吻、落在其 Channel 里的一条普通 Message。token 不匹配、或 job 已随 Host 进程结束，都答 401。
 - 发给外部 member 的 DM 靠轮询消费，绝不靠中继：DM 不进任何 Inbox（它不是 Thread fact），该 member 也没有可唤醒的 live session，所以 ledger 的 `dmsForMember` 查询——双向、升序、按 ledger sequence 游标——经 `GET …/dms` 暴露，是它看到 DM 的唯一途径。随附 watcher 在状态文件里保存游标，把新的入站 DM 并入唤醒输出；发给外部 member 的 DM 落账时的投递说明会写明它将在下一次轮询时被取走。
 
 ## Session 策略与上下文压力
@@ -76,7 +77,10 @@ Team 是每个 DSH home 内唯一的协作域。append-only operation ledger 是
 
 ## Member capabilities 与 skills
 - Member capabilities（Member 实体上的 `capabilities` 字段：预留的 `tools.allow` 与 `skills.allow`）是随全部 lifecycle operation 原样流转的 durable intent。commit 时不做已知名白名单校验，保证 Harness 升级后旧 ledger 仍可重放；与已知名的偏差在 activation 时派生为不持久化的 `capabilityWarnings`。`tools.allow` 是有意的接口预留（无 UI 写入路径），供后续 Runtime Revision manifest 编排依赖，cleanup 时勿删。编辑语义与 `model` 一致（absent 即清除）；不管理 capabilities 的调用方必须回传已存储的值。`leader` 标记是唯一的 keeps-prior 字段：absent 保留现有指定，因此总是回显该值的编辑器保持幂等。
-- Activation 把 `tools.allow` 作为 scoped restriction 应用在已组合的 preset 面上，顺序为 mount → restrict → validate（validate 观察限制后的可见面），并在配置之上强制并集十个 Team tools。未知名 drop + warning，不阻断 activation；restriction 失败只表现为该 Member 的 activation failure。
+- Activation 把 `tools.allow` 作为 scoped restriction 应用在已组合的 preset 面上，顺序为 mount → restrict → validate（validate 观察限制后的可见面），并在配置之上强制并集十二个 Team tools。未知名 drop + warning，不阻断 activation；restriction 失败只表现为该 Member 的 activation failure。
+- LLM 路由 failover 是建立在 durable pin 之上的 Host runtime 策略：`modelFallbacks` 是 Member 实体上的有序备用路由列表（与 `model` 同为 absent-clears，经 `sameMemberFacts` 在 renewal 与 rollover 中原样保留，至多四条，且不得与主路由重复）。
+- 当 Member 当前路由连续三个回合以服务端侧错误应答（限流、overload、瞬时网络——与 recovery 重试同一族），Host 通过该 session 自己的 durable model selection 提升下一条备用路由，并发出一条点名两条路由的 `@human` 通知；pinned 主路由不变，新的世代或手动编辑即回到主路由。streak 按路由计数且仅存进程内：干净回合清零，新世代从主路由重来，备用耗尽后由 supervision 的既有 remedy 接管。
+- 两项 runtime 能力随 Member 的 preset 组合走，而不进 ledger：后台 job（`team_job`——Host spawn 并看护长命子进程，把脚本回报与进程退出转成普通 Team Message，Host 停止时杀掉活着的子进程）与 subagent 委派（team-member preset 上挂载的 shipped `subagent`／control 工具，锁定到不携带任何 Team 工具的纯工作型 `team-subagent` 子 preset）。两者都是进程内执行；durable 的 Team 事实仍然只经 ledger 进入。
 - 对 live Member 编辑 allow-list 或 prompt 画像：durable 编辑在 commit 处立即应答，live 换装在同一 Session 的 turn 边界完成——idle 在编辑自身的队列 body 内生效；running 则交给后台 scheduled apply（与 fresh-start reset／auto-prune sweep 同形），故响应与串行 lifecycle 队列都不被一次轮次（乃至卡死的 Member）拖住。被任何 dispose 移除的 handle（包括队列从未看见的那次）直接跳过换装，存量事实于下次 activation 落地；换装失败只记日志、不上抛。
 - Skills 是 Member 私有的。 preset 不带共享 skill-filesystem row；Host 在每个 Member 的 agent exact scope layer 上（traceable-service 接缝，与 tool restriction 同构）注册一个 filesystem provider，只扫两个 Team 自有 root（排除默认 roots）：插件内置的只读 core skills（`packages/agent-team/core-skills/`，排前——同名内置 skill 跨升级保持稳定）和 Member 可写的 `$DSH_HOME/agent-team/members/<memberId>/skills/`。
 

@@ -45,6 +45,8 @@ const attachmentIdSchema = z.string().min(1).transform(value => value as AgentTe
  * fail closed on.
  */
 export const MEMBER_CONTEXT_WINDOW_FLOOR = 8192
+/** Ordered backup routes one Member may pin at most. */
+export const MEMBER_MODEL_FALLBACK_MAX = 4
 
 const actorSchema = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('human'), memberId: memberIdSchema, handle: z.string().min(1) }).strict(),
@@ -106,6 +108,8 @@ const memberSchema = z.object({
   presetId: z.string().min(1),
   // Ledgers written before per-Member model selection existed omit the field.
   model: modelSelectionSchema.optional(),
+  // Ledgers written before route failover existed omit the field.
+  modelFallbacks: z.array(modelSelectionSchema).max(MEMBER_MODEL_FALLBACK_MAX).optional(),
   // Ledgers written before member capabilities existed omit the field.
   capabilities: memberCapabilitiesSchema.optional(),
   // Ledgers written before the leader designation existed omit the field.

@@ -88,6 +88,18 @@ Each notice reports the evidence supervision reads — state, presence, failure 
 
 The state age a `status` read reports is the age of the state the last sample observed, not the age of the watch: a state that just changed does not inherit the previous state minutes.
 
+## `team_job`
+
+`team_job` runs a long-lived command in the background on a Member's behalf, and lets Agent Team bring that Member back when the work it was waiting on ends. Any enabled Member may start a job for itself; jobs are per-Member and capped (a few live per Member, a bounded total across the Team).
+
+`start` names the job and gives the program plus its argument list — no shell is involved, so a Member that needs pipelines passes `bash` explicitly. The Host spawns the child directly and exports `AGENT_TEAM_JOB_ID`, a one-time `AGENT_TEAM_JOB_TOKEN`, and (while the external gateway serves) `AGENT_TEAM_GATEWAY_URL` into its environment. The tool result returns the `jobRef` and says whether the script can report in.
+
+A script reports progress with `node agent-team.mjs job message "<text>"` (or a direct POST to `<gatewayUrl>/jobs/<jobRef>/message`, bearer-authenticated by the job token). Each report becomes an ordinary Message in the owner Member's own voice in the owner's Channel — teammates see it, and any `@mention` inside it wakes exactly as normal Team traffic does. The owner is never woken by its own job's reports.
+
+When the process exits, the Host posts one Team Assistant completion notice addressed to the owner — outcome, duration, last report, and a bounded output tail — which wakes the owner to read `team_job action=status` and continue the work. `cancel` ends a running job (SIGTERM, then SIGKILL) and still fires the notice; `list` shows the Member's jobs and remaining capacity.
+
+The registry is process-local by design: the durable record of a job's life is the Messages it produced, never a ledger operation. A Host shutdown kills live children and posts no notices, so work the Team must not lose belongs in a Task, not a job.
+
 ## `context_rollover`
 
 `context_rollover` schedules one rollover of the calling Member into a fresh context. The Agent passes a private `handoff` (plus optional `relatedFiles`, or a `checkpointRef` to return to a recorded checkpoint instead). The `checkpointRef` is copy-hardened on both the tool and parameter descriptions: omit it for ordinary generation changes and pressure-driven handoffs, and supply it only when citing the exact ref a `context_timeline` result listed as restorable — never a synthesized or guessed one.

@@ -206,6 +206,14 @@ export interface AgentTeamAgentMember {
   readonly presetId: string
   /** Absent inherits the Host default model selection at every activation. */
   readonly model?: AgentTeamModelSelection | undefined
+  /**
+   * Ordered backup routes the Host fails over to when this Member's live route
+   * keeps failing (three consecutive rate-limit/network errors move the
+   * session to the next candidate). Absent (or empty) means no failover: the
+   * route keeps retrying under recovery and supervision as before. Members
+   * written before the fallback existed omit the field.
+   */
+  readonly modelFallbacks?: readonly AgentTeamModelSelection[] | undefined
   /** Durable capability intent; see AgentTeamMemberCapabilities. */
   readonly capabilities?: AgentTeamMemberCapabilities | undefined
   /** Durable prompt-shaping intent; see AgentTeamMemberPromptProfile. */

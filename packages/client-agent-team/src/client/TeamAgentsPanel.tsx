@@ -23,7 +23,7 @@ import { diagnosticText } from './TeamPresenceDot.tsx'
 import { TeamRowMenu } from './TeamRowMenu.tsx'
 import { TeamSidebarSection } from './TeamSidebarSection.tsx'
 import { TeamStateDot } from './TeamStateDot.tsx'
-import { AgentEditorDialog, ContextPickerField, MemberPromptDialog, ModelPickerField, parseContextWindow, sameModel, warmModelCatalog } from './TeamMemberEditor.tsx'
+import { AgentEditorDialog, ContextPickerField, MemberPromptDialog, ModelFallbackPickerField, ModelPickerField, parseContextWindow, sameModel, warmModelCatalog } from './TeamMemberEditor.tsx'
 import { TeamAgentImport } from './TeamAgentImport.tsx'
 import createCss from './create.module.css'
 import css from './sidebar.module.css'
@@ -68,6 +68,7 @@ export function TeamAgentsPanel({ workspaceId, loadMembers, loadMemberTasks, sub
   const [handle, setHandle] = useState('')
   const [description, setDescription] = useState('')
   const [model, setModel] = useState<AgentTeamModelSelection | undefined>(undefined)
+  const [fallbacks, setFallbacks] = useState<readonly AgentTeamModelSelection[]>([])
   const [policy, setPolicy] = useState<'continue' | 'fresh'>('continue')
   const [windowText, setWindowText] = useState('')
   const [promptText, setPromptText] = useState('')
@@ -207,6 +208,7 @@ export function TeamAgentsPanel({ workspaceId, loadMembers, loadMemberTasks, sub
         setHandle('')
         setDescription('')
         setModel(undefined)
+        setFallbacks([])
         setPolicy('continue')
         setWindowText('')
         setPromptText('')
@@ -252,6 +254,7 @@ export function TeamAgentsPanel({ workspaceId, loadMembers, loadMemberTasks, sub
       // the Channel side and stays reachable through its DM view meanwhile.
       channelRefs: [],
       ...(model === undefined ? {} : { model }),
+      ...(fallbacks.length === 0 ? {} : { modelFallbacks: fallbacks }),
       // Same absent-clears mapping as the editor: the fresh policy is only
       // sent when picked, and an empty window input means "follow the route
       // window".
@@ -284,6 +287,7 @@ export function TeamAgentsPanel({ workspaceId, loadMembers, loadMemberTasks, sub
             <Input className={createCss.input!} value={description} placeholder={t('agentDescriptionPlaceholder')} onChange={event => { setDescription(event.target.value); setRetryRequest(undefined) }} disabled={creating} />
           </label>
           <ModelPickerField model={model} onModelChange={choice => { setModel(choice); setRetryRequest(undefined) }} loadModels={loadModels} disabled={creating} t={t} />
+          <ModelFallbackPickerField fallbacks={fallbacks} onChange={next => { setFallbacks(next); setRetryRequest(undefined) }} primary={model} loadModels={loadModels} disabled={creating} t={t} />
           <ContextPickerField
             policy={policy}
             onPolicyChange={next => { setPolicy(next); setRetryRequest(undefined) }}

@@ -1003,6 +1003,10 @@ exports[`Team conversation surfaces > restores persisted Team mode, reconciles a
         </div>
       </section>
     </div>
+    <div
+      data-slot="shell.overlay"
+      style="display: contents;"
+    />
   </div>
 </div>
 `;

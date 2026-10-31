@@ -502,6 +502,14 @@ export const zh = {
   threadTab: 'Thread',
   historyTab: '会话记录',
   dockToggleButton: '团队面板',
+  modelFallbacks: '备用模型',
+  modelFallbacksHint: '主模型连续 3 个回合遭遇限流或服务端故障时，Host 自动按顺序把该成员切到下一条备用路由并通知你；主模型设定不变，新的上下文世代或手动编辑即回到主模型。',
+  modelFallbackCandidate: '备用 #{index}',
+  modelFallbackAdd: '添加备用路由',
+  modelFallbackMoveUp: '上移该备用',
+  modelFallbackRemove: '移除该备用',
+  toastNewMessage: '{name} 在团队里给你留了新消息：{preview}',
+  toastView: '查看',
 } as const
 
 export const en = {
@@ -1003,6 +1011,14 @@ export const en = {
   threadTab: 'Thread',
   historyTab: 'Session history',
   dockToggleButton: 'Team panel',
+  modelFallbacks: 'Backup models',
+  modelFallbacksHint: 'When the primary model fails 3 turns in a row with rate-limit or provider errors, the Host switches this Member to the next backup route in order and notifies you. The pinned primary is unchanged — a fresh context generation or a manual edit returns to it.',
+  modelFallbackCandidate: 'Backup #{index}',
+  modelFallbackAdd: 'Add a backup route',
+  modelFallbackMoveUp: 'Move this backup up',
+  modelFallbackRemove: 'Remove this backup',
+  toastNewMessage: '{name} left you a new team message: {preview}',
+  toastView: 'View',
 } as const
 
 export type TeamKey = keyof typeof zh

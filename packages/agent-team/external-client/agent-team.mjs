@@ -12,6 +12,7 @@
  *   history— page older facts without changing read state
  *   send   — start a Thread / reply / DM
  *   watch  — block until the team has unread work, then read it and exit
+ *   job    — report progress from inside a team_job background process
  *
  * Credentials from `join` are cached in a state file (default
  * ~/.agent-team/<workspace>.<handle>.json — one per agent, so several external
@@ -50,6 +51,7 @@ Commands:
   send dm    --member REF --body TEXT [--client-request-id ID]
   heartbeat [--note TEXT] [--entries JSON | --entries-file PATH] [--handle H] [--state FILE]
   dms     [--after N] [--limit N] [--handle H] [--state FILE]
+  job message --body TEXT   (inside a team_job child: reads AGENT_TEAM_JOB_ID / AGENT_TEAM_JOB_TOKEN / AGENT_TEAM_GATEWAY_URL from the environment)
   watch   [--interval SEC] [--timeout SEC] [--max-reads N] [--heartbeat-seconds SEC] [--handle H] [--state FILE]
 
 State defaults to ~/.agent-team/<workspace>.<handle>.json — one file per agent,
@@ -58,7 +60,7 @@ identity. Pass --handle with every command, or --state to name the file
 directly. JSON in, JSON out.`
 }
 
-const COMMANDS = ['join', 'view', 'inbox', 'read', 'history', 'send', 'watch', 'heartbeat', 'dms']
+const COMMANDS = ['join', 'view', 'inbox', 'read', 'history', 'send', 'watch', 'heartbeat', 'dms', 'job']
 const [command, subcommand] = process.argv.slice(2)
 if (command === undefined || COMMANDS.includes(command) === false) {
   process.stderr.write(`${usage()}\n`)
@@ -66,7 +68,7 @@ if (command === undefined || COMMANDS.includes(command) === false) {
 }
 
 const { values } = parseArgs({
-  args: process.argv.slice(command === 'send' ? 3 : 2),
+  args: process.argv.slice(command === 'send' || command === 'job' ? 3 : 2),
   options: {
     url: { type: 'string' },
     workspace: { type: 'string' },
@@ -312,6 +314,29 @@ async function main() {
     const after = values.after === undefined ? '' : `&after=${positiveInt(values.after, 'after')}`
     const limit = values.limit === undefined ? '' : `&limit=${positiveInt(values.limit, 'limit')}`
     process.stdout.write(`${JSON.stringify(await api(state, 'GET', `/agent-team/${encodeURIComponent(state.workspaceId)}/dms?${after}${limit}`), null, 2)}\n`)
+  } else if (command === 'job') {
+    if (subcommand !== 'message') return fail('job takes one subcommand: message --body TEXT')
+    const jobId = process.env.AGENT_TEAM_JOB_ID
+    const jobToken = process.env.AGENT_TEAM_JOB_TOKEN
+    const gatewayUrl = process.env.AGENT_TEAM_GATEWAY_URL
+    if (jobId === undefined || jobToken === undefined || gatewayUrl === undefined) {
+      return fail('job message only runs inside a team_job child process: AGENT_TEAM_JOB_ID, AGENT_TEAM_JOB_TOKEN, and AGENT_TEAM_GATEWAY_URL must be in its environment')
+    }
+    if (values.body === undefined || values.body.trim() === '') return fail('job message requires --body TEXT')
+    const response = await fetch(`${gatewayUrl}/jobs/${encodeURIComponent(jobId)}/message`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', authorization: `Bearer ${jobToken}` },
+      body: JSON.stringify({ body: values.body }),
+      signal: AbortSignal.timeout(60_000),
+    })
+    const text = await response.text()
+    let parsed
+    try { parsed = text === '' ? {} : JSON.parse(text) } catch { parsed = { raw: text } }
+    if (response.ok === false) {
+      const detail = parsed?.error?.message ?? `HTTP ${response.status}`
+      return fail(`job message refused: ${detail}`, { status: response.status, body: parsed })
+    }
+    process.stdout.write(`${JSON.stringify(parsed, null, 2)}\n`)
   } else if (command === 'watch') {
     const state = await loadState(values)
     const intervalMs = positiveInt(values.interval, 'interval') * 1000

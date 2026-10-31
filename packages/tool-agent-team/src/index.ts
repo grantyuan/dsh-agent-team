@@ -950,6 +950,113 @@ const teamWatch = defineTool({
   },
 })
 
+/** The shared bounded job row, used by the single and list outputs alike. */
+const jobRowProperties = {
+  jobId: { type: 'string', required: true },
+  name: { type: 'string', required: true },
+  command: { type: 'string', required: true },
+  status: { type: 'string', required: true },
+  startedAt: { type: 'number', required: true },
+  exitCode: { type: 'number' },
+  ranSeconds: { type: 'number' },
+  lastScriptMessage: { type: 'string' },
+} as const
+
+/** One job row as the tool renders it, newest state first. */
+function renderJobRow(job: Record<string, unknown>): string[] {
+  const status = String(job.status ?? 'running')
+  const ran = job.ranSeconds === undefined ? '' : ` ran ${String(job.ranSeconds)}s`
+  const exit = job.exitCode === undefined ? '' : ` exit ${String(job.exitCode)}`
+  return [
+    `- ${String(job.name ?? '')} (${String(job.jobId ?? '')}) — ${status}${exit}${ran}`,
+    `  Command: ${String(job.command ?? '')}`,
+    ...(job.lastScriptMessage === undefined ? [] : [`  Last report: ${String(job.lastScriptMessage)}`]),
+  ]
+}
+
+const teamJob = defineTool({
+  name: 'team_job',
+  description: 'Run a long-lived command in the background and let Agent Team bring you back when it matters. start spawns the program (no shell is involved — pass bash or sh explicitly if you need one) with an optional name and cwd, and returns the jobRef plus, while the external gateway serves, the gatewayUrl and the one-time job token already exported to the child as AGENT_TEAM_JOB_TOKEN so the script can report progress with `node agent-team.mjs job message <text>` (or a direct POST to <gatewayUrl>/jobs/<jobRef>/message). Each report becomes an ordinary Message in your own voice in your Channel — teammates see it, and any @mention in it wakes exactly like normal Team traffic. When the process exits, the Host posts a completion notice (outcome, duration, last report, bounded output tail) into your Channel addressed to you, which wakes you to handle the result — you do not have to poll. status reads one job you own with its bounded output tail; list shows all your jobs and how many more you may start; cancel ends a running one. Jobs are per-Member and capped (a few live at once); they live in this Host process, so a Host restart ends them — long-lived work you must not lose belongs in a Task, not a job.',
+  parameters: {
+    action: { type: 'string', required: true, enum: ['start', 'status', 'list', 'cancel'] },
+    jobRef: { type: 'string', description: "Full branded job ref exactly as team_job returned it, including the 'job:' prefix. Required for status and cancel; only the owning Member may read or cancel a job." },
+    name: { type: 'string', description: 'Short Human-readable name for start, as notices and rows call the job (e.g. "nightly build").' },
+    program: { type: 'string', description: 'start: the executable to run, e.g. "bash", "python3", "./scripts/nightly.sh". No shell parsing happens; pass a shell explicitly if you need pipelines.' },
+    args: { type: 'array', items: { type: 'string' }, description: 'start: argument list for the program, passed verbatim without shell interpretation.' },
+    cwd: { type: 'string', description: 'start: working directory for the command. Defaults to the Host process directory; pass your Workspace path to work where your Session does.' },
+    workspace: workspaceParam,
+  },
+  output: {
+    schema: { type: 'object', additionalProperties: false, properties: {
+      action: { type: 'string', required: true },
+      job: { type: 'object', additionalProperties: false, properties: jobRowProperties },
+      jobs: { type: 'array', items: { type: 'object', additionalProperties: false, properties: jobRowProperties } },
+      capacity: { type: 'number' },
+      cancelled: { type: 'boolean' },
+      gatewayUrl: { type: 'string' },
+      messagingEnabled: { type: 'boolean' },
+      outputTail: { type: 'string' },
+    } },
+    render: (_args, value) => {
+      if (value.action === 'start') {
+        const lines = [`Started background job ${value.job?.jobId ?? ''} — ${value.job?.name ?? ''} (${value.job?.command ?? ''}).`]
+        if (value.messagingEnabled === true) {
+          lines.push(`The script can report progress with: node agent-team.mjs job message "<text>" — it authenticates with AGENT_TEAM_JOB_TOKEN already in its environment, against ${value.gatewayUrl ?? 'the gateway'}.`)
+        } else {
+          lines.push('The external gateway is not serving, so the script cannot report in; you will still get the completion notice when it exits.')
+        }
+        lines.push('When the process exits you will be woken with a completion notice carrying the outcome and the output tail.')
+        return [{ type: 'text', text: lines.join('\n') }]
+      }
+      if (value.action === 'cancel') {
+        return [{ type: 'text', text: value.cancelled === true
+          ? `Cancelled — job ${value.job?.jobId ?? ''} (${value.job?.name ?? ''}) is being ended; its completion notice follows.`
+          : `Job ${value.job?.jobId ?? ''} had already ${value.job?.status ?? 'ended'}; nothing to cancel.` }]
+      }
+      if (value.action === 'status') {
+        const tail = (value.outputTail ?? '').trim()
+        return [{ type: 'text', text: [
+          ...(value.job === undefined ? [] : renderJobRow(value.job)),
+          tail === '' ? 'Output tail: (nothing captured yet)' : `Output tail:\n${tail}`,
+        ].join('\n') }]
+      }
+      const jobs = value.jobs ?? []
+      if (jobs.length === 0) return [{ type: 'text', text: `You have no background jobs. Start one with team_job action=start. Capacity: ${value.capacity ?? 0}.` }]
+      return [{ type: 'text', text: [`Your background jobs — current (capacity left: ${value.capacity ?? 0})`, ...jobs.flatMap(renderJobRow)].join('\n') }]
+    },
+  },
+  async execute(args, exec) {
+    const agent = exec.agent
+    if (agent === undefined) throw new Error('team_job requires an Agent session')
+    const host = service(agent)
+    const workspaceId = workspaceOf(args, agent)
+    if (args.action === 'list') {
+      const result = host.listJobsForAgent(agent, { workspaceId })
+      return { action: 'list', jobs: [...result.jobs], capacity: result.capacity }
+    }
+    if (args.action === 'status') {
+      if (args.jobRef === undefined) throw new Error('team_job action=status requires jobRef')
+      const result = host.jobStatusForAgent(agent, { workspaceId, jobId: args.jobRef as never })
+      return { action: 'status', job: result.job, outputTail: result.outputTail }
+    }
+    if (args.action === 'cancel') {
+      if (args.jobRef === undefined) throw new Error('team_job action=cancel requires jobRef')
+      const result = host.cancelJobForAgent(agent, { workspaceId, jobId: args.jobRef as never })
+      return { action: 'cancel', job: result.job, cancelled: result.cancelled }
+    }
+    if (args.program === undefined || args.name === undefined) throw new Error('team_job action=start requires name and program')
+    const result = await host.startJobForAgent(agent, {
+      requestId: requestId(agent.id, exec.callId),
+      workspaceId,
+      name: args.name,
+      program: args.program,
+      ...(args.args === undefined ? {} : { args: args.args }),
+      ...(args.cwd === undefined ? {} : { cwd: args.cwd }),
+    })
+    return { action: 'start', job: result.job, ...(result.gatewayUrl === undefined ? {} : { gatewayUrl: result.gatewayUrl }), messagingEnabled: result.messagingEnabled }
+  },
+})
+
 export function apply(ctx: Context): void {
   ctx.tools.register(teamInbox)
   ctx.tools.register(teamThread)
@@ -958,5 +1065,6 @@ export function apply(ctx: Context): void {
   ctx.tools.register(teamView)
   ctx.tools.register(teamSupervise)
   ctx.tools.register(teamWatch)
+  ctx.tools.register(teamJob)
   registerContextTools(ctx)
 }

@@ -252,6 +252,7 @@ describe('client script end-to-end', () => {
       },
       dmsForMember: (memberId, request) => ledger.dmsForMember(memberId, request),
       dmForMember: async (memberId, request) => (await ledger.sendDm({ ...request, actor: actorOf(memberId) })).value,
+      jobMessageForJob: async (jobId: string) => ({ kind: 'recorded', jobId, deliveredTo: 'channel' } as never),
     }
   }
 

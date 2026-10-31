@@ -60,6 +60,7 @@ import type {
   AgentTeamMemberArchivedOperation,
   AgentTeamMemberCapabilities,
   AgentTeamMemberId,
+  AgentTeamModelSelection,
   AgentTeamMemberInterrupt,
   AgentTeamMemberInterruptRecordedOperation,
   AgentTeamMemberInterruptResolvedOperation,
@@ -169,7 +170,7 @@ import type {
   AgentTeamView,
   AgentTeamViewRequest,
 } from './types.ts'
-import { MEMBER_CONTEXT_WINDOW_FLOOR } from './spec.ts'
+import { MEMBER_CONTEXT_WINDOW_FLOOR, MEMBER_MODEL_FALLBACK_MAX } from './spec.ts'
 import { formatTeamTimestamp } from './time-format.ts'
 import { resolveBodyMentions } from './mentions.ts'
 import type { AgentTeamBodyMentionCandidate } from './mentions.ts'
@@ -951,9 +952,11 @@ export class AgentTeamLedger {
       // paragraph normalizes to an absent field, and the profile spread below
       // cannot remove a key the identity spread already planted.
       const { prompt: _requestPrompt, ...requestMemberWithoutPrompt } = request.member
+      this.assertModelFallbacks(request.member.modelFallbacks, request.member.model)
       const member = Object.freeze({
         ...requestMemberWithoutPrompt, handle, description, presetId, state: 'enabled' as const,
         ...(request.member.model === undefined ? {} : { model: Object.freeze({ ...request.member.model }) }),
+        ...(request.member.modelFallbacks === undefined || request.member.modelFallbacks.length === 0 ? {} : { modelFallbacks: Object.freeze(request.member.modelFallbacks.map(fallback => Object.freeze({ ...fallback }))) }),
         ...freezeCapabilities(request.member.capabilities),
         ...freezePromptProfile(normalizePromptProfile(request.member.prompt)),
         ...(request.member.contextStartPolicy === undefined ? {} : { contextStartPolicy: request.member.contextStartPolicy }),
@@ -986,16 +989,18 @@ export class AgentTeamLedger {
       if (handle === '') throw new Error('member handle must not be empty')
       if (handle !== prior.handle) for (const workspaceId of this.workspacesOf(prior.memberId)) this.assertHandleAvailable(workspaceId, handle, prior.memberId)
       this.assertModelSelection(request.model)
+      this.assertModelFallbacks(request.modelFallbacks, request.model)
       this.assertCapabilities(request.capabilities)
       this.assertContextControl(request.contextStartPolicy, request.contextWindow)
       this.assertPromptProfile(request.prompt)
       // An absent model or capabilities field must CLEAR any override
       // (inherit the Host default / full standard capability surface);
       // spreading `prior` verbatim would silently keep the pinned value.
-      const { model: _priorModel, capabilities: _priorCapabilities, prompt: _priorPrompt, contextStartPolicy: _priorPolicy, contextWindow: _priorWindow, ...priorWithoutOverlays } = prior
+      const { model: _priorModel, modelFallbacks: _priorFallbacks, capabilities: _priorCapabilities, prompt: _priorPrompt, contextStartPolicy: _priorPolicy, contextWindow: _priorWindow, ...priorWithoutOverlays } = prior
       const member = Object.freeze({
         ...priorWithoutOverlays, handle, description,
         ...(request.model === undefined ? {} : { model: Object.freeze({ ...request.model }) }),
+        ...(request.modelFallbacks === undefined || request.modelFallbacks.length === 0 ? {} : { modelFallbacks: Object.freeze(request.modelFallbacks.map(fallback => Object.freeze({ ...fallback }))) }),
         ...freezeCapabilities(request.capabilities),
         ...freezePromptProfile(normalizePromptProfile(request.prompt)),
         ...(request.contextStartPolicy === undefined ? {} : { contextStartPolicy: request.contextStartPolicy }),
@@ -5751,6 +5756,29 @@ export class AgentTeamLedger {
   }
 
   /**
+   * The ordered backup routes: each must name a provider and a model, the list
+   * stays under the pinned cap, and no entry may repeat the primary route or
+   * another entry (a duplicated candidate would burn a failover step on a
+   * route that just failed).
+   */
+  private assertModelFallbacks(fallbacks: readonly AgentTeamModelSelection[] | undefined, primary?: AgentTeamModelSelection): void {
+    if (fallbacks === undefined || fallbacks.length === 0) return
+    if (fallbacks.length > MEMBER_MODEL_FALLBACK_MAX) throw new Error(`a Member may pin at most ${MEMBER_MODEL_FALLBACK_MAX} backup routes`)
+    const seen = new Set<string>()
+    for (const fallback of fallbacks) {
+      if (fallback.provider.trim() === '' || fallback.model.trim() === '') throw new Error('member backup route must name a provider route and a model id')
+      const key = `${fallback.provider}\u0000${fallback.model}`
+      if (seen.has(key)) throw new Error('member backup routes must be distinct')
+      // A backup naming the primary would "fail over" onto the route that
+      // just failed: a wasted promotion step the Human should see rejected.
+      if (primary !== undefined && fallback.provider === primary.provider && fallback.model === primary.model) {
+        throw new Error('a member backup route must differ from the primary route')
+      }
+      seen.add(key)
+    }
+  }
+
+  /**
    * Capability allow-list entries are exact identifiers (skill names,
    * reserved tool names); only whitespace-only values are rejected. Unknown
    * names are intent, not errors — committing must stay replayable across
@@ -6085,6 +6113,7 @@ export class AgentTeamLedger {
     return left.memberId === right.memberId && left.sessionId === right.sessionId && left.workspaceId === right.workspaceId
       && left.handle === right.handle && left.description === right.description && left.presetId === right.presetId
       && isDeepStrictEqual(left.model ?? undefined, right.model ?? undefined)
+      && isDeepStrictEqual(left.modelFallbacks ?? undefined, right.modelFallbacks ?? undefined)
       && left.privateMemoryPath === right.privateMemoryPath
   }
 
@@ -6093,6 +6122,7 @@ export class AgentTeamLedger {
     return left.memberId === right.memberId && left.workspaceId === right.workspaceId
       && left.handle === right.handle && left.description === right.description && left.presetId === right.presetId
       && isDeepStrictEqual(left.model ?? undefined, right.model ?? undefined)
+      && isDeepStrictEqual(left.modelFallbacks ?? undefined, right.modelFallbacks ?? undefined)
       && left.privateMemoryPath === right.privateMemoryPath
   }
 

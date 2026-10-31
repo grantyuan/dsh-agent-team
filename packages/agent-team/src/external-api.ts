@@ -30,6 +30,7 @@ import type {
   AgentTeamExternalContextResult,
   AgentTeamHeartbeatRequest,
   AgentTeamInbox,
+  AgentTeamJobMessageResult,
   AgentTeamMemberId,
   AgentTeamReplyRequest,
   AgentTeamReplyResult,
@@ -87,6 +88,12 @@ export interface AgentTeamExternalCore {
    * that reached the ledger durably is a 200, not a failure.
    */
   dmForMember(memberId: AgentTeamMemberId, request: AgentTeamDmRequest): Promise<AgentTeamDmResult | AgentTeamExternalDmUndelivered>
+  /**
+   * One background job's script report, authenticated by the job token the
+   * Host spawned the child with (never a member credential). The Host owns
+   * token validation; a throw here is the gateway's 401/404.
+   */
+  jobMessageForJob(jobId: string, token: string, body: string): Promise<AgentTeamJobMessageResult>
 }
 
 /** One DM that reached the ledger but found no live session to wake. */
@@ -173,6 +180,12 @@ export class AgentTeamExternalApi {
       const workspaceId = decodeURIComponent(segments[1]!) as AgentTeamViewRequest['workspaceId']
       if (request.method === 'POST' && segments[2] === 'members' && segments.length === 3) {
         return await this.join(workspaceId, request, response)
+      }
+      // A background job's script report: authenticated by the one-time job
+      // token the Host spawned the child with, never a member credential, so
+      // it resolves before member auth. `X-Agent-Team-Job` names the job.
+      if (request.method === 'POST' && segments[2] === 'jobs' && segments.length === 5 && segments[4] === 'message') {
+        return await this.jobMessage(decodeURIComponent(segments[3]!), request, response)
       }
       const memberId = this.authenticate(request)
       if (request.method === 'GET' && segments[2] === 'view' && segments.length === 3) {
@@ -274,6 +287,28 @@ export class AgentTeamExternalApi {
       token: this.memberToken(result.status.member.memberId),
       workspaceIds: result.workspaceIds,
     } satisfies AgentTeamExternalJoinResult)
+  }
+
+  /**
+   * A script's progress report for one background job. The bearer is the job
+   * token (not a member credential); the Host validates it against the live
+   * job. A body bound keeps a chatty script from flooding the Channel.
+   */
+  private async jobMessage(jobId: string, request: IncomingMessage, response: ServerResponse): Promise<void> {
+    const bearer = this.bearerOf(request)
+    if (bearer === undefined) throw new RequestError(401, 'unauthorized', 'a job report sends its job token as the Bearer credential')
+    const body = await this.readJsonBody(request)
+    const message = body.body
+    if (typeof message !== 'string' || message.trim() === '') throw new RequestError(400, 'bad-request', 'a job report requires a non-empty body')
+    if (message.length > 2000) throw new RequestError(400, 'bad-request', 'a job report body must be at most 2000 characters')
+    try {
+      const result = await this.core.jobMessageForJob(jobId, bearer, message)
+      this.respond(response, 200, result)
+    } catch (error) {
+      // An unknown job or a token mismatch is a client refusal, not a server
+      // fault: the script can act on it (the job ended, or the token is wrong).
+      throw new RequestError(401, 'unauthorized', errorMessage(error))
+    }
   }
 
   private async sendMessage(memberId: AgentTeamMemberId, workspaceId: AgentTeamViewRequest['workspaceId'], body: Record<string, unknown>, response: ServerResponse): Promise<void> {

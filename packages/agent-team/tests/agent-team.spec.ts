@@ -3390,4 +3390,32 @@ describe('AgentTeam leader Member watch', () => {
       data: { ...operation.data, watch: { ...operation.data.watch, startedSequence: 99 } },
     })
   })
+
+  it('pins backup LLM routes, replaces and clears them, and preserves them across a renewal', async () => {
+    const test = await harness()
+    const channel = await test.ctx.agentTeam.createChannel({ requestId: requestId('channel'), workspaceId: alpha, name: 'engineering', description: 'Engineering work' })
+    const ledger = replayLedger(test)
+    const { member } = await addLedgerMember(ledger, channel.channel.channelRef)
+    const base = { memberId: member.memberId, handle: member.handle, description: member.description, actor: agentTeamHumanActor() }
+    const primary = { provider: 'deepseek', model: 'deepseek-flash' }
+    const backupOne = { provider: 'qwen', model: 'qwen3.8-flash' }
+    const backupTwo = { provider: 'qwen', model: 'qwen3.8-27b' }
+    const pinned = await ledger.updateMember({ ...base, requestId: requestId('pin-fallbacks'), model: primary, modelFallbacks: [backupOne, backupTwo] })
+    expect(pinned.value.member.modelFallbacks).toEqual([backupOne, backupTwo])
+    // An edit that omits the list clears the pin (absent-clears, like model).
+    const cleared = await ledger.updateMember({ ...base, requestId: requestId('clear-fallbacks'), model: primary })
+    expect(cleared.value.member.modelFallbacks).toBeUndefined()
+    // A backup repeating the primary is refused: it would "fail over" onto the
+    // route that just failed.
+    await expect(ledger.updateMember({ ...base, requestId: requestId('dup-primary'), model: primary, modelFallbacks: [primary] })).rejects.toThrow(/must differ from the primary/)
+    await expect(ledger.updateMember({ ...base, requestId: requestId('dup-entry'), model: primary, modelFallbacks: [backupOne, backupOne] })).rejects.toThrow(/must be distinct/)
+    // Re-pin, then renew the Session: the failover pin is a durable fact the
+    // renewal must carry unchanged.
+    await ledger.updateMember({ ...base, requestId: requestId('re-pin'), model: primary, modelFallbacks: [backupOne, backupTwo] })
+    const renewed = await ledger.renewMemberSession({ requestId: requestId('renew-fallbacks'), memberId: member.memberId, workspaceId: alpha, actor: agentTeamHumanActor(), sessionId: SessionId(`session:renewed-${crypto.randomUUID()}`) })
+    expect(renewed.value.member.modelFallbacks).toEqual([backupOne, backupTwo])
+    expect(renewed.value.member.sessionId).not.toBe(member.sessionId)
+    expect(replayLedger(test).getMember(member.memberId)?.modelFallbacks).toEqual([backupOne, backupTwo])
+    replayLedger(test).validate()
+  })
 })

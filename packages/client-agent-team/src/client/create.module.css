@@ -284,3 +284,41 @@
     max-height: 180px;
   }
 }
+
+/* One backup-route row: the shared picker stretches, the order/remove controls
+   sit at its baseline so the list reads as an ordered queue. */
+.fallbackRow {
+  align-items: flex-end;
+  display: flex;
+  gap: 4px;
+}
+.fallbackRow > :first-child {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.fallbackAction {
+  align-items: center;
+  background: transparent;
+  border: 1px solid var(--dsw-alias-border-l2);
+  border-radius: var(--dsw-radius-sm, 8px);
+  box-sizing: border-box;
+  color: var(--dsw-alias-label-secondary);
+  cursor: pointer;
+  display: inline-flex;
+  height: 32px;
+  justify-content: center;
+  min-width: 32px;
+  padding: 0;
+}
+.fallbackAction:hover {
+  background: var(--dsw-alias-interactive-bg-hover);
+  color: var(--dsw-alias-label-primary);
+}
+.fallbackAction:focus-visible {
+  border-color: var(--dsw-alias-brand-primary);
+  outline: none;
+}
+.fallbackAction:disabled {
+  cursor: default;
+  opacity: 0.5;
+}
