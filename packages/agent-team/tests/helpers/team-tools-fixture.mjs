@@ -4,7 +4,7 @@
 // points here with a file: URL. This file lives beside the spec, where its
 // package imports resolve through the repository's node_modules.
 import { apply as applyAgentTeamTools } from '@wowyuarm/dsh-agent-team/tools'
-import { defineContentToolFixture } from '@deepseek-ai/dsh-tools'
+import { defineContentToolFixture } from '@deepseek-ai/dsh-tool-testkit'
 
 export const name = 'test-team-tools'
 export const inject = ['tools']

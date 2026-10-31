@@ -489,6 +489,19 @@ export const zh = {
   memberNotFollowing: '这些成员还未关注此 Thread：{ids}',
   unreadRequired: '请先读取 {count} 条未读更新，再继续修改。',
   staleRevision: 'Thread 已发生变化，请按最新状态重试。',
+  dockTitle: '团队面板',
+  dockSplit: '将当前页面拆分到新分栏',
+  dockMaximizePanel: '最大化面板',
+  dockRestorePanel: '还原面板',
+  dockClosePanel: '关闭面板',
+  dockMaximizePane: '最大化此分栏',
+  dockRestorePane: '还原此分栏',
+  dockClosePane: '关闭此分栏',
+  dockCloseTab: '关闭标签',
+  channelTab: '频道',
+  threadTab: 'Thread',
+  historyTab: '会话记录',
+  dockToggleButton: '团队面板',
 } as const
 
 export const en = {
@@ -977,6 +990,19 @@ export const en = {
   memberNotFollowing: 'These Members do not follow this Thread yet: {ids}',
   unreadRequired: 'Read {count} unread update(s) before changing this Thread.',
   staleRevision: 'This Thread changed; retry using the current state.',
+  dockTitle: 'Team panel',
+  dockSplit: 'Split the current page into a new pane',
+  dockMaximizePanel: 'Maximize the panel',
+  dockRestorePanel: 'Restore the panel',
+  dockClosePanel: 'Close the panel',
+  dockMaximizePane: 'Maximize this pane',
+  dockRestorePane: 'Restore this pane',
+  dockClosePane: 'Close this pane',
+  dockCloseTab: 'Close tab',
+  channelTab: 'Channel',
+  threadTab: 'Thread',
+  historyTab: 'Session history',
+  dockToggleButton: 'Team panel',
 } as const
 
 export type TeamKey = keyof typeof zh

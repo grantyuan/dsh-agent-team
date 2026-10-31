@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import type { AgentTeamRequestId, AgentTeamSummarizeThreadResult, AgentTeamTaskRef, AgentTeamThreadRef } from '@wowyuarm/dsh-agent-team/types'
 import type { WorkspaceId } from '@deepseek-ai/dsh-api-workspace-controller/client'
 import { Button, IconRefreshOutlineRegular } from '@deepseek-ai/dsh-client-ui-primitives'
-import type { TeamConversationProps } from './slots.ts'
+import type { TeamPagePayload } from './slots.ts'
 import { mintRequestId } from './requests.ts'
 import css from './conversation.module.css'
 import digestCss from './thread-digest.module.css'
@@ -15,10 +15,10 @@ interface TeamThreadDigestProps {
   readonly taskRef?: AgentTeamTaskRef
   /** The Thread revision currently on screen: the digest is read at it, and the decision reply commits against it. */
   readonly revision: number
-  readonly summarizeThread: TeamConversationProps['summarizeThread']
-  readonly reply: TeamConversationProps['reply']
+  readonly summarizeThread: TeamPagePayload['summarizeThread']
+  readonly reply: TeamPagePayload['reply']
   readonly disabled: boolean
-  readonly t: TeamConversationProps['t']
+  readonly t: TeamPagePayload['t']
 }
 
 /**

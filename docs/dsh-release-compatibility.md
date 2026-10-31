@@ -167,7 +167,7 @@ Record candidate tag, symptom, affected interface, reproduction command, and nex
 
 ## 6. Current baseline
 
-The current certified baseline is DSH `0.2.1-alpha.2`; the paragraphs below preserve the history that produced the preceding baselines.
+The current certified baseline is DSH `0.2.1-rc.3`; the paragraphs below preserve the history that produced the preceding baselines.
 
 The DSH peers state exactly that certified line, `>=0.2.1-alpha.2 <0.2.2`, so a line this repository has not verified falls outside the declared range instead of installing under an unverified compatibility claim.
 

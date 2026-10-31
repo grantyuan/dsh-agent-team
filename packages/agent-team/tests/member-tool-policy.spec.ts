@@ -23,12 +23,13 @@ import AgentPresetRegistry from '@deepseek-ai/dsh-agent-preset-registry'
 import LlmRuntime, { ToolCallId, createUserMessage, LlmAdapter } from '@deepseek-ai/dsh-llm'
 import type { GenerateOptions, StreamChunk } from '@deepseek-ai/dsh-llm'
 import SessionStore, { SessionId } from '@deepseek-ai/dsh-session'
-import JsonlSessionPersistence from '@deepseek-ai/dsh-session-persistence-jsonl'
+import * as JsonlSessionPersistence from '@deepseek-ai/dsh-session-persistence-jsonl'
 import Storage from '@deepseek-ai/dsh-storage'
 import { DomainFacility } from '@deepseek-ai/dsh-storage-domain'
 import SystemPrompt from '@deepseek-ai/dsh-system-prompt'
 import SessionProjectionRegistry from '@deepseek-ai/dsh-session-projection'
 import ToolRuntime from '@deepseek-ai/dsh-tools'
+import * as NativeToolExecutor from '@deepseek-ai/dsh-tool-executor-native'
 import { WorkspaceId } from '@deepseek-ai/dsh-workspace'
 import AgentTeam, { AGENT_TEAM_TOOL_NAMES } from '../src/index.ts'
 import { COMPLETION_MARKER } from '../src/response-guard.ts'
@@ -36,6 +37,7 @@ import type { AgentTeamMemberCapabilities, AgentTeamMemberId, AgentTeamRequestId
 // @ts-expect-error untyped shared resolution module
 import { harnessDir } from '../../../scripts/harness-dir.mjs'
 import { MemoryStorageBackend } from './helpers/memory-backend.ts'
+import { executeToolCall } from './helpers/tool-call.ts'
 
 const sharedCleanups: Array<() => Promise<void>> = []
 /** Per-test disposers (LLM adapter registrations, ordinary sessions): drained after each test. */
@@ -191,6 +193,9 @@ async function buildSharedHarness(): Promise<{
   await ctx.plugin(SessionProjectionRegistry)
   await ctx.plugin(SystemPrompt)
   await ctx.plugin(ToolRuntime)
+  // rc.3 moved tool execution out of the tools service: mount the native
+  // executor the same way the deployment's agent-tool-presentation row does.
+  await ctx.plugin(NativeToolExecutor)
   await ctx.plugin(AgentRegistry)
   await ctx.plugin(AgentLoop, { agents: [] })
   ctx.provide('agentDefaultModel', { currentSelection: () => ({ provider: 'mock', model: 'mock' }) })
@@ -471,13 +476,8 @@ describe('Agent Team member tool policy', () => {
     expect(toolNames(ctx, ordinary.agent)).not.toContain('session_search')
 
     // The tool executes against the Member-scoped engine instance.
-    const result = await holderAgent.ctx.tools.execute({
-      callId: ToolCallId('spike-call'),
-      name: 'session_search',
-      arguments: { query: 'anything' },
-      agent: holderAgent as never,
-      signal: new AbortController().signal,
-    })
+    const result = await executeToolCall(holderAgent.ctx.tools, holderAgent as never, ToolCallId('spike-call'),
+      'session_search', { query: 'anything' })
     expect(standIn.searches).toEqual(['sessions'])
     expect(result).toBeDefined()
   })

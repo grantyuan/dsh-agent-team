@@ -22,43 +22,44 @@
  *
  * Once proven, the Host resets the Member's context itself — the same
  * fresh-context renewal the Human menu performs, privately noticed to the
- * reset Member alone; nothing is broadcast to the Team, because the Member
- * re-orients from its memory and the durable Team history and asks its
- * teammates about whatever stays unclear. The archive-and-replace handover is
- * the last resort when that reset did not heal it: the replacement carries
- * the failed Member's role, private memory, and Channel reach — never its
- * Session log — and asks the Human admin in Channel to reassign the released
- * work.
+ * reset Member alone, with one Channel notice asking the Human to take over
+ * manually if it keeps failing. That reset is the ONLY automatic remedy: a
+ * Member's identity, handle, preset, pinned settings, private memory, and
+ * Claims survive it untouched, nothing is archived, and no replacement is ever
+ * minted. A reset that did not heal the Member closes the chain and latches it
+ * for the Human — the Host then spends no further automatic restarts or resets
+ * on it until it turns healthy again or the Human acts on its runtime; the
+ * manual archive stays the Human's operation alone.
  *
  * The chain is driven by {@link MemberSupervisor.runTick}, which the periodic
  * pass runs: the Host's open escalations advance first, so a reset that never
- * committed is retried and a reset that did not heal reaches the handover, and
- * a Member the chain already owns is left to it instead of being spent more
+ * committed is retried and a reset that did not heal latches the Member, and a
+ * Member the chain already owns is left to it instead of being spent more
  * bring-up nudges. A pass that only ran the bring-up budget would keep waking a
  * Member whose chain had stalled — nudges that change nothing, forever.
  *
  * "Abnormally stopped" is deliberately the dead-or-erroring shape, not the
  * merely-unproductive one: `unavailable` (no live Session, failed activation) or
  * an error presence. A Member that is live and idle with open Claims is waiting
- * by design, and interrupting or replacing it would be a fabricated failure.
+ * by design, and interrupting it would be a fabricated failure.
  *
  * Counters are process-local by design, exactly like the pressure policy's
  * overflow retry: a restart re-earns the budget, while every durable result
- * (the reset, archival, the new Member, the released Claims, the notice Message)
- * is an ordinary ledger operation, so a crash mid-escalation replays as a normal
- * ledger and never as a half-faked Team fact.
+ * (the reset's ledger renewal, the notice Message) is an ordinary ledger
+ * operation, so a crash mid-escalation replays as a normal ledger and never as
+ * a half-faked Team fact.
  * @module @wowyuarm/dsh-agent-team/supervisor
  */
 
-import type { AgentTeamCompletedWork, AgentTeamMemberId } from './types.ts'
+import type { AgentTeamMemberId } from './types.ts'
 
 /** How often one supervision pass runs once the Host has restored its Members. */
 export const SUPERVISION_INTERVAL_MS = 10 * 60 * 1000
 
-/** Bring-up attempts a stopped Member gets before it is replaced instead. */
+/** Bring-up attempts a stopped Member gets before the Host escalates instead. */
 export const SUPERVISION_MAX_RESTART_ATTEMPTS = 3
 
-/** Consecutive `agent/error` occurrences that replace a Member outright. */
+/** Consecutive `agent/error` occurrences that escalate a Member to the Host's reset. */
 export const SUPERVISION_MAX_CONSECUTIVE_FAILURES = 3
 
 /**
@@ -89,7 +90,7 @@ export type MemberSupervisionState =
   /** Abnormally stopped: no live Session, or an error presence. */
   | 'stopped'
 
-/** Why the policy gave up on one Member. */
+/** Why the policy escalated one Member. */
 export type SupervisionTrigger = 'abnormal-stop' | 'consecutive-failures' | 'failure-rate' | 'hung'
 
 export interface SupervisorOptions {
@@ -100,24 +101,28 @@ export interface SupervisorOptions {
   /** One bounded bring-up attempt; the next pass re-reads the state to judge it. */
   readonly restart: (memberId: AgentTeamMemberId) => Promise<void>
   /**
-   * One proven episode: the Host opens the coercion chain with its own
-   * private context reset, and the archive-and-replace handover follows on a
-   * later pass only while the Member still reads abnormal. `restartAttempts`
-   * is the bring-up count already spent, which the handover notice reports
-   * verbatim.
+   * One proven episode: the Host opens the escalation and performs its own
+   * private context reset — the same fresh-context renewal the Human menu
+   * performs. `restartAttempts` is the bring-up count already spent, which
+   * the Host's reset notice reports verbatim. The Host owns the
+   * de-duplication: a trigger for a Member whose escalation is already open
+   * (or that is latched for the Human) is a no-op there.
    */
-  readonly replace: (memberId: AgentTeamMemberId, trigger: SupervisionTrigger, restartAttempts: number) => Promise<void>
+  readonly escalate: (memberId: AgentTeamMemberId, trigger: SupervisionTrigger, restartAttempts: number) => Promise<void>
   /**
    * Advance the Host's open coercion chains, run by {@link MemberSupervisor.runTick}
    * ahead of every periodic bring-up pass: a reset that never committed retries
-   * here, and a reset that did not heal becomes the handover. Absent, the tick
-   * degenerates to the bring-up pass alone (a policy-only harness).
+   * here, and a reset that did not heal latches the Member for the Human.
+   * Absent, the tick degenerates to the bring-up pass alone (a policy-only
+   * harness).
    */
   readonly advanceEscalations?: () => Promise<void>
   /**
-   * Whether the coercion chain already owns this Member. While it does, the
-   * pass spends no bring-up nudge: the chain's own step is the remedy, and a
-   * nudge only keeps the Member running past the boundary that step waits on.
+   * Whether the Host already owns this Member's failure handling: an open
+   * escalation, or a Member the last reset did not heal (latched for the
+   * Human). While it does, errors do not re-escalate and the pass spends no
+   * bring-up nudge: the chain's own step is the remedy, and a nudge only keeps
+   * the Member running past the boundary that step waits on.
    */
   readonly escalationOpen?: (memberId: AgentTeamMemberId) => boolean
   /** Log one coordinator diagnostic. */
@@ -183,12 +188,18 @@ export class MemberSupervisor {
    * over yet, and the pass leaves it to the operator exactly as
    * `recovery.ts` does.
    *
+   * A Member the Host already owns (an open escalation, or one latched after a
+   * reset that did not heal) is not re-escalated by further errors, and no
+   * occurrence is recorded while the Host's own step is pending, so a healed
+   * Member is judged from zero again.
+   *
    * `diagnostic` is the recorded failure text, kept for future classification;
    * a caller with no text to record passes none and is judged on the failure
    * counts alone.
    */
   onError(memberId: AgentTeamMemberId, diagnostic = ''): void {
     if (this.disposed || !this.watched.has(memberId) && !this.options.candidates().includes(memberId)) return
+    if (this.options.escalationOpen?.(memberId) === true) return
     const watched = this.entryFor(memberId)
     const now = Date.now()
     watched.failureTimes.push(now)
@@ -197,13 +208,13 @@ export class MemberSupervisor {
     if (watched.consecutiveFailures >= this.maxConsecutiveFailures) {
       const attempts = watched.restartAttempts
       this.watched.delete(memberId)
-      void this.replace(memberId, 'consecutive-failures', attempts)
+      void this.escalate(memberId, 'consecutive-failures', attempts)
       return
     }
     if (watched.failureTimes.length < this.windowFailures) return
     const attempts = watched.restartAttempts
     this.watched.delete(memberId)
-    void this.replace(memberId, 'failure-rate', attempts)
+    void this.escalate(memberId, 'failure-rate', attempts)
   }
 
   /** A turn that ended without an error: the failure streak is over. */
@@ -240,7 +251,7 @@ export class MemberSupervisor {
   /**
    * One supervision pass. Overlapping passes are skipped rather than queued: a
    * pass that is still running when the timer fires is doing its job, and the
-   * handover it performs is serialized on the Host's lifecycle queue anyway.
+   * escalation it opens is serialized on the Host's lifecycle queue anyway.
    */
   async runPass(): Promise<void> {
     if (this.disposed || this.passRunning) return
@@ -259,15 +270,16 @@ export class MemberSupervisor {
           this.watched.delete(memberId)
           continue
         }
-        // A Member the coercion chain already owns waits on the chain's next
-        // step, not on another nudge: bring-up attempts spent while a reset is
-        // pending only keep the Member running past the boundary that reset
-        // needs.
+        // A Member the Host already owns (an open escalation, or one latched
+        // after a reset that did not heal) waits on the chain's next step or
+        // the Human: bring-up attempts spent here would only keep the Member
+        // running past the boundary the remedy needs, and an exhausted Member
+        // must get no further automatic remedy at all.
         if (this.options.escalationOpen?.(memberId) === true) continue
         if (watched.restartAttempts >= this.maxRestartAttempts) {
           const attempts = watched.restartAttempts
           this.watched.delete(memberId)
-          await this.replace(memberId, 'abnormal-stop', attempts)
+          await this.escalate(memberId, 'abnormal-stop', attempts)
           continue
         }
         watched.restartAttempts += 1
@@ -302,126 +314,49 @@ export class MemberSupervisor {
     return watched.failureTimes.filter(time => now - time <= windowMs).length
   }
 
-  private async replace(memberId: AgentTeamMemberId, trigger: SupervisionTrigger, restartAttempts: number): Promise<void> {
+  private async escalate(memberId: AgentTeamMemberId, trigger: SupervisionTrigger, restartAttempts: number): Promise<void> {
     if (this.disposed) return
     try {
-      await this.options.replace(memberId, trigger, restartAttempts)
+      await this.options.escalate(memberId, trigger, restartAttempts)
     } catch (error) {
-      // A failed handover leaves the Member exactly as it was: archived or not by
-      // the ledger's own facts, and the next pass sees the same stopped state.
-      this.options.log(`supervision handover failed for member '${memberId}' (${trigger}): ${error instanceof Error ? error.message : String(error)}`)
+      // A refused escalation leaves the Member exactly as it was: the next
+      // error or pass re-enters the same judgment.
+      this.options.log(`supervision escalation failed for member '${memberId}' (${trigger}): ${error instanceof Error ? error.message : String(error)}`)
     }
   }
 }
 
 /**
- * The next generation handle for a replaced Member: `<role>-2`, `<role>-3`, …
- *
- * Archival hides a Member without releasing its handle (an archived Member still
- * claims its name in the ledger's uniqueness check), so a replacement always
- * takes a numbered generation. The numbering is per role, not per failure: a
- * trailing `-N` on the failed handle is read as its generation and the next one
- * follows it, so a role that keeps dying walks `builder-2 → builder-3` instead of
- * stacking `builder-2-2-2`. Every earlier generation — archived or live — is
- * skipped, and comparison follows the ledger's own handle normalization so a
- * replacement can never fork the `@` namespace.
+ * The structured reset notice posted into the affected business Channels when
+ * the Host's supervision resets a Member's working context. It is a plain-text
+ * headed block — the Team Assistant's voice renders literally in the Client,
+ * so the body carries no Markdown — naming the failure cause, stating that the
+ * reset preserved the Member's identity (handle, preset, pinned settings,
+ * private memory, Claims) and created no replacement, and asking the Human to
+ * take over manually if the Member keeps failing. Archival stays a Human-only
+ * operation; supervision never performs it.
  */
-export function nextReplacementHandle(base: string, takenHandles: Iterable<string>): string {
-  const taken = new Set<string>()
-  for (const handle of takenHandles) taken.add(handle.normalize('NFKC').trim().toLowerCase())
-  const stem = base.normalize('NFKC').trim()
-  const generation = /^(.*)-(\d+)$/.exec(stem)
-  const role = generation === null || generation[1] === '' ? stem : generation[1]!
-  const first = generation === null ? 2 : Number(generation[2]) + 1
-  if (!Number.isSafeInteger(first)) throw new Error(`'${base}' has no usable generation number`)
-  for (let next = first; ; next += 1) {
-    const candidate = `${role}-${next}`
-    if (!taken.has(candidate.normalize('NFKC').trim().toLowerCase())) return candidate
-  }
-}
-
-/** One released Claim summarized for the admin handover notice. */
-export interface SupervisionReleasedClaim {
-  readonly direction: string
-  readonly taskNumber: number
-}
-
-/**
- * A best-effort plain-language recap of the retired Member's final Session,
- * produced by the one-shot propose-only digest. It is not a Team fact: it is
- * appended to the retirement notice only when the call resolved in time.
- */
-export interface SupervisionSessionRecap {
-  readonly summary: string
-  readonly keyPoints: readonly string[]
-}
-
-/**
- * The structured retirement notice posted into the affected business Channel
- * when a Member is archived and replaced. It is a plain-text headed block — the
- * Team Assistant's voice renders literally in the Client, so the body carries no
- * Markdown — listing the retirement cause, the work the Member finished in
- * service (from the ledger projection), the work left unclaimed again (the
- * released Claims), and the succession line.
- *
- * `sessionRecap` is optional and best-effort: when the retired Member's final
- * Session was recapable, its summary rides the notice as a `Final Session
- * recap` block; when the call timed out, aborted, or failed, the notice is
- * unchanged apart from the missing block.
- *
- * `addressedHandle` names who the reassignment ask mentions — the designated
- * leader when the notice is delivered to them, `human` when it falls back to a
- * Channel broadcast — so the same body reaches whoever is expected to act.
- */
-export function supervisionRetirementNotice(input: {
-  readonly failedHandle: string
-  readonly replacementHandle: string
-  readonly addressedHandle: string
+export function supervisionResetNotice(input: {
+  readonly handle: string
   readonly trigger: SupervisionTrigger
   readonly restartAttempts: number
   readonly maxRestartAttempts: number
   readonly maxConsecutiveFailures: number
   readonly maxWindowFailures: number
   readonly maxFailureWindowMs: number
-  readonly completedWork: AgentTeamCompletedWork
-  readonly releasedClaims: readonly SupervisionReleasedClaim[]
-  readonly sessionRecap?: SupervisionSessionRecap
 }): string {
   const cause = input.trigger === 'abnormal-stop'
     ? `stopped abnormally and stayed stopped after ${input.restartAttempts}/${input.maxRestartAttempts} bring-up attempts`
     : input.trigger === 'failure-rate'
       ? `failed ${input.maxWindowFailures} times within ${Math.round(input.maxFailureWindowMs / 60000)} minutes`
       : `failed ${input.maxConsecutiveFailures} turns in a row without finishing any of them`
-  const finished = input.completedWork.finishedDirections.length === 0
-    ? '- none recorded'
-    : input.completedWork.finishedDirections.map(direction => `- ${direction.direction} (task #${direction.taskNumber})`).join('\n')
-  const released = input.releasedClaims.length === 0
-    ? '- none (its Claims were already released)'
-    : input.releasedClaims.map(claim => `- ${claim.direction} (task #${claim.taskNumber})`).join('\n')
-  const recap = input.sessionRecap === undefined
-    ? []
-    : [
-        '',
-        'Final Session recap:',
-        input.sessionRecap.summary,
-        ...input.sessionRecap.keyPoints.map(point => `- ${point}`),
-      ]
   return [
-    `Supervision retirement — ${input.failedHandle}`,
+    `Supervision reset — ${input.handle}`,
     '',
-    `Cause: ${input.failedHandle} ${cause} and was archived.`,
+    `Cause: ${input.handle} ${cause}.`,
     '',
-    'Completed work in service:',
-    'Finished directions:',
-    finished,
-    `Completed tasks: ${input.completedWork.completedTasks.length}`,
-    `Participated Threads: ${input.completedWork.participatedThreadCount}`,
-    ...recap,
+    `The Host has reset ${input.handle}'s working context: same Member, same handle, same preset and pinned settings, same private memory, and the same Claims. Nothing was archived and no replacement was created — it re-orients from its private memory and the durable Team history.`,
     '',
-    'Released work now unclaimed:',
-    released,
-    `@${input.addressedHandle} please reassign the items above to ${input.replacementHandle}.`,
-    '',
-    `Succession: ${input.replacementHandle} is ${input.failedHandle}'s same-role replacement: same preset, same pinned settings, inherited private memory, and the same Channel reach.`,
+    'If it keeps failing, @human please take over manually: recover it, clear its context, or archive it from the Team sidebar.',
   ].join('\n')
 }

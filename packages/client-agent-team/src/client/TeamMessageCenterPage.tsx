@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { AgentTeamChannelRef, AgentTeamConfirmationToken, AgentTeamMemberId, AgentTeamMessageRow, AgentTeamRequestId, AgentTeamTopicRow } from '@wowyuarm/dsh-agent-team/types'
 import type { WorkspaceId } from '@deepseek-ai/dsh-api-workspace-controller/client'
 import { Button, IconSearchOutlineRegular, SegmentedTabs, type SegmentedTab } from '@deepseek-ai/dsh-client-ui-primitives'
-import type { TeamConversationProps } from './slots.ts'
+import type { TeamPagePayload } from './slots.ts'
 import { mintRequestId } from './requests.ts'
 import { claimersLabel, formatAbsoluteTime, formatInboxTime } from './team-formatters.ts'
 import { namedAvatarOwners, TeamAvatarStack, type TeamAvatarHuman } from './TeamAvatarStack.tsx'
@@ -108,23 +108,23 @@ function groupRows<Row>(
 }
 
 interface TeamMessageCenterPageProps {
-  readonly useWorkspaces: TeamConversationProps['useWorkspaces']
+  readonly useWorkspaces: TeamPagePayload['useWorkspaces']
   /** The Host's read-only Message Center projection; one call per visible Workspace. */
-  readonly loadMessageCenter: TeamConversationProps['loadMessageCenter']
+  readonly loadMessageCenter: TeamPagePayload['loadMessageCenter']
   /** The Channel roster, so the filter can name Channels the page has not listed yet. */
-  readonly loadChannels: TeamConversationProps['loadChannels']
+  readonly loadChannels: TeamPagePayload['loadChannels']
   /** The Thread read an inline reply anchors to; it also consumes that row's unread. */
-  readonly readThread: TeamConversationProps['readThread']
+  readonly readThread: TeamPagePayload['readThread']
   /** The same Human reply path the Thread composer uses; the Host resolves delivery. */
-  readonly reply: TeamConversationProps['reply']
+  readonly reply: TeamPagePayload['reply']
   /** Wake source while the page is open; one scope-less subscription, shared with the sidebar badge. */
-  readonly subscribeChanges: TeamConversationProps['subscribeChanges']
-  readonly selectWorkspace: TeamConversationProps['selectWorkspace']
-  readonly selectThread: TeamConversationProps['selectThread']
+  readonly subscribeChanges: TeamPagePayload['subscribeChanges']
+  readonly selectWorkspace: TeamPagePayload['selectWorkspace']
+  readonly selectThread: TeamPagePayload['selectThread']
   /** The Human's display name, from the Client's one identity projection. */
   readonly humanName: string
   readonly humanAvatarUrl?: string | undefined
-  readonly t: TeamConversationProps['t']
+  readonly t: TeamPagePayload['t']
 }
 
 export function TeamMessageCenterPage({ useWorkspaces, loadMessageCenter, loadChannels, readThread, reply, subscribeChanges, selectWorkspace, selectThread, humanName, humanAvatarUrl, t }: TeamMessageCenterPageProps) {
@@ -544,7 +544,7 @@ export function TeamMessageCenterPage({ useWorkspaces, loadMessageCenter, loadCh
 }
 
 /** One discussion row: what the Thread is, who is in it, and how fresh it is. */
-function TopicRowView({ row, human, onOpen, t }: { readonly row: TopicRow; readonly human: TeamAvatarHuman | undefined; readonly onOpen: (row: TopicRow) => void; readonly t: TeamConversationProps['t'] }) {
+function TopicRowView({ row, human, onOpen, t }: { readonly row: TopicRow; readonly human: TeamAvatarHuman | undefined; readonly onOpen: (row: TopicRow) => void; readonly t: TeamPagePayload['t'] }) {
   const topic = row.topic
   const participantsLabel = t('messagesParticipants', { count: topic.participantCount })
   return <button type="button" className={inboxCss.row} data-team-messages-topic onClick={() => { onOpen(row) }}>
@@ -570,7 +570,7 @@ function TopicRowView({ row, human, onOpen, t }: { readonly row: TopicRow; reado
 function MessageRowView({ row, onOpen, t, replyOpen, replyDraft, replyPending, replyNotice, onReplyDraftChange, onReplySend, onReplyOpen, onReplyClose }: {
   readonly row: MessageRow
   readonly onOpen: (row: MessageRow) => void
-  readonly t: TeamConversationProps['t']
+  readonly t: TeamPagePayload['t']
   /** The one open inline composer; Thread rows only — a direct Message has no lane this seat may write. */
   readonly replyOpen: boolean
   readonly replyDraft: string

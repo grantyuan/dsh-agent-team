@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 // of 11 CI runs, 2026-09-17..21) against vitest's 5s default, so the file keeps
 // headroom rather than betting on runner throughput.
 vi.setConfig({ testTimeout: 30_000 })
-import { cleanup, fireEvent, waitFor } from '@testing-library/react'
+import { cleanup, fireEvent, waitFor, within } from '@testing-library/react'
 import { usePinnedBrowserLanguages } from '@deepseek-ai/dsh-client-test-runtime'
 import { runtimeWithTeam } from './harness.tsx'
 
@@ -108,6 +108,14 @@ async function openThread(b: Runtime): Promise<void> {
   const [link] = await b.view.findAllByRole('button', { name: '打开 Task #1' })
   fireEvent.click(link!)
   await waitFor(() => expect(b.view.getByRole('textbox', { name: '消息内容' })).toBeTruthy())
+  // The dock keeps background tabs mounted by design, so the Channel page the
+  // Thread was opened from would otherwise re-render its own rows on every
+  // burst and pollute the row counter. Close it: the probe measures the
+  // Thread page alone.
+  for (const tab of await b.view.findAllByRole('tab', { name: '频道' })) {
+    fireEvent.click(within(tab).getByRole('button', { name: '关闭标签' }))
+  }
+  await waitFor(() => expect(b.view.queryByRole('tab', { name: '频道' })).toBeNull())
 }
 
 function seed(count: number) {

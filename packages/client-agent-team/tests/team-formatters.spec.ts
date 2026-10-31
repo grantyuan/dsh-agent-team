@@ -3,14 +3,14 @@ import type { AgentTeamActivity, AgentTeamClaim, AgentTeamClientMemberStatus, Ag
 import { AGENT_TEAM_HUMAN_HANDLE } from '@wowyuarm/dsh-agent-team/host'
 import { MENTION_BODY_FIXTURE } from '../../agent-team/tests/fixtures/mention-bodies.ts'
 import { zh } from '../src/client/locales.ts'
-import type { TeamConversationProps } from '../src/client/slots.ts'
+import type { TeamPagePayload } from '../src/client/slots.ts'
 import { allMentionMembers, containsAllMention, containsMention, firstSentence, formatAbsoluteTime, formatActivity, formatClaimState, formatInboxTime, formatMessageTime, formatTaskStatus, HUMAN_HISTORIC_HANDLE, isPlainTextBody, isSingleBrandedRef, mentionNamesOf, formatRiskClass, mentionedMemberIds, planMessageBody, shouldClampMessage, splitBrandedRefs, splitMentionNames, taskStatusDot } from '../src/client/team-formatters.ts'
 
 const t = ((key: keyof typeof zh, params?: Record<string, string | number>) => {
   let value: string = zh[key]
   for (const [name, replacement] of Object.entries(params ?? {})) value = value.replace(`{${name}}`, String(replacement))
   return value
-}) as TeamConversationProps['t']
+}) as TeamPagePayload['t']
 
 const base = { activityRef: 'activity:1', taskRef: 'task:1', threadRef: 'thread:1', actor: 'member:builder', sequence: 3 }
 const claim = { claimRef: 'claim:1', taskRef: 'task:1', threadRef: 'thread:1', owner: 'member:builder', direction: '实现 API', normalizedDirection: '实现 api', state: 'active' } as AgentTeamClaim

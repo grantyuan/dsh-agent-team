@@ -1,0 +1,12 @@
+{
+  "name": "@wowyuarm/dsh-agent-team",
+  "version": "0.2.0",
+  "private": true,
+  "dsh": {
+    "client": {
+      "external": [
+        "@deepseek-ai/dsh-api-gateway/client"
+      ]
+    }
+  }
+}

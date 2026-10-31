@@ -433,34 +433,6 @@ export class MemberRuntime {
     }
   }
 
-  /**
-   * Hand one archived Member's private memory to its replacement: the index and
-   * its notes move over verbatim, so a supervised re-start begins from what the
-   * failed Member actually knew instead of an empty scaffold.
-   *
-   * `skills/` deliberately stays behind — a Member's private skills are assets
-   * it wrote for itself, not memory, and the replacement earns its own.
-   *
-   * A source outside THIS process's members root is refused the same way removal
-   * refuses it: the recorded path names another DSH home's directory, and taking
-   * a copy of it into this home would quietly fork one Member's memory across
-   * two installs.
-   */
-  async inheritPrivateMemory(source: AgentTeamAgentMember, targetDirectory: string): Promise<'inherited' | 'empty' | 'refused-foreign-home'> {
-    const sourcePath = memberMemoryDirectoryPath(source)
-    if (!isInsideMembersRoot(sourcePath)) return 'refused-foreign-home'
-    let moved = 0
-    for (const entry of ['memory.md', 'notes']) {
-      try {
-        await cp(join(sourcePath, entry), join(targetDirectory, entry), { recursive: true, force: true })
-        moved += 1
-      } catch (error) {
-        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
-      }
-    }
-    return moved === 0 ? 'empty' : 'inherited'
-  }
-
   /** Irreversibly remove one Member: archive its Session and delete its private namespace. */
   async cleanupRemovedMember(member: AgentTeamAgentMember): Promise<void> {
     // The ledger path may still name the legacy colon directory (never

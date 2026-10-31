@@ -141,6 +141,43 @@
   text-align: left;
   width: 100%;
 }
+
+/* The Team page dock's toggle rides above the Inbox card: pressed, the dock
+   column stands beside the conversation; released, it is closed and the next
+   card click reopens it. Same hover/focus surface as the cards it leads. */
+.dockToggleRow {
+  display: flex;
+  flex: 0 0 auto;
+  margin-top: 4px;
+}
+.dockToggle {
+  align-items: center;
+  background: transparent;
+  border: 0;
+  border-radius: var(--dsw-radius-md, 12px);
+  color: var(--dsw-alias-label-secondary);
+  cursor: pointer;
+  display: flex;
+  flex: 0 0 auto;
+  font-size: 12px;
+  gap: 6px;
+  height: 26px;
+  padding: 0 8px;
+  text-align: left;
+  width: 100%;
+}
+.dockToggle:hover,
+.dockToggle:focus-visible {
+  background: var(--dsw-alias-interactive-bg-hover);
+  color: var(--dsw-alias-label-primary);
+}
+.dockToggle:focus-visible {
+  outline: var(--dsw-focus-ring-width, 2px) solid var(--dsw-focus-ring-color, var(--dsw-alias-state-business-primary));
+}
+.dockToggle[aria-pressed='true'] {
+  color: var(--dsw-alias-label-primary);
+  font-weight: 600;
+}
 .inboxCard:hover,
 .inboxCard:focus-visible,
 .inboxCard[aria-current='page'],

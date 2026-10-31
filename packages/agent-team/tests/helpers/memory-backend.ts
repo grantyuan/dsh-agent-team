@@ -38,9 +38,9 @@ export class MemoryMediaPool {
   readonly versions = new Map<string, number>()
   /**
    * When positive, that many subsequent write primitives (putRecord /
-   * deleteRecord / setGlobal) reject without touching the medium, decrementing
-   * per rejection. Negative path: callers assert their state is
-   * untouched after a durability failure.
+   * deleteRecord / deleteRecords / setGlobal) reject without touching the
+   * medium, decrementing per rejection. Negative path: callers assert their
+   * state is untouched after a durability failure.
    */
   failNextWrites = 0
 
@@ -94,6 +94,16 @@ class MemoryKvUnit implements KvUnit {
     this.assertOpen()
     this.pool.consumeInjectedFailure()
     this.medium.tables.get(table)?.delete(key)
+  }
+
+  async deleteRecords(table: string, keys: readonly string[]): Promise<void> {
+    this.assertOpen()
+    // One batch is one write primitive: the real backend commits it in a
+    // single transaction, so one injected failure covers the whole batch.
+    this.pool.consumeInjectedFailure()
+    const records = this.medium.tables.get(table)
+    if (records === undefined) return
+    for (const key of new Set(keys)) records.delete(key)
   }
 
   async setGlobal(value: unknown): Promise<void> {

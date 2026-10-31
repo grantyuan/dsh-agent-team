@@ -3,7 +3,7 @@ import { afterEach, describe, expect, it } from 'vitest'
 import { cleanup, fireEvent, render } from '@testing-library/react'
 import type { AgentTeamChannelRef, AgentTeamMemberId, AgentTeamMessageRef, AgentTeamThreadRef } from '@wowyuarm/dsh-agent-team/types'
 import { zh } from '../src/client/locales.ts'
-import type { TeamConversationProps } from '../src/client/slots.ts'
+import type { TeamPagePayload } from '../src/client/slots.ts'
 import { rememberResolvedThreadRef, type ResolvedThreadRef } from '../src/client/refs.ts'
 import { TeamMessage } from '../src/client/TeamMessage.tsx'
 
@@ -11,7 +11,7 @@ const t = ((key: keyof typeof zh, params?: Record<string, string | number>) => {
   let value: string = zh[key]
   for (const [name, replacement] of Object.entries(params ?? {})) value = value.replace(`{${name}}`, String(replacement))
   return value
-}) as TeamConversationProps['t']
+}) as TeamPagePayload['t']
 
 afterEach(cleanup)
 

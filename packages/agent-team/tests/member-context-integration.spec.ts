@@ -14,6 +14,7 @@ afterEach(async () => { await Promise.all(roots.splice(0).map(root => rm(root, {
 function fakeAgent(ctx: Context): Agent {
   return {
     id: SessionId('session:memory-test'), ctx, status: 'idle', options: { provider: 'mock', model: 'mock' },
+    model: { current: () => undefined, select: () => {} },
     session: { surface: { nodes: [] }, events: [] } as never,
     inbox: {} as never,
     cancel() {}, whenIdle: async () => {}, runMaintenance: async task => task(new AbortController().signal),
@@ -23,7 +24,7 @@ function fakeAgent(ctx: Context): Agent {
 
 async function preStep(ctx: Context, agent: Agent): Promise<PreStepDecision> {
   return agentEvents(ctx, agent).waterfall('agent/pre-step', {
-    messages: [], turn: 1, step: 1, signal: new AbortController().signal,
+    messages: [], turn: 1, step: 1, signal: new AbortController().signal, modelSelection: { provider: 'mock', model: 'mock' },
   }, async () => ({ kind: 'enter', messages: [] }))
 }
 

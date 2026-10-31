@@ -91,6 +91,7 @@ import type { RemoteResult } from '@deepseek-ai/dsh-typert-protocol'
 import type { TeamNavigationActions, TeamNavigationSnapshot } from './navigation.ts'
 import type { TeamChangeListener, TeamChangeScope } from './team-changes.ts'
 import type { TeamDraftStore } from './drafts.ts'
+import type { TeamDockStore } from './dock.ts'
 import type { TeamHumanIdentitySource } from './human-identity.ts'
 
 export interface TeamNavigationSource {
@@ -135,6 +136,8 @@ export type TeamSidebarProps = PropsRuntime<'sidebar.workspaces'>
   & TeamNavigationActions
   & {
     navigation: TeamNavigationSource
+    /** The dock layout store: the sidebar's toggle reads and flips it. */
+    dock: TeamDockStore
     loadMembers: (request: AgentTeamMembersRequest) => Promise<RemoteResult<readonly AgentTeamClientMemberStatus[]>>
     /** One Workspace's per-Member working queues behind the Agents panel's task surfaces. */
     loadMemberTasks: (request: AgentTeamMemberTasksRequest) => Promise<RemoteResult<AgentTeamMemberTasks>>
@@ -205,7 +208,13 @@ export type TeamSidebarProps = PropsRuntime<'sidebar.workspaces'>
     selectedChannelRef?: AgentTeamChannelRef
   }
 
-export type TeamConversationProps = PropsRuntime<'main'> & PropsLocale<'team'> & TeamNavigationActions & {
+/**
+ * The data and callback payload every Team page body reads, carried by the
+ * dock's `rightbar` seat. The pages are seat-agnostic: the dock hosts them as
+ * tab bodies, so the payload is the dock seat's own share and the dock's props
+ * add only the layout store and the presentation report on top.
+ */
+export type TeamPagePayload = PropsRuntime<'rightbar'> & PropsLocale<'team'> & TeamNavigationActions & {
   navigation: TeamNavigationSource
   /** Keyed composer draft cache; one store per Client context. */
   drafts: TeamDraftStore
@@ -263,6 +272,23 @@ export type TeamConversationProps = PropsRuntime<'main'> & PropsLocale<'team'> &
    * generation list for those rows.
    */
   loadExternalContext: (request: AgentTeamExternalContextRequest) => Promise<RemoteResult<AgentTeamExternalContextResult>>
+}
+
+/** The presentation the dock reports to the frame's right column. */
+export interface TeamDockPresentation {
+  /** Whether the dock is drawn at all. */
+  readonly shown: boolean
+  /** Whether the drawn dock reserves a grid track the conversation makes room for. */
+  readonly track: boolean
+  /** Whether the dock covers the frame, independently of its retained track. */
+  readonly fullscreen: boolean
+}
+
+export type TeamDockProps = TeamPagePayload & {
+  /** The dock layout store: panes, tabs, and presentation, browser-persisted. */
+  dock: TeamDockStore
+  /** Report the dock's presentation to the frame whenever it changes. */
+  syncPresentation: (presentation: TeamDockPresentation) => void
 }
 
 export type TeamSettingsProps = PropsRuntime<'sidebar.settings'> & PropsLocale<'team'> & {

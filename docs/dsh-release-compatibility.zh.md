@@ -226,7 +226,7 @@ Harness 随附一套 experimental Agent Teams，以独立 profile bundle 形式�
 
 ## 6. 当前基线
 
-当前 Team bundle 的已认证基线是 DSH `0.2.1-alpha.2`；以下几段保留产生前几条基线的历史。
+当前 Team bundle 的已认证基线是 DSH `0.2.1-rc.3`；以下几段保留产生前几条基线的历史。
 
 DSH peers 正好声明这条已认证线：`>=0.2.1-alpha.2 <0.2.2`，因此本仓库尚未验证的线会落在声明区间之外，而不是以未经认证的兼容性声明被装上。
 

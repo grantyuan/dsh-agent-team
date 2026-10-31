@@ -117,7 +117,9 @@ describe('Team agent surfaces', () => {
     await waitFor(() => expect(document.documentElement.dataset.agentTeamMode).toBe('team'))
     expect(mainViewSessionId(b)).toBe('ordinary-session')
     expect(await b.view.findByRole('heading', { name: '频道' })).toBeTruthy()
-    expect(b.view.getAllByText('Alpha')).toHaveLength(2)
+    // The name appears three times: the selector row, the dock overview tab's
+    // own label, and the welcome body the dock opens with.
+    expect(b.view.getAllByText('Alpha')).toHaveLength(3)
     expect(b.view.queryByText('设置')).toBeNull()
     const membersTrigger = b.view.getByRole('button', { name: '成员' })
     const delayedMembers = Promise.withResolvers<Awaited<ReturnType<typeof b.members>>>()
@@ -469,18 +471,22 @@ describe('Team agent surfaces', () => {
     fireEvent.click(await b.view.findByRole('button', { name: '# engineering' }))
     expect(await b.view.findByRole('heading', { name: '# engineering' })).toBeTruthy()
     expect(document.documentElement.dataset.agentTeamMode).toBe('team')
-    // Team views own the conversation seat before the card click.
-    expect(b.view.container.querySelector('[data-phase]')).toBeNull()
+    // The conversation seat is the shipped root in every Team state; the dock
+    // holds the Team pages beside it.
+    expect(b.view.container.querySelector('[data-phase]')).toBeTruthy()
+    expect(b.view.container.querySelector('[data-team-channel]')).toBeTruthy()
 
     fireEvent.click(b.view.getByRole('button', { name: '打开 builder 的会话' }))
     await waitFor(() => {
       expect(b.openSession).toHaveBeenCalledWith('session:member:builder')
     })
-    // The card stays inside Team mode: the chrome remains mounted and the
-    // conversation seat yields to the shipped root rendering the Member Session.
+    // The card stays inside Team mode: the chrome remains mounted, the dock
+    // keeps the Channel page, and the conversation seat turns to the Member
+    // Session through the shipped root.
     expect(document.documentElement.dataset.agentTeamMode).toBe('team')
+    await waitFor(() => { expect(mainViewSessionId(b)).toBe('session:member:builder') })
     await waitFor(() => { expect(b.view.container.querySelector('[data-phase]')).toBeTruthy() })
-    expect(b.view.container.querySelector('[data-team-conversation]')).toBeNull()
+    expect(b.view.container.querySelector('[data-team-channel]')).toBeTruthy()
     // The single positioning highlight moves to the selected Agent card; the
     // workspace overview row goes quiet.
     const card = b.view.getByRole('button', { name: '打开 builder 的会话' })
@@ -489,19 +495,22 @@ describe('Team agent surfaces', () => {
       expect(row).toBe(card)
     }
 
-    // Explicit Team navigation closes the embedded Member view again.
+    // Explicit Team navigation closes the embedded Member view again: the
+    // selection returns to the Human's own session, the Channel page takes the
+    // dock's seat back, and the card yields the marker.
     fireEvent.click(await b.view.findByRole('button', { name: '# engineering' }))
-    await waitFor(() => { expect(b.view.container.querySelector('[data-team-channel]')).toBeTruthy() })
-    expect(b.view.container.querySelector('[data-phase]')).toBeNull()
+    await waitFor(() => { expect(mainViewSessionId(b)).toBe('ordinary-session') })
+    expect(b.view.container.querySelector('[data-team-channel]')).toBeTruthy()
     expect(card.getAttribute('aria-current')).toBeNull()
     await b.runtime.dispose()
   })
 
-  it('lends the Agent card the marker while the Inbox page stands under it', async () => {
+  it('lends the Agent card the marker while the Inbox page stands in the dock', async () => {
     // The Inbox page is a Team face the reader can be standing on when they open
-    // an Agent, and the overlay embeds that Session over the page rather than
-    // replacing it: the page keeps its place while exactly one row — the Agent
-    // card — wears the marker, and the entry takes the marker back on the way out.
+    // an Agent, and the Member conversation takes the conversation seat beside
+    // it rather than covering it: the page keeps its place in the dock while
+    // exactly one sidebar row — the Agent card — wears the marker, and the
+    // entry takes the marker back on the way out.
     const b = await runtimeWithTeam({ mode: 'team', workspaceId: 'w1', initialChannels: true })
     await b.runtime.sessions.add({ id: 'session:member:builder' as never, summary: { title: 'builder', cwd: '/work/alpha' } } as never)
     await b.view.findByText('builder')
@@ -512,19 +521,19 @@ describe('Team agent surfaces', () => {
 
     const card = b.view.getByRole('button', { name: '打开 builder 的会话' })
     fireEvent.click(card)
-    await waitFor(() => { expect(b.view.container.querySelector('[data-phase]')).toBeTruthy() })
-    // The page left the seat with the overlay, and only the card is marked: the
-    // Inbox entry is a remembered location, not a second current page.
-    expect(b.view.container.querySelector('[data-team-inbox]')).toBeNull()
+    await waitFor(() => { expect(mainViewSessionId(b)).toBe('session:member:builder') })
+    // The page keeps its dock seat while the card alone is marked: the Inbox
+    // entry is a remembered location, not a second current page.
+    expect(b.view.container.querySelector('[data-team-inbox]')).toBeTruthy()
     await waitFor(() => { expect(card.getAttribute('aria-current')).toBe('page') })
     expect(entry.getAttribute('aria-current')).toBeNull()
     for (const row of b.view.container.querySelectorAll('[aria-current="page"]')) expect(row).toBe(card)
 
-    // Leaving the overlay puts the reader back on the page they were reading,
-    // and the marker goes home with them.
+    // Re-selecting the Inbox closes the embedded Member view and puts the
+    // reader back on the page they were reading, marker and all.
     fireEvent.click(entry)
-    await waitFor(() => { expect(b.view.container.querySelector('[data-team-inbox]')).toBeTruthy() })
-    expect(entry.getAttribute('aria-current')).toBe('page')
+    await waitFor(() => { expect(entry.getAttribute('aria-current')).toBe('page') })
+    expect(b.view.container.querySelector('[data-team-inbox]')).toBeTruthy()
     expect(card.getAttribute('aria-current')).toBeNull()
     await b.runtime.dispose()
   })

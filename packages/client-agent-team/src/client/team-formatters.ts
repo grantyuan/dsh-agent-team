@@ -2,10 +2,10 @@ import type { WorkspaceId } from '@deepseek-ai/dsh-api-workspace-controller/clie
 import type { AgentTeamActivity, AgentTeamClaim, AgentTeamClientMemberStatus, AgentTeamMemberDiagnosticClass, AgentTeamMemberId, AgentTeamTask, AgentTeamTaskRef, AgentTeamThreadRef } from '@wowyuarm/dsh-agent-team/types'
 import { hasAllMarker, resolveBodyMentions, scanBodyHandles } from '@wowyuarm/dsh-agent-team/mentions'
 import type { TeamKey } from './locales.ts'
-import type { TeamConversationProps } from './slots.ts'
+import type { TeamPagePayload } from './slots.ts'
 import type { TeamStateDotState } from './TeamStateDot.tsx'
 
-export function formatTaskStatus(status: AgentTeamTask['status'], t: TeamConversationProps['t']): string {
+export function formatTaskStatus(status: AgentTeamTask['status'], t: TeamPagePayload['t']): string {
   return t(({
     todo: 'taskStatusTodo',
     in_progress: 'taskStatusInProgress',
@@ -15,7 +15,7 @@ export function formatTaskStatus(status: AgentTeamTask['status'], t: TeamConvers
   } as const)[status])
 }
 
-export function formatClaimState(state: AgentTeamClaim['state'], t: TeamConversationProps['t']): string {
+export function formatClaimState(state: AgentTeamClaim['state'], t: TeamPagePayload['t']): string {
   return t(({
     active: 'claimStateActive',
     done: 'claimStateDone',
@@ -41,7 +41,7 @@ const RISK_CLASS_KEYS = {
  */
 export function formatRiskClass(
   status: Pick<AgentTeamClientMemberStatus, 'diagnostic'>,
-  t: TeamConversationProps['t'],
+  t: TeamPagePayload['t'],
 ): { readonly label: string, readonly sentenceKey: TeamKey } {
   const [labelKey, sentenceKey] = RISK_CLASS_KEYS[status.diagnostic?.class ?? 'runtime']
   return { label: t(labelKey), sentenceKey }
@@ -280,7 +280,7 @@ export function mentionNamesOf(
 }
 
 /** Accessible label for one "who is on this work" stack: its owners' handles, comma-separated. */
-export function claimersLabel(owners: ReadonlyArray<{ readonly name: string }>, t: TeamConversationProps['t']): string {
+export function claimersLabel(owners: ReadonlyArray<{ readonly name: string }>, t: TeamPagePayload['t']): string {
   return t('claimers', { names: owners.map(owner => `@${owner.name}`).join(', ') })
 }
 
@@ -397,7 +397,7 @@ function calendarDayDelta(at: Date, now: Date): number {
  * the fact the reader has to be told, so it keeps its word; everything older
  * keeps the Message date form, so the row and the Thread it opens agree.
  */
-export function formatInboxTime(occurredAt: string, t: TeamConversationProps['t'], now = new Date()): string {
+export function formatInboxTime(occurredAt: string, t: TeamPagePayload['t'], now = new Date()): string {
   const at = new Date(occurredAt)
   if (Number.isNaN(at.getTime())) return ''
   const days = calendarDayDelta(at, now)
@@ -407,7 +407,7 @@ export function formatInboxTime(occurredAt: string, t: TeamConversationProps['t'
 }
 
 export function formatActivity(activity: AgentTeamActivity, options: {
-  readonly t: TeamConversationProps['t']
+  readonly t: TeamPagePayload['t']
   readonly actorName: (memberId: AgentTeamMemberId) => string
   readonly claims: readonly AgentTeamClaim[]
 }): string {

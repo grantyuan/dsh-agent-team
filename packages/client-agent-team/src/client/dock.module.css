@@ -1,0 +1,194 @@
+/* The Team page dock: the right-column panel that hosts the Team pages as
+ * tabs in split panes beside the conversation. Geometry mirrors the frame's
+ * right-column contract — the column is a track, the panel draws itself
+ * anchored to its right edge at the width the frame resolves, and a fullscreen
+ * dock covers the frame instead. Every color rides the shipped DSW aliases so
+ * the dock follows the active theme. */
+
+.panel {
+  background: var(--dsw-alias-bg-base);
+  border-left: 0.5px solid var(--dsw-alias-border-l2);
+  bottom: 0;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  overflow: clip;
+  position: absolute;
+  right: 0;
+  top: 0;
+}
+.panel[data-fullscreen] {
+  border-left: none;
+  box-shadow: var(--dsw-shadow-overlay, 0 8px 32px rgba(0, 0, 0, 0.2));
+  z-index: 40;
+}
+
+.dockHeader {
+  align-items: center;
+  border-bottom: 1px solid var(--dsw-alias-border-l2);
+  display: flex;
+  flex: none;
+  gap: 8px;
+  min-height: 36px;
+  padding: 0 6px 0 12px;
+}
+.dockTitle {
+  color: var(--dsw-alias-label-tertiary);
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 18px;
+  margin-right: auto;
+}
+.dockActions {
+  align-items: center;
+  display: flex;
+  gap: 2px;
+}
+
+.iconButton {
+  align-items: center;
+  background: transparent;
+  border: 0;
+  border-radius: 6px;
+  color: var(--dsw-alias-label-secondary);
+  cursor: pointer;
+  display: inline-flex;
+  height: 24px;
+  justify-content: center;
+  padding: 0;
+  width: 24px;
+}
+.iconButton:hover {
+  background: var(--dsw-alias-interactive-bg-hover);
+  color: var(--dsw-alias-label-primary);
+}
+.iconButton:focus-visible {
+  outline: var(--dsw-focus-ring-width, 2px) solid var(--dsw-focus-ring-color, var(--dsw-alias-state-business-primary));
+}
+.iconButton[aria-pressed='true'] {
+  color: var(--dsw-alias-state-business-primary);
+}
+.iconButton:disabled {
+  color: var(--dsw-alias-label-tertiary);
+  cursor: default;
+}
+.iconButton:disabled:hover {
+  background: transparent;
+}
+
+.panes {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.pane {
+  display: flex;
+  flex: 1 1 0;
+  flex-direction: column;
+  min-height: 0;
+  min-width: 0;
+}
+.paneHidden { display: none; }
+
+.paneHeader {
+  align-items: center;
+  background: var(--dsw-alias-bg-layer-1);
+  border-bottom: 1px solid var(--dsw-alias-border-l2);
+  display: flex;
+  flex: none;
+  gap: 2px;
+  min-height: 32px;
+  overflow-x: auto;
+  padding: 3px 6px 3px 8px;
+  scrollbar-width: none;
+}
+.paneHeader::-webkit-scrollbar { display: none; }
+
+.tab {
+  align-items: center;
+  border-radius: 6px;
+  color: var(--dsw-alias-label-secondary);
+  cursor: pointer;
+  display: inline-flex;
+  flex: none;
+  gap: 2px;
+  max-width: 160px;
+  padding: 2px 4px 2px 8px;
+}
+.tab:hover {
+  background: var(--dsw-alias-interactive-bg-hover);
+}
+.tab[aria-selected='true'] {
+  background: var(--dsw-alias-interactive-bg-hover);
+  color: var(--dsw-alias-label-primary);
+  font-weight: 600;
+}
+.tab:focus-visible {
+  outline: var(--dsw-focus-ring-width, 2px) solid var(--dsw-focus-ring-color, var(--dsw-alias-state-business-primary));
+}
+.tabLabel {
+  font-size: 12px;
+  line-height: 20px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.tabClose {
+  align-items: center;
+  background: transparent;
+  border: 0;
+  border-radius: 4px;
+  color: var(--dsw-alias-label-tertiary);
+  cursor: pointer;
+  display: inline-flex;
+  height: 16px;
+  justify-content: center;
+  padding: 0;
+  width: 16px;
+}
+.tabClose:hover {
+  background: var(--dsw-alias-interactive-bg-hover);
+  color: var(--dsw-alias-label-primary);
+}
+.tabClose:focus-visible {
+  outline: var(--dsw-focus-ring-width, 2px) solid var(--dsw-focus-ring-color, var(--dsw-alias-state-business-primary));
+}
+
+.paneActions {
+  align-items: center;
+  display: flex;
+  flex: none;
+  gap: 2px;
+  margin-left: auto;
+}
+
+.divider {
+  cursor: row-resize;
+  flex: none;
+  height: 5px;
+  position: relative;
+}
+.divider::after {
+  content: '';
+  inset: 0;
+  position: absolute;
+}
+.divider:hover::after,
+.divider[data-dragging]::after {
+  background: var(--dsw-alias-interactive-bg-hover);
+}
+
+.body {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  min-height: 0;
+  min-width: 0;
+  overflow: hidden;
+}
+.body > * {
+  flex: 1 1 auto;
+  min-height: 0;
+}

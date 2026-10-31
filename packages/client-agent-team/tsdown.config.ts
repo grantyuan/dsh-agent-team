@@ -8,9 +8,15 @@ import { pathToFileURL } from 'node:url'
 const { harnessDir } = await import('../../scripts/harness-dir.mjs')
 const { clientBundle } = await import(pathToFileURL(resolve(harnessDir, 'packages/client/tsdown.client.ts')).href)
 
-const bundle = clientBundle('@wowyuarm/dsh-agent-team', [
+const bundle = clientBundle(import.meta.dirname, [
   'lib/types/index.js',
-])
+], {
+  // The manifest's main entry and the Host's dynamic-bundle loader name
+  // `lib/index.js`; current tsdown emits `.mjs` for ESM unless pinned.
+  lib: {
+    outExtensions: () => ({ js: '.js', dts: '.d.ts' }),
+  },
+})
 
 // The Team Remote resolves through its own plugin rather than `resolve.alias`.
 // tsdown reads the client's tsconfig `paths`, whose `/remote` entry points at
@@ -25,10 +31,18 @@ const bundle = clientBundle('@wowyuarm/dsh-agent-team', [
 // one level deeper than the repository root the string was written for, so it
 // silently pointed outside the repository.
 const teamRemoteTarget = resolve(import.meta.dirname, '../agent-team/lib/typert.remote-client.js')
+// The generated remote runtime imports the typert wire helpers through the
+// package's `/remote-info` subpath. That subpath's exports entry lists
+// `types` before `default`, and the resolver honoring types first lands on a
+// declaration file bundlers cannot consume, so pin the runtime artifact the
+// same way `/remote` is pinned above.
+const typertRemoteInfoTarget = resolve(harnessDir, 'packages/typert/protocol/lib/types/remote-info.js')
 const teamRemote = {
   name: 'dsh-agent-team-remote-entrypoint',
   resolveId(source: string) {
-    return source === '@wowyuarm/dsh-agent-team/remote' ? teamRemoteTarget : null
+    if (source === '@wowyuarm/dsh-agent-team/remote') return teamRemoteTarget
+    if (source === '@deepseek-ai/dsh-typert-protocol/remote-info') return typertRemoteInfoTarget
+    return null
   },
 }
 

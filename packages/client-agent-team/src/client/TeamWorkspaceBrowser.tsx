@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, useSyncExternalStore } from 'react'
-import { IconAgentPresetOutlineRegular, IconBrowseOutlineRegular, IconChecklistOutlineRegular, IconListPenOutlineRegular, IconQueueOutlineRegular, Tooltip } from '@deepseek-ai/dsh-client-ui-primitives'
+import { IconAgentPresetOutlineRegular, IconBrowseOutlineRegular, IconChecklistOutlineRegular, IconCompareSplitOutlineRegular, IconListPenOutlineRegular, IconQueueOutlineRegular, Tooltip } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { AgentTeamAddMemberRequest } from '@wowyuarm/dsh-agent-team/types'
 import type { TeamSidebarProps } from './slots.ts'
 import { TeamWorkspaceSelector } from './TeamWorkspaceSelector.tsx'
@@ -24,8 +24,9 @@ function InboxMark({ unread }: { readonly unread: number }) {
   </span>
 }
 
-export function TeamWorkspaceBrowser({ wide, expandSidebar, navigation, selectWorkspace, selectChannel, selectThread, selectInbox, selectTasks, selectMessages, selectSessionHistory, t, useWorkspaces, loadMembers, loadMemberTasks, loadInbox, subscribeChanges, subscribeReads, addMember, loadChannels, createChannel, updateChannel, archiveChannel, updateMember, loadPromptView, curateMemberPrompt, recoverMember, clearMemberContext, compactMemberContext, loadMemberInterrupts, releaseMemberInterrupt, diagnoseMember, archiveMember, joinWorkspace, leaveWorkspace, joinChannel, removeChannelMember, loadModels, openMemberSession, sendMessage }: TeamSidebarProps) {
+export function TeamWorkspaceBrowser({ wide, expandSidebar, navigation, dock, selectWorkspace, selectChannel, selectThread, selectInbox, selectTasks, selectMessages, selectSessionHistory, t, useWorkspaces, loadMembers, loadMemberTasks, loadInbox, subscribeChanges, subscribeReads, addMember, loadChannels, createChannel, updateChannel, archiveChannel, updateMember, loadPromptView, curateMemberPrompt, recoverMember, clearMemberContext, compactMemberContext, loadMemberInterrupts, releaseMemberInterrupt, diagnoseMember, archiveMember, joinWorkspace, leaveWorkspace, joinChannel, removeChannelMember, loadModels, openMemberSession, sendMessage }: TeamSidebarProps) {
   const navigationState = useSyncExternalStore(navigation.subscribe, navigation.getSnapshot, navigation.getSnapshot)
+  const dockState = useSyncExternalStore(dock.subscribe, dock.getSnapshot, dock.getSnapshot)
   const workspaces = useWorkspaces(state => state.items)
   const selected = navigationState.workspaceId
   const selectedExists = selected !== undefined && workspaces.some(workspace => workspace.workspaceId === selected)
@@ -104,6 +105,11 @@ export function TeamWorkspaceBrowser({ wide, expandSidebar, navigation, selectWo
 
   if (!wide) {
     return <nav className={css.railWorkspace} aria-label={t('workspaceSections')}>
+      <Tooltip label={t('dockToggleButton')} side="right">
+        <button type="button" className={css.railButton} aria-label={t('dockToggleButton')} aria-pressed={dockState.open} onClick={dock.toggleOpen}>
+          <IconCompareSplitOutlineRegular size={16} />
+        </button>
+      </Tooltip>
       <Tooltip label={inboxLabel} side="right">
         <button type="button" className={css.railButton} aria-label={inboxLabel} aria-current={inboxIsCurrent ? 'page' : undefined} onClick={() => { selectInbox(); expandSidebar() }}>
           <InboxMark unread={inboxTotal} />
@@ -133,6 +139,15 @@ export function TeamWorkspaceBrowser({ wide, expandSidebar, navigation, selectWo
   }
 
   return <section className={css.workspaceBrowser} aria-label={t('workspaces')}>
+    {/* The dock toggle rides above the cards: the Team pages live in the right
+        column dock, and this is the one control that shows or hides that
+        column without touching which page it holds. */}
+    <div className={css.dockToggleRow}>
+      <button type="button" className={css.dockToggle} aria-pressed={dockState.open} onClick={dock.toggleOpen}>
+        <IconCompareSplitOutlineRegular size={16} />
+        <span>{t('dockToggleButton')}</span>
+      </button>
+    </div>
     {/* The Inbox is the one destination that crosses Workspaces — its total sums
         every one of them — so it stands above the selector rather than inside
         the scope that selector names. */}

@@ -73,13 +73,10 @@ exports[`Team conversation surfaces > restores persisted Team mode, reconciles a
             <svg
               aria-hidden="true"
               class="panelIcon"
-              data-content="88020f34"
-              fill="none"
+              data-content="d95b7908"
+              data-icon="dsw-icon-panel-left-outline-regular"
               height="16"
-              stroke-width="1"
-              viewBox="0 0 16 16"
               width="16"
-              xmlns="http://www.w3.org/2000/svg"
             />
           </button>
         </div>
@@ -90,13 +87,10 @@ exports[`Team conversation surfaces > restores persisted Team mode, reconciles a
         >
           <svg
             aria-hidden="true"
-            data-content="47b5e433"
-            fill="none"
+            data-content="532cf99a"
+            data-icon="dsw-icon-new-chat-outline-medium"
             height="14"
-            stroke-width="1.3"
-            viewBox="0 0 16 16"
             width="14"
-            xmlns="http://www.w3.org/2000/svg"
           />
           <span
             class="newSessionLabel wide"
@@ -125,13 +119,10 @@ exports[`Team conversation surfaces > restores persisted Team mode, reconciles a
                 >
                   <svg
                     aria-hidden="true"
-                    data-content="be386ae5"
-                    fill="none"
+                    data-content="4b39aa7b"
+                    data-icon="dsw-icon-queue-outline-regular"
                     height="16"
-                    stroke-width="1"
-                    viewBox="0 0 16 16"
                     width="16"
-                    xmlns="http://www.w3.org/2000/svg"
                   />
                 </span>
                 <span
@@ -147,13 +138,10 @@ exports[`Team conversation surfaces > restores persisted Team mode, reconciles a
               >
                 <svg
                   aria-hidden="true"
-                  data-content="5e4a8332"
-                  fill="none"
+                  data-content="1f8c5fc4"
+                  data-icon="dsw-icon-checklist-outline-regular"
                   height="16"
-                  stroke-width="1"
-                  viewBox="0 0 16 16"
                   width="16"
-                  xmlns="http://www.w3.org/2000/svg"
                 />
                 <span
                   class="inboxCardLabel"
@@ -168,13 +156,10 @@ exports[`Team conversation surfaces > restores persisted Team mode, reconciles a
               >
                 <svg
                   aria-hidden="true"
-                  data-content="f9dd455f"
-                  fill="none"
+                  data-content="9b050d2e"
+                  data-icon="dsw-icon-browse-outline-regular"
                   height="16"
-                  stroke-width="1"
-                  viewBox="0 0 16 16"
                   width="16"
-                  xmlns="http://www.w3.org/2000/svg"
                 />
                 <span
                   class="inboxCardLabel"
@@ -201,13 +186,10 @@ exports[`Team conversation surfaces > restores persisted Team mode, reconciles a
                   >
                     <svg
                       aria-hidden="true"
-                      data-content="a2987c53"
-                      fill="none"
+                      data-content="7e1820f0"
+                      data-icon="dsw-icon-folder-open-regular"
                       height="16"
-                      stroke-width="1"
-                      viewBox="0 0 16 16"
                       width="16"
-                      xmlns="http://www.w3.org/2000/svg"
                     />
                   </span>
                   <span
@@ -221,13 +203,10 @@ exports[`Team conversation surfaces > restores persisted Team mode, reconciles a
                   >
                     <svg
                       aria-hidden="true"
-                      data-content="2b5d7fd1"
-                      fill="none"
+                      data-content="2a7eaef6"
+                      data-icon="dsw-icon-chevron-down-outline-regular"
                       height="14"
-                      stroke-width="1"
-                      viewBox="0 0 16 16"
                       width="14"
-                      xmlns="http://www.w3.org/2000/svg"
                     />
                   </span>
                 </button>
@@ -253,13 +232,10 @@ exports[`Team conversation surfaces > restores persisted Team mode, reconciles a
                           <svg
                             aria-hidden="true"
                             class="sectionChevron"
-                            data-content="2b5d7fd1"
-                            fill="none"
+                            data-content="2a7eaef6"
+                            data-icon="dsw-icon-chevron-down-outline-regular"
                             height="14"
-                            stroke-width="1"
-                            viewBox="0 0 16 16"
                             width="14"
-                            xmlns="http://www.w3.org/2000/svg"
                           />
                           <span
                             class="sectionTitle"
@@ -277,13 +253,10 @@ exports[`Team conversation surfaces > restores persisted Team mode, reconciles a
                           >
                             <svg
                               aria-hidden="true"
-                              data-content="b713fe59"
-                              fill="none"
+                              data-content="c04850e4"
+                              data-icon="dsw-icon-plus-outline-regular"
                               height="14"
-                              stroke-width="1"
-                              viewBox="0 0 16 16"
                               width="14"
-                              xmlns="http://www.w3.org/2000/svg"
                             />
                           </button>
                         </span>
@@ -317,13 +290,10 @@ exports[`Team conversation surfaces > restores persisted Team mode, reconciles a
                           <svg
                             aria-hidden="true"
                             class="sectionChevron"
-                            data-content="2b5d7fd1"
-                            fill="none"
+                            data-content="2a7eaef6"
+                            data-icon="dsw-icon-chevron-down-outline-regular"
                             height="14"
-                            stroke-width="1"
-                            viewBox="0 0 16 16"
                             width="14"
-                            xmlns="http://www.w3.org/2000/svg"
                           />
                           <span
                             class="sectionTitle"
@@ -341,13 +311,10 @@ exports[`Team conversation surfaces > restores persisted Team mode, reconciles a
                           >
                             <svg
                               aria-hidden="true"
-                              data-content="b713fe59"
-                              fill="none"
+                              data-content="c04850e4"
+                              data-icon="dsw-icon-plus-outline-regular"
                               height="14"
-                              stroke-width="1"
-                              viewBox="0 0 16 16"
                               width="14"
-                              xmlns="http://www.w3.org/2000/svg"
                             />
                           </button>
                         </span>
@@ -412,13 +379,10 @@ exports[`Team conversation surfaces > restores persisted Team mode, reconciles a
                                 >
                                   <svg
                                     aria-hidden="true"
-                                    data-content="d1c61540"
-                                    fill="none"
+                                    data-content="ce3185ff"
+                                    data-icon="dsw-icon-ellipsis-outline-regular"
                                     height="16"
-                                    stroke-width="1"
-                                    viewBox="0 0 16 16"
                                     width="16"
-                                    xmlns="http://www.w3.org/2000/svg"
                                   />
                                 </button>
                               </span>
@@ -485,13 +449,10 @@ exports[`Team conversation surfaces > restores persisted Team mode, reconciles a
                                 >
                                   <svg
                                     aria-hidden="true"
-                                    data-content="d1c61540"
-                                    fill="none"
+                                    data-content="ce3185ff"
+                                    data-icon="dsw-icon-ellipsis-outline-regular"
                                     height="16"
-                                    stroke-width="1"
-                                    viewBox="0 0 16 16"
                                     width="16"
-                                    xmlns="http://www.w3.org/2000/svg"
                                   />
                                 </button>
                               </span>
@@ -555,13 +516,10 @@ exports[`Team conversation surfaces > restores persisted Team mode, reconciles a
                                 >
                                   <svg
                                     aria-hidden="true"
-                                    data-content="d1c61540"
-                                    fill="none"
+                                    data-content="ce3185ff"
+                                    data-icon="dsw-icon-ellipsis-outline-regular"
                                     height="16"
-                                    stroke-width="1"
-                                    viewBox="0 0 16 16"
                                     width="16"
-                                    xmlns="http://www.w3.org/2000/svg"
                                   />
                                 </button>
                               </span>
@@ -626,13 +584,10 @@ exports[`Team conversation surfaces > restores persisted Team mode, reconciles a
                                 >
                                   <svg
                                     aria-hidden="true"
-                                    data-content="d1c61540"
-                                    fill="none"
+                                    data-content="ce3185ff"
+                                    data-icon="dsw-icon-ellipsis-outline-regular"
                                     height="16"
-                                    stroke-width="1"
-                                    viewBox="0 0 16 16"
                                     width="16"
-                                    xmlns="http://www.w3.org/2000/svg"
                                   />
                                 </button>
                               </span>
@@ -668,13 +623,10 @@ exports[`Team conversation surfaces > restores persisted Team mode, reconciles a
                 >
                   <svg
                     aria-hidden="true"
-                    data-content="599d85c9"
-                    fill="none"
+                    data-content="06ac9ef3"
+                    data-icon="dsw-icon-chevron-left-outline-regular"
                     height="16"
-                    stroke-width="1"
-                    viewBox="0 0 16 16"
                     width="16"
-                    xmlns="http://www.w3.org/2000/svg"
                   />
                   <span>
                     对话
@@ -698,13 +650,10 @@ exports[`Team conversation surfaces > restores persisted Team mode, reconciles a
               >
                 <svg
                   aria-hidden="true"
-                  data-content="68b4b343"
-                  fill="none"
+                  data-content="f41ba03f"
+                  data-icon="dsw-icon-user-outline-regular"
                   height="16"
-                  stroke-width="1"
-                  viewBox="0 0 16 16"
                   width="16"
-                  xmlns="http://www.w3.org/2000/svg"
                 />
                 <span>
                   成员

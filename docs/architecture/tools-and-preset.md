@@ -10,7 +10,7 @@ Sections can also be dropped per Member. The ledger profile's `droppedSections` 
 
 The listener keys on the assembly's turn signal: the agent loop is the only caller that assembles with one, so signal-less read-side assemblies such as `memberPromptView`'s still see the full list — dropped sections stay visible and recoverable in the dialog instead of masquerading as stale.
 
-The whole prompt profile is per-Member ledger state, so it travels with the Member through ordinary lifecycle operations — including a supervision handover, where the successor carries the predecessor's profile, `leader` flag, and context policy verbatim instead of reverting to defaults (see Host authority).
+The whole prompt profile is per-Member ledger state, so it travels with the Member through ordinary lifecycle operations — restarts, suspend/resume, context renewals, archival and restore keep the profile, `leader` flag, and context policy verbatim instead of reverting to defaults (see Host authority).
 
 The protected set is defined once in `member-runtime.ts` (`isProtectedPromptSection`): the paragraph section itself, the deployment persona slots, and the Team tools' `tool:<name>` guidance sections — a drop request for a protected name is refused at consumption, rendering the row inert with the protected mark. The eleven Team tools ship their guidance in tool descriptions rather than registered sections, so the `tool:*` entries are defensive: no live section carries those names, so they never render as dialog rows. Names that no live section provides are stored but inert — the dialog marks them stale.
 

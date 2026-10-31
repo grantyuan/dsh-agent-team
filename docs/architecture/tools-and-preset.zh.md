@@ -10,7 +10,7 @@ Section 也可以按 Member 移除。ledger 画像的 `droppedSections` 记录 H
 
 listener 以 assembly 的 turn signal 为门：agent loop 是唯一带着 signal 装配的调用方，因此 `memberPromptView` 这类无 signal 的 read-side 装配仍看到完整清单——被 drop 的 section 在对话框中保持可见、可恢复，而不会伪装成 stale。
 
-整份 prompt 画像都是 per-Member 的 ledger 状态，因此随 Member 经由普通 lifecycle operation 流转——包括 supervision 换代：继任者逐字携带前任的画像、`leader` 标记与 context 策略，而不会回退到默认值（见 Host authority）。
+整份 prompt 画像都是 per-Member 的 ledger 状态，因此随 Member 经由普通 lifecycle operation 流转——重启、suspend/resume、context 续期、归档与恢复都逐字保留画像、`leader` 标记与 context 策略，而不会回退到默认值（见 Host authority）。
 
 protected 集合在 `member-runtime.ts` 一处定义（`isProtectedPromptSection`）：段落 section 自身、deployment persona 槽位、以及 Team tools 的 `tool:<name>` guidance sections——对受保护名字的 drop 请求在消费端拒绝，对话框将该行渲染为带受保护标记的不可操作状态。十一个 Team tools 目前把 guidance 放在 tool description 而非注册的 prompt section 里，所以 `tool:*` 条目今天是前瞻防御：没有任何 live section 携带这些名字，它们不会渲染为对话框的 live 或 stale 行。没有任何 live section 提供的名字照常存储但不起作用——对话框标记为已失效。
 

@@ -22,13 +22,14 @@ class ResizeObserverStub {
 }
 vi.stubGlobal('ResizeObserver', ResizeObserverStub)
 
-type FrameProps = PropsRenderSlots<'sidebar' | 'main'>
+type FrameProps = PropsRenderSlots<'sidebar' | 'main' | 'rightbar'>
 function Frame({ renderSlot }: FrameProps) {
   const [collapsed, setCollapsed] = useState(false)
   return <>
     <button type="button" data-test-control onClick={() => { setCollapsed(value => !value) }}>Toggle fixture sidebar</button>
     {renderSlot('sidebar', { collapsed, width: collapsed ? 56 : 280 })}
     {renderSlot('main', {}, { entryKey: 'conversation' })}
+    {renderSlot('rightbar', { width: 400, viewportWidth: 1440, canShow: true })}
   </>
 }
 
@@ -69,7 +70,11 @@ export async function runtimeWithTeam(options?: { mode?: 'team'; workspaceId?: s
   locale.register(COMMON_NS, { zh: commonZh, en: commonEn })
   runtime.ctx.provide('locale', locale)
   runtime.slots.installLocale(locale)
-  runtime.ctx.provide('layout', { toggleSidebar: vi.fn() })
+  // The dock reports its presentation through the same face ui-sidebar-right
+  // uses; the bench records the reports so specs can assert them.
+  const openRightbar = vi.fn()
+  const closeRightbar = vi.fn()
+  runtime.ctx.provide('layout', { toggleSidebar: vi.fn(), openRightbar, closeRightbar, panelInfo: { getSnapshot: () => ({ activePanelId: null }), subscribe: () => () => {} } })
   // rc.2: the shipped layout and sidebar inject 'shortcuts'. The takeover bench
   // mounts both, so it provides an empty command catalog for the sidebar's
   // keycap reads and a registrer that only reports success — no keyboard
@@ -678,6 +683,7 @@ export async function runtimeWithTeam(options?: { mode?: 'team'; workspaceId?: s
   await runtime.root.declare({
     sidebar: { kind: 'single', scope: 'root' },
     main: { kind: 'keyed', scope: 'root' },
+    rightbar: { kind: 'single', scope: 'root' },
   } as never, Frame as never)
   await runtime.mount({ inject: [...injectSidebar], apply: applySidebar })
   // The shipped ConversationRoot occupies the conversation seat — the same
@@ -689,5 +695,5 @@ export async function runtimeWithTeam(options?: { mode?: 'team'; workspaceId?: s
   const disposeSettings = runtime.slots.register({ name: 'sidebar.settings', priority: 0 }, BaselineSettings as never)
   const team = await runtime.mount({ inject: [...inject], apply })
   const view = runtime.renderRoot()
-  return { runtime, team, view, disposeWorkspace, disposeSettings, members, humanProfile, setHumanProfile, getHumanAvatar, putHumanAvatar, removeHumanAvatar, seedHumanProfile, failHumanProfile, failHumanProfileWrite, environment, seedEnvironment, failEnvironment, joinWorkspace, leaveWorkspace, addMember, status, viewChannels, createChannel, updateChannel, archiveChannel, putAttachment, getAttachment, updateMember, recoverMember, clearMemberContext, compactMemberContext, memberSessions, memberSessionTranscript, archiveMember, modelCatalog, joinChannel, removeChannelMember, sendMessage, reply, changeTask, changeTasks, promoteThread, resolveTaskRefs, publishAgentReply, publishPresence, seedChannel, publishChannelUpdate, failChanges, recoverChanges, readThread, loadThreadHistory, threadObservations, changes, inbox, seedInbox, messageCenter, seedMessageCenterTopics, seedMessageCenterMessages, failMessageCenter, tasks, seedTasks, memberTasks, seedMemberTasks, openSession, summarizeThread, seedDigest, failDigest }
+  return { runtime, team, view, disposeWorkspace, disposeSettings, openRightbar, closeRightbar, members, humanProfile, setHumanProfile, getHumanAvatar, putHumanAvatar, removeHumanAvatar, seedHumanProfile, failHumanProfile, failHumanProfileWrite, environment, seedEnvironment, failEnvironment, joinWorkspace, leaveWorkspace, addMember, status, viewChannels, createChannel, updateChannel, archiveChannel, putAttachment, getAttachment, updateMember, recoverMember, clearMemberContext, compactMemberContext, memberSessions, memberSessionTranscript, archiveMember, modelCatalog, joinChannel, removeChannelMember, sendMessage, reply, changeTask, changeTasks, promoteThread, resolveTaskRefs, publishAgentReply, publishPresence, seedChannel, publishChannelUpdate, failChanges, recoverChanges, readThread, loadThreadHistory, threadObservations, changes, inbox, seedInbox, messageCenter, seedMessageCenterTopics, seedMessageCenterMessages, failMessageCenter, tasks, seedTasks, memberTasks, seedMemberTasks, openSession, summarizeThread, seedDigest, failDigest }
 }

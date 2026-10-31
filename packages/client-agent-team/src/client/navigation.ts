@@ -1,6 +1,7 @@
 import type { SessionId } from '@deepseek-ai/dsh-session'
 import type { WorkspaceId } from '@deepseek-ai/dsh-api-workspace-controller/client'
 import type { AgentTeamChannelRef, AgentTeamMemberId, AgentTeamTaskRef, AgentTeamThreadRef } from '@wowyuarm/dsh-agent-team/types'
+import type { TeamTabFace } from './dock.ts'
 
 export type TeamMode = 'conversation' | 'team'
 
@@ -59,6 +60,22 @@ export interface TeamNavigationSnapshot {
 }
 
 const STORAGE_KEY = 'dsh.agent-team.navigation'
+
+/** Fact-level equality of two snapshots — every persisted navigation face. */
+function sameSnapshotFacts(left: TeamNavigationSnapshot, right: TeamNavigationSnapshot): boolean {
+  return left.mode === right.mode
+    && left.workspaceId === right.workspaceId
+    && left.channelRef === right.channelRef
+    && left.taskRef === right.taskRef
+    && left.threadRef === right.threadRef
+    && left.taskNumber === right.taskNumber
+    && left.threadOrigin === right.threadOrigin
+    && left.focusSequence === right.focusSequence
+    && left.inbox === right.inbox
+    && left.tasks === right.tasks
+    && left.messages === right.messages
+    && left.sessionHistory === right.sessionHistory
+}
 
 function readSnapshot(): TeamNavigationSnapshot {
   if (typeof localStorage === 'undefined') return { mode: 'conversation' }
@@ -141,6 +158,14 @@ export interface TeamNavigationActions {
   enterMemberSession: (sessionId: SessionId, returnToSessionId?: SessionId) => void
   /** Close the embedded Member Session view and return to the Team views. */
   exitMemberSession: () => void
+  /**
+   * Restore one dock tab's navigation face in a single commit: the Workspace
+   * the tab was opened under (when it carries one and it differs) plus the
+   * leaf face itself. A background tab taking its seat back must not publish
+   * the intermediate Workspace-overview state, so the Workspace move and the
+   * leaf selection land as one durable navigation write.
+   */
+  restoreTabFace: (face: TeamTabFace) => void
 }
 
 /** Root-scoped Team mode state. Slot lifetimes subscribe to this source. */
@@ -171,6 +196,7 @@ export class TeamNavigation {
       backToChannels: () => { this.clearMemberSession(); this.clearChannel() },
       enterMemberSession: (sessionId, returnToSessionId) => { this.setMemberSession(sessionId, returnToSessionId) },
       exitMemberSession: () => { this.clearMemberSession() },
+      restoreTabFace: face => { this.applyTabFace(face) },
     }
   }
 
@@ -292,6 +318,50 @@ export class TeamNavigation {
     if (origin === 'tasks') { this.setTasks(); return }
     if (origin === 'messages') { this.setMessages(); return }
     this.setThread(undefined)
+  }
+
+  /**
+   * One dock tab's face restored as one durable write: the tab's Workspace
+   * (when it carries one and it differs — which also drops every leaf face,
+   * since faces never cross Workspaces) and then the leaf face itself. The
+   * global list faces keep the current Workspace, like their own actions do.
+   */
+  private applyTabFace(face: TeamTabFace): void {
+    const base = this.snapshot
+    const moveWorkspace = face.workspaceId !== undefined && base.workspaceId !== face.workspaceId
+    let next: TeamNavigationSnapshot
+    if (moveWorkspace || face.kind === 'overview') {
+      const { channelRef: _channelRef, taskRef: _taskRef, threadRef: _threadRef, taskNumber: _taskNumber, threadOrigin: _threadOrigin, focusSequence: _focusSequence, inbox: _inbox, tasks: _tasks, messages: _messages, sessionHistory: _sessionHistory, ...rest } = base
+      next = { ...rest, ...(face.workspaceId === undefined ? {} : { workspaceId: face.workspaceId }) }
+    } else {
+      const { channelRef: _channelRef, taskRef: _taskRef, threadRef: _threadRef, taskNumber: _taskNumber, threadOrigin: _threadOrigin, focusSequence: _focusSequence, inbox: _inbox, tasks: _tasks, messages: _messages, sessionHistory: _sessionHistory, ...rest } = base
+      next = rest
+    }
+    switch (face.kind) {
+      case 'overview': break
+      case 'inbox': next = { ...next, inbox: true }; break
+      case 'tasks': next = { ...next, tasks: true }; break
+      case 'messages': next = { ...next, messages: true }; break
+      case 'channel':
+        next = { ...next, ...(face.channelRef === undefined ? {} : { channelRef: face.channelRef }) }
+        break
+      case 'thread':
+        next = {
+          ...next,
+          ...(face.threadRef === undefined ? {} : { threadRef: face.threadRef }),
+          ...(face.channelRef === undefined ? {} : { channelRef: face.channelRef }),
+          ...(face.taskRef === undefined ? {} : { taskRef: face.taskRef }),
+          ...(face.taskNumber === undefined ? {} : { taskNumber: face.taskNumber }),
+          ...(face.threadOrigin === undefined ? {} : { threadOrigin: face.threadOrigin }),
+        }
+        break
+      case 'sessionHistory':
+        next = { ...next, ...(face.memberId === undefined ? {} : { sessionHistory: face.memberId }) }
+        break
+    }
+    if (sameSnapshotFacts(base, next)) return
+    this.snapshot = next
+    this.commit()
   }
 
   private commit(): void {

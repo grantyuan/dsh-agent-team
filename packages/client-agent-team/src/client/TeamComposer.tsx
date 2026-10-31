@@ -2,7 +2,7 @@ import { useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } fr
 import type { ChangeEvent, ClipboardEvent, KeyboardEvent } from 'react'
 import type { AgentTeamClientMemberStatus, AgentTeamMemberId } from '@wowyuarm/dsh-agent-team/types'
 import { IconChecklistOutlineMedium, IconPaperclipOutlineMedium, IconSendOutlineRegular, Tooltip, useAnchoredMaxHeight, useDismissOnOutsidePointer } from '@deepseek-ai/dsh-client-ui-primitives'
-import type { TeamConversationProps } from './slots.ts'
+import type { TeamPagePayload } from './slots.ts'
 import type { TeamDraftKey, TeamDraftStore } from './drafts.ts'
 import { TeamPresenceDot } from './TeamPresenceDot.tsx'
 import { allMentionMembers, containsAllMention, containsMention, mentionedMemberIds } from './team-formatters.ts'
@@ -84,7 +84,7 @@ export function TeamComposer({ members, followerMemberIds, drafts, draftKey, pen
   /** The Message this draft answers; the page prepends the quote at send time. */
   readonly replyTarget?: { readonly handle: string; readonly summary: string }
   readonly onCancelReplyTarget?: () => void
-  readonly t: TeamConversationProps['t']
+  readonly t: TeamPagePayload['t']
 }) {
   const inputRef = useRef<HTMLTextAreaElement>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)

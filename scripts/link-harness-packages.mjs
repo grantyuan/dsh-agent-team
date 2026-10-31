@@ -12,7 +12,7 @@
 // `@wowyuarm/dsh-context-continuity` by name and must resolve exactly one copy
 // of it. A clean checkout resolves the published package the package manager
 // already installed instead, and then there is nothing to link.
-import { existsSync, mkdirSync, readdirSync, readFileSync, symlinkSync } from 'node:fs'
+import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, rmSync, symlinkSync } from 'node:fs'
 import { dirname, join, relative, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { continuityDir, continuityEntry, continuityFromSibling } from './continuity-dir.mjs'
@@ -34,7 +34,11 @@ const linkPackage = (name, packageDir) => {
   const scopeRoot = join(repoRoot, 'node_modules', scope)
   mkdirSync(scopeRoot, { recursive: true })
   const target = join(scopeRoot, name.slice(scope.length + 1))
+  // existsSync follows symlinks, so a link left by an older checkout whose
+  // package directory has since moved (an upstream reorganization) reads as
+  // absent while the symlink itself still blocks creation — replace it.
   if (existsSync(target)) return
+  if (lstatSync(target, { throwIfNoEntry: false }) !== undefined) rmSync(target)
   // node_modules/<scope>/<name> -> ../../../deepseek-harness/<packageDir>
   const relativeTarget = relative(scopeRoot, packageDir)
   if (process.platform === 'win32') {

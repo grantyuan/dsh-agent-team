@@ -7,7 +7,7 @@ import type {
 } from '@wowyuarm/dsh-agent-team/types'
 import { Button, IconChevronLeftOutlineRegular, MarkdownText } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { MarkdownLabels } from '@deepseek-ai/dsh-client-ui-primitives'
-import type { TeamConversationProps } from './slots.ts'
+import type { TeamPagePayload } from './slots.ts'
 import type { TeamKey } from './locales.ts'
 import { shouldClampMessage } from './team-formatters.ts'
 import css from './session-history.module.css'
@@ -23,12 +23,12 @@ interface TeamSessionHistoryPageProps {
   readonly memberId: AgentTeamMemberId
   /** The selected Workspace, when the seat has one; the external-context read scopes to it. */
   readonly workspaceId?: string
-  readonly loadMembers: TeamConversationProps['loadMembers']
-  readonly loadMemberSessions: TeamConversationProps['loadMemberSessions']
-  readonly loadMemberSessionTranscript: TeamConversationProps['loadMemberSessionTranscript']
-  readonly loadExternalContext: TeamConversationProps['loadExternalContext']
-  readonly exitSessionHistory: TeamConversationProps['exitSessionHistory']
-  readonly t: TeamConversationProps['t']
+  readonly loadMembers: TeamPagePayload['loadMembers']
+  readonly loadMemberSessions: TeamPagePayload['loadMemberSessions']
+  readonly loadMemberSessionTranscript: TeamPagePayload['loadMemberSessionTranscript']
+  readonly loadExternalContext: TeamPagePayload['loadExternalContext']
+  readonly exitSessionHistory: TeamPagePayload['exitSessionHistory']
+  readonly t: TeamPagePayload['t']
 }
 
 /**
@@ -255,7 +255,7 @@ export function TeamSessionHistoryPage({ memberId, workspaceId, loadMembers, loa
 function TranscriptEntryRow({ entry, markdownLabels, t }: {
   readonly entry: AgentTeamMemberSessionTranscriptEntry
   readonly markdownLabels: MarkdownLabels
-  readonly t: TeamConversationProps['t']
+  readonly t: TeamPagePayload['t']
 }) {
   // Long entries start clamped behind the expand control; the toggle is
   // per-row view state nothing persists.
@@ -306,8 +306,8 @@ const ROLE_LABEL_KEYS: Record<AgentTeamMemberSessionTranscriptEntry['role'], Tea
 function ExternalContextPanel({ memberId, workspaceId, loadExternalContext, t }: {
   readonly memberId: AgentTeamMemberId
   readonly workspaceId?: string
-  readonly loadExternalContext: TeamConversationProps['loadExternalContext']
-  readonly t: TeamConversationProps['t']
+  readonly loadExternalContext: TeamPagePayload['loadExternalContext']
+  readonly t: TeamPagePayload['t']
 }) {
   const [context, setContext] = useState<AgentTeamExternalContextResult>()
   const [error, setError] = useState<string>()

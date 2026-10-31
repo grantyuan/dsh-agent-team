@@ -14,7 +14,7 @@ import type {
 } from '@wowyuarm/dsh-agent-team/types'
 import type { WorkspaceId } from '@deepseek-ai/dsh-api-workspace-controller/client'
 import { Button, DisclosureRow, IconChevronLeftOutlineRegular, IconChecklistOutlineRegular, Modal, Pill } from '@deepseek-ai/dsh-client-ui-primitives'
-import type { TeamConversationProps } from './slots.ts'
+import type { TeamPagePayload } from './slots.ts'
 import type { TeamThreadOrigin } from './navigation.ts'
 import type { TeamDraftKey, TeamDraftStore } from './drafts.ts'
 import { TeamComposer } from './TeamComposer.tsx'
@@ -51,28 +51,28 @@ interface TeamThreadPageProps {
    * could not be located instead of leaving a blank scroll.
    */
   readonly focusSequence?: number
-  readonly backFromThread: TeamConversationProps['backFromThread']
-  readonly loadChannels: TeamConversationProps['loadChannels']
-  readonly readThread: TeamConversationProps['readThread']
-  readonly loadThreadHistory: TeamConversationProps['loadThreadHistory']
-  readonly threadObservations: TeamConversationProps['threadObservations']
-  readonly summarizeThread: TeamConversationProps['summarizeThread']
-  readonly subscribeChanges: TeamConversationProps['subscribeChanges']
-  readonly loadMembers: TeamConversationProps['loadMembers']
+  readonly backFromThread: TeamPagePayload['backFromThread']
+  readonly loadChannels: TeamPagePayload['loadChannels']
+  readonly readThread: TeamPagePayload['readThread']
+  readonly loadThreadHistory: TeamPagePayload['loadThreadHistory']
+  readonly threadObservations: TeamPagePayload['threadObservations']
+  readonly summarizeThread: TeamPagePayload['summarizeThread']
+  readonly subscribeChanges: TeamPagePayload['subscribeChanges']
+  readonly loadMembers: TeamPagePayload['loadMembers']
   readonly drafts: TeamDraftStore
-  readonly getAttachment: TeamConversationProps['getAttachment']
-  readonly reply: TeamConversationProps['reply']
-  readonly editMessage: TeamConversationProps['editMessage']
-  readonly recallMessage: TeamConversationProps['recallMessage']
-  readonly changeTask: TeamConversationProps['changeTask']
-  readonly promoteThread: TeamConversationProps['promoteThread']
-  readonly putAttachment: TeamConversationProps['putAttachment']
-  readonly selectChannel: TeamConversationProps['selectChannel']
-  readonly selectThread: TeamConversationProps['selectThread']
-  readonly resolveTaskRefs: TeamConversationProps['resolveTaskRefs']
-  readonly resolveThreadRefs: TeamConversationProps['resolveThreadRefs']
-  readonly openMemberSession: TeamConversationProps['openMemberSession']
-  readonly t: TeamConversationProps['t']
+  readonly getAttachment: TeamPagePayload['getAttachment']
+  readonly reply: TeamPagePayload['reply']
+  readonly editMessage: TeamPagePayload['editMessage']
+  readonly recallMessage: TeamPagePayload['recallMessage']
+  readonly changeTask: TeamPagePayload['changeTask']
+  readonly promoteThread: TeamPagePayload['promoteThread']
+  readonly putAttachment: TeamPagePayload['putAttachment']
+  readonly selectChannel: TeamPagePayload['selectChannel']
+  readonly selectThread: TeamPagePayload['selectThread']
+  readonly resolveTaskRefs: TeamPagePayload['resolveTaskRefs']
+  readonly resolveThreadRefs: TeamPagePayload['resolveThreadRefs']
+  readonly openMemberSession: TeamPagePayload['openMemberSession']
+  readonly t: TeamPagePayload['t']
 }
 
 type ReadProjection = Awaited<ReturnType<TeamThreadPageProps['readThread']>> extends infer Result
@@ -605,12 +605,18 @@ export function TeamThreadPage(props: TeamThreadPageProps) {
 
   // Identity-stable for the memoized rows: the sender's handle resolves from
   // the loaded roster at pick time, so the quote names who the answer reaches.
+  // The lookup reads a ref because every supplemental round delivers a fresh
+  // roster array, and a callback identity tied to it would re-render every
+  // memoized row on each unrelated change.
+  const replyLookupRef = useRef({ channelView, humanName, members, t })
+  replyLookupRef.current = { channelView, humanName, members, t }
   const openReplyMessage = useCallback((_messageRef: AgentTeamMessageRef, body: string, sender: AgentTeamMemberId) => {
-    const handle = sender === channelView?.humanMemberId ? humanName
+    const lookup = replyLookupRef.current
+    const handle = sender === lookup.channelView?.humanMemberId ? lookup.humanName
       : sender === TEAM_ASSISTANT_MEMBER_ID ? TEAM_ASSISTANT_NAME
-      : members.find(candidate => candidate.member.memberId === sender)?.member.handle ?? t('memberUnknown')
+      : lookup.members.find(candidate => candidate.member.memberId === sender)?.member.handle ?? lookup.t('memberUnknown')
     setReplyTarget({ handle, summary: replyQuoteSummary(body) })
-  }, [channelView?.humanMemberId, humanName, members, t])
+  }, [])
 
   const submitEdit = async (): Promise<void> => {
     if (editing === undefined || editBusy) return

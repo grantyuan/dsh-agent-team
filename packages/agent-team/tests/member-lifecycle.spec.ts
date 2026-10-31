@@ -1,4 +1,5 @@
 import { changeBaseline, nextChange } from './helpers/change-stream.ts'
+import { executeToolCall } from './helpers/tool-call.ts'
 import { access, mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join, resolve, basename, sep } from 'node:path'
@@ -21,7 +22,7 @@ import AgentPresetRegistry, { type AgentPreset, type PresetDefinition } from '@d
 import LlmRuntime, { ToolCallId, createUserMessage, LlmAdapter } from '@deepseek-ai/dsh-llm'
 import type { GenerateOptions, StreamChunk } from '@deepseek-ai/dsh-llm'
 import SessionStore, { SessionId } from '@deepseek-ai/dsh-session'
-import JsonlSessionPersistence from '@deepseek-ai/dsh-session-persistence-jsonl'
+import * as JsonlSessionPersistence from '@deepseek-ai/dsh-session-persistence-jsonl'
 import { SessionFormatUnsupportedError } from '@deepseek-ai/dsh-session-persistence'
 import SessionTitle from '@deepseek-ai/dsh-session-title'
 import SessionProjectionRegistry from '@deepseek-ai/dsh-session-projection'
@@ -29,10 +30,9 @@ import Storage from '@deepseek-ai/dsh-storage'
 import { DomainFacility, type KvTable } from '@deepseek-ai/dsh-storage-domain'
 import SystemPrompt from '@deepseek-ai/dsh-system-prompt'
 import ToolRuntime from '@deepseek-ai/dsh-tools'
+import * as NativeToolExecutor from '@deepseek-ai/dsh-tool-executor-native'
 import { WorkspaceId } from '@deepseek-ai/dsh-workspace'
-import AgentTeam, { AGENT_TEAM_ASSISTANT_MEMBER_ID, AGENT_TEAM_HUMAN_MEMBER_ID, AGENT_TEAM_TOOL_NAMES, isTsxDevMode, markAgentTeamPreset, retirementRecapDigestMessages, teamPresetScopeMismatchMessage } from '../src/index.ts'
-import type { TranscriptEntry } from '../src/failure-transcript.ts'
-import { DIGEST_SYSTEM_PREFIX } from '../src/thread-digest.ts'
+import AgentTeam, { AGENT_TEAM_ASSISTANT_MEMBER_ID, AGENT_TEAM_HUMAN_MEMBER_ID, AGENT_TEAM_TOOL_NAMES, isTsxDevMode, markAgentTeamPreset, teamPresetScopeMismatchMessage } from '../src/index.ts'
 import { checkpointRefFor, foldTeamContextProjection } from '../src/context-projection.ts'
 import { AGENT_TEAM_PLUGIN_ID, continuationCheckpointRefOf, handoffOf, isCheckpointContinuationMessage, isHandoffMessage } from '../src/context-source.ts'
 import { RECOVERY_DELAY_MS } from '../src/recovery.ts'
@@ -135,32 +135,6 @@ class JudgingAdapter extends ScriptedAdapter {
  * call stays the empty harness's healthy `Done.` round. The digest reply is the
  * bounded JSON the parser expects.
  */
-class DigestAdapter extends EmptyAdapter {
-  /** The digest prompt's rendered transcript, one entry per recap call. */
-  readonly recapInputs: string[] = []
-  private readonly recapReplies: Array<'reply' | 'fault' | 'hang'> = []
-
-  /** Queue a usable recap for the next digest call. */
-  recapReply(): void { this.recapReplies.push('reply') }
-  /** Queue a provider fault for the next digest call. */
-  recapFault(): void { this.recapReplies.push('fault') }
-  /** Queue a never-resolving digest call for the next one. */
-  recapHang(): void { this.recapReplies.push('hang') }
-
-  override async * stream(options: GenerateOptions): AsyncIterable<StreamChunk> {
-    const system = typeof options.system === 'string' ? options.system : ''
-    if (!system.includes(DIGEST_SYSTEM_PREFIX)) {
-      yield* super.stream(options)
-      return
-    }
-    this.recapInputs.push((options.messages[0]!.content[0] as { readonly text: string }).text)
-    const reply = this.recapReplies.shift() ?? 'reply'
-    if (reply === 'fault') throw new Error('digest provider exploded')
-    if (reply === 'hang') await new Promise<void>(() => {})
-    for (const chunk of textResponse('{"summary":"Final recap from the test provider","keyPoints":["shipped the builder","left a note"]}')) yield chunk
-  }
-}
-
 class GatedAdapter extends ScriptedAdapter {
   readonly started = Promise.withResolvers<void>()
   readonly release = Promise.withResolvers<void>()
@@ -304,6 +278,9 @@ async function realHarness(
   await ctx.plugin(SessionProjectionRegistry)
   await ctx.plugin(SystemPrompt)
   await ctx.plugin(ToolRuntime)
+  // rc.3 moved tool execution out of the tools service: mount the native
+  // executor the same way the deployment's agent-tool-presentation row does.
+  await ctx.plugin(NativeToolExecutor)
   await ctx.plugin(AgentRegistry)
   await ctx.plugin(AgentLoop, { agents: [] })
   ctx.provide('agentDefaultModel', { currentSelection: () => ({ provider: 'mock', model: 'mock' }) })
@@ -371,8 +348,7 @@ describe('Agent Team Member lifecycle', () => {
       ['team_message', { action: 'start', channelRef: 'channel:missing', body: 'Do not route implicitly' }],
       ['team_claim', { action: 'list', taskRef: 'task:missing' }],
     ] as const) {
-      const omitted = await ctx.tools.execute({ signal: new AbortController().signal, callId: ToolCallId(`global-missing-${name}`),
-        name, arguments: args, agent })
+      const omitted = await executeToolCall(ctx.tools, agent, ToolCallId(`global-missing-${name}`), name, args)
       expect(omitted.isError).toBe(true)
       if (!omitted.isError) throw new Error('Expected an explicit Workspace requirement')
       expect(omitted.error.message).toContain('workspace is required')
@@ -381,8 +357,8 @@ describe('Agent Team Member lifecycle', () => {
     }
     const channel = await ctx.agentTeam.createChannel({ requestId: requestId('global-channel'), workspaceId: otherId,
       name: 'work', description: '', memberIds: [memberId] })
-    const result = await ctx.tools.execute({ signal: new AbortController().signal, callId: ToolCallId('global-start'),
-      name: 'team_message', arguments: { action: 'start', workspace: otherId, channelRef: channel.channel.channelRef, body: 'Working in joined checkout' }, agent })
+    const result = await executeToolCall(ctx.tools, agent, ToolCallId('global-start'), 'team_message',
+      { action: 'start', workspace: otherId, channelRef: channel.channel.channelRef, body: 'Working in joined checkout' })
     expect(result.isError, result.isError ? result.error.message : '').toBe(false)
     expect(ctx.agentTeam.view({ workspaceId: otherId }).items[0]?.message.body).toBe('Working in joined checkout')
     expect(agent.session.header.cwd).toBe(project)
@@ -819,8 +795,8 @@ describe('Agent Team Member lifecycle', () => {
     expect(ctx.agentTeam.view({ workspaceId }).members).toContainEqual({ channelRef: channel.channel.channelRef, memberId: doctorId })
     // The granted membership is live sending authority: the doctor commits a
     // trace Thread without a Human invitation.
-    const traced = await ctx.tools.execute({ signal: new AbortController().signal, callId: ToolCallId('doctor-trace'),
-      name: 'team_message', arguments: { action: 'start', workspace: workspaceId, channelRef: channel.channel.channelRef, body: 'Diagnosis: root cause identified' }, agent: doctorAgent })
+    const traced = await executeToolCall(ctx.tools, doctorAgent, ToolCallId('doctor-trace'), 'team_message',
+      { action: 'start', workspace: workspaceId, channelRef: channel.channel.channelRef, body: 'Diagnosis: root cause identified' })
     expect(traced.isError, traced.isError ? traced.error.message : '').toBe(false)
 
     // Reuse path: a second dispatch renews the doctor's context, backfills the
@@ -837,8 +813,8 @@ describe('Agent Team Member lifecycle', () => {
       { channelRef: channel.channel.channelRef, memberId: doctorId },
       { channelRef: secondChannel.channel.channelRef, memberId: doctorId },
     ])
-    const tracedAgain = await ctx.tools.execute({ signal: new AbortController().signal, callId: ToolCallId('doctor-trace-2'),
-      name: 'team_message', arguments: { action: 'start', workspace: workspaceId, channelRef: secondChannel.channel.channelRef, body: 'Ops diagnosis recorded' }, agent: renewedAgent })
+    const tracedAgain = await executeToolCall(ctx.tools, renewedAgent, ToolCallId('doctor-trace-2'), 'team_message',
+      { action: 'start', workspace: workspaceId, channelRef: secondChannel.channel.channelRef, body: 'Ops diagnosis recorded' })
     expect(tracedAgain.isError, tracedAgain.isError ? tracedAgain.error.message : '').toBe(false)
     expect(ctx.agentTeam.view({ workspaceId }).items.some(item => item.message.body.includes('Context reset notice'))).toBe(false)
     ctx.agentTeam.validateLedger()
@@ -852,7 +828,7 @@ describe('Agent Team Member lifecycle', () => {
     const agent = ctx.agents.get(builder.status.member.sessionId)!
     let callNumber = 0
     const call = async (name: string, args: unknown) => {
-      const result = await ctx.tools.execute({ signal: new AbortController().signal, callId: ToolCallId(`team-protocol-${++callNumber}`), name, arguments: args, agent })
+      const result = await executeToolCall(ctx.tools, agent, ToolCallId(`team-protocol-${++callNumber}`), name, args)
       expect(result.isError, `${name} ${JSON.stringify(args)}: ${result.isError ? result.error.message : 'ok'}`).toBe(false)
       expect(result.concludesTurn).toBeUndefined()
       if (result.isError) throw new Error(result.error.message)
@@ -894,7 +870,7 @@ describe('Agent Team Member lifecycle', () => {
     expect(JSON.stringify(threadDirectory.threads)).not.toContain('One follow-up reply')
     // A second Member who joined after both Threads started sees them too.
     const lateJoinerAgent = ctx.agents.get(reviewer.status.member.sessionId)!
-    const lateJoinerView = await ctx.tools.execute({ signal: new AbortController().signal, callId: ToolCallId(`team-protocol-${++callNumber}`), name: 'team_view', arguments: {}, agent: lateJoinerAgent }).then(result => {
+    const lateJoinerView = await executeToolCall(ctx.tools, lateJoinerAgent, ToolCallId(`team-protocol-${++callNumber}`), 'team_view', {}).then(result => {
       expect(result.isError).toBe(false)
       return result.value as Record<string, any>
     })
@@ -921,7 +897,8 @@ describe('Agent Team Member lifecycle', () => {
     const shotFact = shotHistory.facts.find(fact => fact.kind === 'message' && fact.message.attachments !== undefined)
     expect(shotFact).toBeDefined()
     expect(shotHistory.facts.some(fact => fact.kind === 'message' && new RegExp(`\\[attachment\\] .*attachments${sep === '/' ? '\\/' : '\\\\'}v1${sep === '/' ? '\\/' : '\\\\'}`).test(fact.message?.body ?? ''))).toBe(true)
-    const rejected = await ctx.tools.execute({ signal: new AbortController().signal, callId: ToolCallId(`team-protocol-bad-${++callNumber}`), name: 'team_message', arguments: { action: 'start', channelRef: channel.channel.channelRef, body: 'Never committed', attachments: ['relative/shot.png'] }, agent })
+    const rejected = await executeToolCall(ctx.tools, agent, ToolCallId(`team-protocol-bad-${++callNumber}`), 'team_message',
+      { action: 'start', channelRef: channel.channel.channelRef, body: 'Never committed', attachments: ['relative/shot.png'] })
     expect(rejected.isError).toBe(true)
     expect(rejected.error?.message ?? rejected.value).toMatch(/must be absolute/)
     expect(ctx.agentTeam.threadHistory({ workspaceId, threadRef: shotThreadRef as never }).facts.some(fact => fact.kind === 'message' && fact.message?.body === 'Never committed')).toBe(false)
@@ -1031,7 +1008,7 @@ describe('Agent Team Member lifecycle', () => {
     const recipient = ctx.agents.get(reviewer.status.member.sessionId)!
     let callNumber = 0
     const call = async (name: string, args: unknown) => {
-      const result = await ctx.tools.execute({ signal: new AbortController().signal, callId: ToolCallId(`team-dm-${++callNumber}`), name, arguments: args, agent: sender })
+      const result = await executeToolCall(ctx.tools, sender, ToolCallId(`team-dm-${++callNumber}`), name, args)
       expect(result.isError).toBe(false)
       if (result.isError) throw new Error(result.error.message)
       return result.value as Record<string, any>
@@ -1082,7 +1059,8 @@ describe('Agent Team Member lifecycle', () => {
     // latest prior exchange from the reader's own side is the builder's own
     // 'still green?', so the reader (builder) reads (you → them).
     adapter.enqueue(textResponse('Thanks.'))
-    const replyFromReviewer = await ctx.tools.execute({ signal: new AbortController().signal, callId: ToolCallId(`team-dm-mirror-${++callNumber}`), name: 'team_message', arguments: { action: 'dm', memberRef: builder.status.member.memberId, body: 'yes, all green' }, agent: recipient })
+    const replyFromReviewer = await executeToolCall(ctx.tools, recipient, ToolCallId(`team-dm-mirror-${++callNumber}`), 'team_message',
+      { action: 'dm', memberRef: builder.status.member.memberId, body: 'yes, all green' })
     expect(replyFromReviewer.isError).toBe(false)
     adapter.enqueue(textResponse('Noted.'))
     await waitForIdle(ctx, sender)
@@ -1093,19 +1071,23 @@ describe('Agent Team Member lifecycle', () => {
     expect(mirrorText).toMatch(/\(you → them, at [^)]+\+08:00\) still green\?/)
 
     // Parameter matrix: human recipients, unknown Members, and stray fields.
-    const bad = await ctx.tools.execute({ signal: new AbortController().signal, callId: ToolCallId(`team-dm-bad-${++callNumber}`), name: 'team_message', arguments: { action: 'dm', memberRef: AGENT_TEAM_HUMAN_MEMBER_ID, body: 'hi' }, agent: sender })
+    const bad = await executeToolCall(ctx.tools, sender, ToolCallId(`team-dm-bad-${++callNumber}`), 'team_message',
+      { action: 'dm', memberRef: AGENT_TEAM_HUMAN_MEMBER_ID, body: 'hi' })
     expect(bad.isError).toBe(true)
     expect(bad.error?.message ?? '').toMatch(/Agent Member/)
-    const unknown = await ctx.tools.execute({ signal: new AbortController().signal, callId: ToolCallId(`team-dm-unknown-${++callNumber}`), name: 'team_message', arguments: { action: 'dm', memberRef: 'member:nobody', body: 'hi' }, agent: sender })
+    const unknown = await executeToolCall(ctx.tools, sender, ToolCallId(`team-dm-unknown-${++callNumber}`), 'team_message',
+      { action: 'dm', memberRef: 'member:nobody', body: 'hi' })
     expect(unknown.isError).toBe(true)
-    const stray = await ctx.tools.execute({ signal: new AbortController().signal, callId: ToolCallId(`team-dm-stray-${++callNumber}`), name: 'team_message', arguments: { action: 'dm', memberRef: reviewer.status.member.memberId, body: 'hi', channelRef: channel.channel.channelRef }, agent: sender })
+    const stray = await executeToolCall(ctx.tools, sender, ToolCallId(`team-dm-stray-${++callNumber}`), 'team_message',
+      { action: 'dm', memberRef: reviewer.status.member.memberId, body: 'hi', channelRef: channel.channel.channelRef })
     expect(stray.isError).toBe(true)
     expect(stray.error?.message ?? '').toMatch(/does not accept/)
 
     // A suspended peer is not a sendable target: the ledger rejects the send
     // outright (nothing is recorded), which is the pre-delivery guard.
     await ctx.agentTeam.suspendMember({ requestId: requestId('dm-suspend'), memberId: reviewer.status.member.memberId })
-    const suspended = await ctx.tools.execute({ signal: new AbortController().signal, callId: ToolCallId(`team-dm-suspended-${++callNumber}`), name: 'team_message', arguments: { action: 'dm', memberRef: reviewer.status.member.memberId, body: 'are you back?' }, agent: sender })
+    const suspended = await executeToolCall(ctx.tools, sender, ToolCallId(`team-dm-suspended-${++callNumber}`), 'team_message',
+      { action: 'dm', memberRef: reviewer.status.member.memberId, body: 'are you back?' })
     expect(suspended.isError).toBe(true)
     expect(suspended.error?.message ?? '').toMatch(/suspended/)
     expect(() => ctx.agentTeam.validateLedger()).not.toThrow()
@@ -1349,8 +1331,7 @@ describe('Agent Team Member lifecycle', () => {
     const peerAgent = ctx.agents.get(peer.status.member.sessionId)!
     let callNumber = 0
     const call = async (name: string, args: unknown) => {
-      const result = await ctx.tools.execute({ signal: new AbortController().signal,
-        callId: ToolCallId(`peer-mention-${++callNumber}`), name, arguments: args, agent: starterAgent })
+      const result = await executeToolCall(ctx.tools, starterAgent, ToolCallId(`peer-mention-${++callNumber}`), name, args)
       if (result.isError) throw new Error(result.error.message)
       return result.value as Record<string, any>
     }
@@ -4702,25 +4683,7 @@ describe('Agent Team change version domains', () => {
   })
 })
 
-describe('Retirement recap digest fold', () => {
-  it('keeps only the newest twenty entries and labels each lane by its author', () => {
-    const roles: readonly TranscriptEntry['role'][] = ['system', 'notice', 'team', 'user', 'assistant', 'tool-call', 'tool-result']
-    const entries: readonly TranscriptEntry[] = Array.from({ length: 25 }, (_, index) => ({ role: roles[index % roles.length]!, text: `line-${index}` }))
-    const folded = retirementRecapDigestMessages('builder', entries)
-    // The digest reads only the final-Session tail: the oldest five fall away.
-    expect(folded.map(message => message.text)).toEqual(Array.from({ length: 20 }, (_, index) => `line-${index + 5}`))
-    const authorOf = (text: string): string => folded.find(message => message.text === text)!.author
-    // The Member's own turns carry its handle; every other lane keeps its label.
-    expect(authorOf('line-11')).toBe('builder')
-    expect(authorOf('line-10')).toBe('human')
-    expect(authorOf('line-9')).toBe('teammate')
-    expect(authorOf('line-7')).toBe('notice')
-    expect(authorOf('line-5')).toBe('tool')
-    expect(folded.every(message => message.mentions.length === 0)).toBe(true)
-  })
-})
-
-describe('Member supervision handover', () => {
+describe('Member supervision reset', () => {
   /** The shared supervision input: one Channel Member holding an active Claim. */
   async function setupClaimedMember(ctx: Context, workspaceId: WorkspaceId, prefix: string) {
     const channel = await ctx.agentTeam.createChannel({ requestId: requestId(`${prefix}-channel`), workspaceId, name: 'engineering', description: 'Engineering work' })
@@ -4738,244 +4701,23 @@ describe('Member supervision handover', () => {
     return { channel, added, memberId, agent, taskRef: started.task!.taskRef }
   }
 
-  it('hands claimed work to a -2 generation after the bring-up budget cannot heal a stopped Member', async () => {
-    const { ctx, workspaceId, archived, presets } = await realHarness()
-    const { added, memberId, taskRef } = await setupClaimedMember(ctx, workspaceId, 'supervise-stop')
-    await writeFile(join(added.status.member.privateMemoryPath, 'notes', 'design.md'), 'inherited note')
-
-    // The Member is stopped in a way no bring-up can repair: its live
-    // composition orphaned (presence error) and every re-mount fails.
-    const agent = ctx.agents.get(added.status.member.sessionId)!
-    presets.orphaned.add(agent.ctx)
-    presets.failingMount = true
-
-    // Each pass spends exactly one bring-up: the rebuild leaves the Member
-    // erroring again, and its activation wake is idled before the next pass so
-    // no pass is ever skipped as `settling`.
-    for (let pass = 0; pass < 3; pass += 1) {
-      await ctx.agentTeam.runSupervisionPass()
-      const rebuilt = ctx.agents.get(added.status.member.sessionId)
-      if (rebuilt !== undefined) await waitForIdle(ctx, rebuilt)
-    }
-    // The budget was spent on bring-ups, not on a handover: the roster still
-    // holds exactly the one Member, every rebuild landing on the same failing
-    // mount, so it stays unreachable.
-    expect(ctx.agentTeam.members().map(status => status.member.handle)).toEqual(['builder'])
-    expect(ctx.agentTeam.members().find(status => status.member.memberId === memberId)).toMatchObject({ availability: 'unavailable' })
-
-    // The proven Member walks the coercion chain: the fourth pass is the
-    // give-up itself — the Host privately resets the wedged generation (the
-    // re-activation still fails on the broken mount) and no reset news
-    // reaches any Channel — and the fifth pass is the archive-and-replace
-    // handover. The mount failure is lifted before the last pass so the
-    // replacement can activate like any add, and the escalation step runs
-    // before the pass's own bring-up so the healed mount cannot quietly
-    // revive the old Member instead.
-    await ctx.agentTeam.runSupervisionPass()
-    expect(ctx.agentTeam.view({ workspaceId }).items.map(item => item.message).filter(message => message.body.includes('Supervision'))).toHaveLength(0)
-    presets.failingMount = false
-    await ctx.agentTeam.runSupervisionPass()
-
-    const statuses = ctx.agentTeam.members()
-    expect(statuses.find(status => status.member.memberId === memberId)).toMatchObject({ availability: 'archived', presence: 'unavailable' })
-    const replacement = statuses.find(status => status.member.handle === 'builder-2')
-    expect(replacement, JSON.stringify(statuses.map(status => status.member.handle))).toMatchObject({ availability: 'active' })
-    expect(replacement!.member).toMatchObject({ description: 'Builds the implementation', presetId: 'team-member', state: 'enabled' })
-    expect(replacement!.member.memberId).not.toBe(memberId)
-    expect(replacement!.member.sessionId).not.toBe(added.status.member.sessionId)
-    expect(archived).toContain(added.status.member.sessionId)
-
-    // The released Claim drops the Task back to todo for the admin to reassign.
-    const view = ctx.agentTeam.view({ workspaceId })
-    expect(view.tasks.find(task => task.taskRef === taskRef)).toMatchObject({ status: 'todo' })
-
-    // The replacement carries its predecessor's private memory and Channel,
-    // and asked the Human in Channel for the work.
-    await expect(readFile(join(replacement!.member.privateMemoryPath, 'notes', 'design.md'), 'utf8')).resolves.toBe('inherited note')
-    const notice = view.items.map(item => item.message).filter(message => message.body.includes('Supervision retirement'))
-    expect(notice).toHaveLength(1)
-    expect(notice[0]!.sender).toBe(AGENT_TEAM_ASSISTANT_MEMBER_ID)
-    expect(notice[0]!.body).toContain('Supervision retirement — builder')
-    expect(notice[0]!.body).toContain('@human')
-    expect(notice[0]!.body).toContain('builder stopped abnormally and stayed stopped after 3/3 bring-up attempts')
-    expect(notice[0]!.body).toContain('- implements the feature (task #1)')
-    expect(() => ctx.agentTeam.validateLedger()).not.toThrow()
-  })
-
-  it('keeps the predecessor enabled and the escalation open when the replacement cannot activate', async () => {
-    const { ctx, workspaceId, presets } = await realHarness()
-    const { added, memberId } = await setupClaimedMember(ctx, workspaceId, 'supervise-stuck')
-    const agent = ctx.agents.get(added.status.member.sessionId)!
-    presets.orphaned.add(agent.ctx)
-    presets.failingMount = true
-
-    // Spend the bring-up budget, then run the give-up pass and the handover pass
-    // with the broken mount still in place: the successor cannot activate.
-    for (let pass = 0; pass < 3; pass += 1) {
-      await ctx.agentTeam.runSupervisionPass()
-      const rebuilt = ctx.agents.get(added.status.member.sessionId)
-      if (rebuilt !== undefined) await waitForIdle(ctx, rebuilt)
-    }
-    await ctx.agentTeam.runSupervisionPass()
-    await ctx.agentTeam.runSupervisionPass()
-
-    // The failed handover archived nothing and left the successor retired rather
-    // than enabled: no live replacement was invented, and the predecessor stays
-    // enabled so the escalation keeps retrying instead of stranding the Team on
-    // a deleted Member.
-    const statuses = ctx.agentTeam.members()
-    const predecessor = statuses.find(status => status.member.memberId === memberId)!
-    expect(predecessor.member).toMatchObject({ handle: 'builder', state: 'enabled' })
-    expect(predecessor).toMatchObject({ availability: 'unavailable' })
-    const enabled = statuses.filter(status => status.member.state === 'enabled')
-    expect(enabled.map(status => status.member.handle)).toEqual(['builder'])
-    // The rolled-back successor remains only as an ordinary removal record.
-    expect(statuses.find(status => status.member.handle === 'builder-2')?.member.state).toBe('inactive')
-    expect(() => ctx.agentTeam.validateLedger()).not.toThrow()
-
-    // The escalation was not cleared: lifting the mount and running one more pass
-    // completes the very same handover that just failed.
-    presets.failingMount = false
-    await ctx.agentTeam.runSupervisionPass()
-    const after = ctx.agentTeam.members()
-    expect(after.find(status => status.member.memberId === memberId)).toMatchObject({ availability: 'archived' })
-    // The retired rollback row and the fresh successor share the released handle:
-    // it is the enabled one that completes the handover.
-    const successor = after.filter(status => status.member.handle === 'builder-2' && status.member.state === 'enabled')
-    expect(successor).toHaveLength(1)
-    expect(successor[0]).toMatchObject({ availability: 'active' })
-    expect(() => ctx.agentTeam.validateLedger()).not.toThrow()
-  })
-
-  /**
-   * Spend the bring-up budget on an unreachable Member, run the give-up pass
-   * (where the recap call starts) and the handover pass, running a checkpoint
-   * between them once the recap call has been observed.
-   */
-  async function driveRetirement(ctx: Context, presets: TestablePresets, memberSessionId: SessionId, between?: () => Promise<void>): Promise<void> {
-    const agent = ctx.agents.get(memberSessionId)!
-    presets.orphaned.add(agent.ctx)
-    presets.failingMount = true
-    for (let pass = 0; pass < 3; pass += 1) {
-      await ctx.agentTeam.runSupervisionPass()
-      const rebuilt = ctx.agents.get(memberSessionId)
-      if (rebuilt !== undefined) await waitForIdle(ctx, rebuilt)
-    }
-    await ctx.agentTeam.runSupervisionPass()
-    if (between !== undefined) await between()
-    presets.failingMount = false
-    await ctx.agentTeam.runSupervisionPass()
+  /** Every `team/member-archived` operation in the durable ledger, in commit order. */
+  function archivedMemberOperations(ctx: Context): unknown[] {
+    return [...ctx.storageDomain.get('agent_team')!.table('operations').entries() as Iterable<[string, AgentTeamOperation]>]
+      .filter(([, operation]) => operation.kind === 'team/member-archived')
   }
 
-  /** The one Channel notice carrying the retirement公示, or undefined. */
-  function retirementNoticeBody(ctx: Context, workspaceId: WorkspaceId): string | undefined {
-    return ctx.agentTeam.view({ workspaceId }).items.map(item => item.message).find(message => message.body.includes('Supervision retirement'))?.body
+  /** The Channel messages announcing a supervision reset, in commit order. */
+  function resetNotices(ctx: Context, workspaceId: WorkspaceId): Array<{ readonly sender: string; readonly body: string }> {
+    return ctx.agentTeam.view({ workspaceId }).items.map(item => item.message)
+      .filter(message => message.body.includes('Supervision reset'))
+      .map(message => ({ sender: message.sender, body: message.body }))
   }
 
-  it('appends the final-Session recap to the retirement notice when the digest model answers', async () => {
-    const adapter = new DigestAdapter()
-    adapter.recapReply()
-    const { ctx, workspaceId, presets } = await realHarness(adapter)
-    const { added } = await setupClaimedMember(ctx, workspaceId, 'supervise-recap')
-    await driveRetirement(ctx, presets, added.status.member.sessionId, async () => {
-      // The recap call is issued at the give-up pass; wait for it to land, then
-      // let its tail (parse + slot settle) run before the handover reads it.
-      await vi.waitFor(() => expect(adapter.recapInputs).toHaveLength(1))
-      await new Promise(resolve => setTimeout(resolve, 0))
-    })
-
-    const body = retirementNoticeBody(ctx, workspaceId)!
-    expect(body).toContain('Final Session recap:')
-    expect(body).toContain('Final recap from the test provider')
-    expect(body).toContain('- shipped the builder')
-    // The digest read only the retired Member's own final Session.
-    expect(adapter.recapInputs[0]).toContain('[Thread messages, oldest first]')
-    expect(() => ctx.agentTeam.validateLedger()).not.toThrow()
-  })
-
-  it('ships the retirement notice without a recap when the digest provider faults', async () => {
-    const adapter = new DigestAdapter()
-    adapter.recapFault()
-    const { ctx, workspaceId, presets } = await realHarness(adapter)
-    const { added } = await setupClaimedMember(ctx, workspaceId, 'supervise-recap-fault')
-    await driveRetirement(ctx, presets, added.status.member.sessionId, async () => {
-      await vi.waitFor(() => expect(adapter.recapInputs).toHaveLength(1))
-      await new Promise(resolve => setTimeout(resolve, 0))
-    })
-
-    const body = retirementNoticeBody(ctx, workspaceId)!
-    expect(body).toContain('Supervision retirement — builder')
-    expect(body).not.toContain('Final Session recap')
-    expect(() => ctx.agentTeam.validateLedger()).not.toThrow()
-  })
-
-  it('never blocks the handover on a hanging digest call', async () => {
-    const adapter = new DigestAdapter()
-    adapter.recapHang()
-    const { ctx, workspaceId, presets } = await realHarness(adapter)
-    const { added } = await setupClaimedMember(ctx, workspaceId, 'supervise-recap-hang')
-    // The digest is observed as issued yet never settles: the handover must not
-    // wait on it, and the notice therefore ships with no recap section.
-    await driveRetirement(ctx, presets, added.status.member.sessionId, async () => {
-      await vi.waitFor(() => expect(adapter.recapInputs).toHaveLength(1))
-    })
-
-    expect(ctx.agentTeam.members().find(status => status.member.handle === 'builder-2')).toMatchObject({ availability: 'active' })
-    const body = retirementNoticeBody(ctx, workspaceId)!
-    expect(body).toContain('Supervision retirement — builder')
-    expect(body).not.toContain('Final Session recap')
-    expect(() => ctx.agentTeam.validateLedger()).not.toThrow()
-  })
-
-  it('carries a succession edge so the successor lists and reads the retired predecessor\'s Sessions', async () => {
-    const { ctx, workspaceId, presets } = await realHarness()
-    const { added, memberId } = await setupClaimedMember(ctx, workspaceId, 'supervise-lineage')
-
-    // Spend the bring-up budget on a Member no bring-up can repair, then run the
-    // give-up pass (private reset, still broken) and the handover pass — the
-    // same coercion chain the single-Channel handover test walks.
-    const agent = ctx.agents.get(added.status.member.sessionId)!
-    presets.orphaned.add(agent.ctx)
-    presets.failingMount = true
-    for (let pass = 0; pass < 3; pass += 1) {
-      await ctx.agentTeam.runSupervisionPass()
-      const rebuilt = ctx.agents.get(added.status.member.sessionId)
-      if (rebuilt !== undefined) await waitForIdle(ctx, rebuilt)
-    }
-    await ctx.agentTeam.runSupervisionPass()
-    presets.failingMount = false
-    await ctx.agentTeam.runSupervisionPass()
-
-    const replacement = ctx.agentTeam.members().find(status => status.member.handle === 'builder-2')
-    expect(replacement, JSON.stringify(ctx.agentTeam.members().map(status => status.member.handle))).toMatchObject({ availability: 'active' })
-    // The succession edge lands in the ledger: the successor names its retired
-    // predecessor, and the predecessor keeps no edge of its own.
-    expect(replacement!.member.predecessorMemberId).toBe(memberId)
-    expect(ctx.agentTeam.members().find(status => status.member.memberId === memberId)!.member.predecessorMemberId).toBeUndefined()
-
-    // The successor's lineage crosses the edge: its own current generation
-    // leads, the retired predecessor's Session follows — the predecessor's log
-    // stays where the Harness stored it, copied or moved nowhere.
-    const predecessorSession = added.status.member.sessionId
-    const sessions = await ctx.agentTeam.memberSessions({ memberId: replacement!.member.memberId })
-    expect(sessions.map(entry => entry.sessionId)).toEqual([replacement!.member.sessionId, predecessorSession])
-    expect(sessions[0]!.isCurrent).toBe(true)
-    expect(sessions[1]!.isCurrent).toBe(false)
-    // The list labels inherited history by its owner's handle: the successor's
-    // own generation carries no label, the predecessor's generation carries the
-    // retired Member's handle.
-    expect(sessions[0]!.predecessorHandle).toBeUndefined()
-    expect(sessions[1]!.predecessorHandle).toBe('builder')
-
-    // The predecessor's Session is readable THROUGH the successor entry.
-    const page = await ctx.agentTeam.memberSessionTranscript({ memberId: replacement!.member.memberId, sessionId: predecessorSession })
-    expect(JSON.stringify(page.entries)).toContain('Build the feature')
-    expect(() => ctx.agentTeam.validateLedger()).not.toThrow()
-  })
-
-  it('privately resets a Member after a three-error streak and posts nothing to the Channels', async () => {
+  it('resets a three-error Member in place: same identity and handle, memory and Claims kept, no archive, no replacement', async () => {
     const { ctx, workspaceId } = await realHarness()
-    const { added, memberId } = await setupClaimedMember(ctx, workspaceId, 'supervise-streak')
+    const { added, memberId, taskRef } = await setupClaimedMember(ctx, workspaceId, 'supervise-reset')
+    await writeFile(join(added.status.member.privateMemoryPath, 'notes', 'design.md'), 'memory survives a reset')
 
     // 'HTTP 500' is deliberately outside the recoverable families: the
     // recovery coordinator ignores these occurrences, and only supervision's
@@ -4986,9 +4728,8 @@ describe('Member supervision handover', () => {
 
     // The give-up is the reset: the Host immediately performs the same
     // fresh-context renewal the Human menu performs — the Member keeps its
-    // handle, identity, and Claims, starts a fresh Session, and is privately
-    // noticed to re-orient. No alert asks the Team to act, and no replacement
-    // follows while the reset heals the Member.
+    // memberId, handle, and Claims, starts a fresh Session, and is privately
+    // noticed to re-orient.
     const previousSessionId = added.status.member.sessionId
     await vi.waitFor(() => {
       const status = ctx.agentTeam.members().find(status => status.member.memberId === memberId)
@@ -4996,8 +4737,28 @@ describe('Member supervision handover', () => {
       expect(status!.member.sessionId).not.toBe(previousSessionId)
       expect(status).toMatchObject({ availability: 'active' })
     })
-    expect(ctx.agentTeam.view({ workspaceId }).items.map(item => item.message).filter(message => message.body.includes('Supervision'))).toHaveLength(0)
-    await ctx.agentTeam.runSupervisionPass()
+
+    // Identity is untouched: same memberId, same handle, same enabled state,
+    // and the private memory directory with its notes survived the reset.
+    const status = ctx.agentTeam.members().find(status => status.member.memberId === memberId)!
+    expect(status.member.handle).toBe('builder')
+    expect(status.member.state).toBe('enabled')
+    await expect(readFile(join(status.member.privateMemoryPath, 'notes', 'design.md'), 'utf8')).resolves.toBe('memory survives a reset')
+    expect(ctx.agentTeam.view({ workspaceId }).tasks.find(task => task.taskRef === taskRef)).toMatchObject({ status: 'in_progress' })
+
+    // One Channel notice announces the reset and the Human take-over ask; no
+    // replacement exists to inherit anything.
+    await vi.waitFor(() => { expect(resetNotices(ctx, workspaceId)).toHaveLength(1) })
+    const [notice] = resetNotices(ctx, workspaceId)
+    expect(notice!.sender).toBe(AGENT_TEAM_ASSISTANT_MEMBER_ID)
+    expect(notice!.body).toContain('Supervision reset — builder')
+    expect(notice!.body).toContain('builder failed 3 turns in a row without finishing any of them.')
+    expect(notice!.body).toContain('Nothing was archived and no replacement was created')
+    expect(notice!.body).toContain('@human')
+
+    // The reset committed as an ordinary member-session renewal: no
+    // `team/member-archived` operation exists anywhere in the ledger.
+    expect(archivedMemberOperations(ctx)).toEqual([])
     expect(ctx.agentTeam.members().map(status => status.member.handle)).toEqual(['builder'])
     expect(() => ctx.agentTeam.validateLedger()).not.toThrow()
   })
@@ -5011,7 +4772,7 @@ describe('Member supervision handover', () => {
     // so every turn ends with the same refusal. Supervision never reads the
     // diagnostic — only the plain failure count matters — and three
     // consecutive failed turns with no clean one in between spend the streak:
-    // the Host replaces the context instead of nudging the Member back into
+    // the Host resets the context instead of nudging the Member back into
     // the same wall.
     ctx.emit('agent/error', { agent, turn: 1, step: 1, error: new Error('context ~105899 tokens exceeds the model window 112500 (model=Qwen3.8-27B), with 0 compressible range(s) still visible') })
     ctx.emit('agent/error', { agent, turn: 2, step: 1, error: new Error('502: {"type":"server_error","code":"preflight_compress_failed","message":"context ~127173 tokens exceeds the model window 112500; raise the model context window or restart the session"}') })
@@ -5023,28 +4784,22 @@ describe('Member supervision handover', () => {
       expect(status!.member.sessionId).not.toBe(previousSessionId)
       expect(status).toMatchObject({ availability: 'active' })
     })
-    // A reset, not a handover: nothing was broadcast, the roster is unchanged,
-    // and the claimed Task stays with the same Member in its fresh generation.
-    expect(ctx.agentTeam.view({ workspaceId }).items.map(item => item.message).filter(message => message.body.includes('Supervision'))).toHaveLength(0)
+    // A reset, not a handover: exactly the one reset notice was broadcast, the
+    // roster is unchanged, and the claimed Task stays with the same Member in
+    // its fresh generation.
+    expect(resetNotices(ctx, workspaceId)).toHaveLength(1)
     expect(ctx.agentTeam.members().map(status => status.member.handle)).toEqual(['builder'])
     expect(ctx.agentTeam.view({ workspaceId }).tasks.find(task => task.taskRef === taskRef)).toMatchObject({ status: 'in_progress' })
     expect(() => ctx.agentTeam.validateLedger()).not.toThrow()
   })
 
-  it('broadcasts the retirement notice on every inherited Channel when no leader owns the workspace, mentioning every live fellow Member', async () => {
+  it('latches a Member its reset cannot heal: no archive, no replacement, no reset loop', async () => {
     const { ctx, workspaceId, presets } = await realHarness()
-    const { channel, added, memberId } = await setupClaimedMember(ctx, workspaceId, 'supervise-wide')
-    // A second Channel the replacement will inherit, plus a bystander Member
-    // in the first Channel who must hear the news as a direct mention. With no
-    // designated leader in the workspace, the notice falls back to a broadcast.
-    const second = await ctx.agentTeam.createChannel({ requestId: requestId('supervise-wide-ops'), workspaceId, name: 'ops', description: 'Ops work' })
-    await ctx.agentTeam.joinChannel({ requestId: requestId('supervise-wide-join'), workspaceId, channelRef: second.channel.channelRef, memberId })
-    const bystander = await ctx.agentTeam.addMember({ requestId: requestId('supervise-wide-watch'), workspaceId, handle: 'watcher', description: 'Works alongside', presetId: 'team-member', channelRefs: [channel.channel.channelRef] })
-    const bystanderAgent = ctx.agents.get(bystander.status.member.sessionId)!
-
-    // The Member stops in a way no bring-up can repair, and the budget is
-    // spent the same way the single-Channel handover test spends it.
+    const { added, memberId } = await setupClaimedMember(ctx, workspaceId, 'supervise-latch')
     const agent = ctx.agents.get(added.status.member.sessionId)!
+
+    // The Member is stopped in a way no bring-up can repair: its live
+    // composition orphaned (presence error) and every re-mount fails.
     presets.orphaned.add(agent.ctx)
     presets.failingMount = true
     for (let pass = 0; pass < 3; pass += 1) {
@@ -5052,167 +4807,126 @@ describe('Member supervision handover', () => {
       const rebuilt = ctx.agents.get(added.status.member.sessionId)
       if (rebuilt !== undefined) await waitForIdle(ctx, rebuilt)
     }
-    // Then the chain itself: the give-up pass where the Host's private reset
-    // attempt fails on the broken mount (no Channel sees anything), and the
-    // handover pass with the mount lifted before the escalation step runs.
+    // The budget was spent on bring-ups, not on anything destructive: the
+    // roster still holds exactly the one Member.
+    expect(ctx.agentTeam.members().map(status => status.member.handle)).toEqual(['builder'])
+
+    // The fourth pass is the give-up: the Host privately attempts the reset on
+    // the wedged generation (on this broken mount it cannot produce a live
+    // context) and announces it once. The fifth pass closes the chain into the
+    // exhausted latch; every pass after that spends nothing — no nudge, no
+    // retry, no second reset.
     await ctx.agentTeam.runSupervisionPass()
-    presets.failingMount = false
+    await vi.waitFor(() => { expect(resetNotices(ctx, workspaceId)).toHaveLength(1) })
+    const boundSessionIdAfterReset = ctx.agentTeam.members().find(status => status.member.memberId === memberId)!.member.sessionId
     await ctx.agentTeam.runSupervisionPass()
-
-    const replacement = ctx.agentTeam.members().find(status => status.member.handle === 'builder-2')
-    expect(replacement, JSON.stringify(ctx.agentTeam.members().map(status => status.member.handle))).toMatchObject({ availability: 'active' })
-    // Both inherited Channels carry the handover notice, not just the first.
-    const view = ctx.agentTeam.view({ workspaceId })
-    const notices = view.items.map(item => item.message).filter(message => message.body.includes('Supervision retirement'))
-    expect(notices).toHaveLength(2)
-    expect(new Set(notices.map(message => message.channelRef))).toEqual(new Set([channel.channel.channelRef, second.channel.channelRef]))
-    for (const notice of notices) expect(notice.sender).toBe(AGENT_TEAM_ASSISTANT_MEMBER_ID)
-    // The bystander was addressed directly on the shared Channel, so its Inbox
-    // carries the mention even though the notice is authored by the Team Assistant.
-    // The reset attempt before it stayed private — the broken mount left no
-    // live Session to renew and no alert or notice reached any Channel — so
-    // the handover mention is the bystander's only direct.
-    expect(ctx.agentTeam.inboxForAgent(bystanderAgent, { workspaceId }).totalDirectCount).toBe(1)
-    expect(() => ctx.agentTeam.validateLedger()).not.toThrow()
-  })
-
-  it('delivers the retirement notice to the designated leader instead of broadcasting it', async () => {
-    const { ctx, workspaceId, presets } = await realHarness()
-    const { channel, added } = await setupClaimedMember(ctx, workspaceId, 'supervise-leader')
-    // A designated leader in the workspace (holding a second Channel of its
-    // own) plus a bystander in the first Channel. With a qualifying leader the
-    // notice is delivered to that leader alone: the bystander must not be
-    // mentioned and the second Channel must not carry a broadcast copy.
-    const second = await ctx.agentTeam.createChannel({ requestId: requestId('supervise-leader-ops'), workspaceId, name: 'ops', description: 'Ops work' })
-    const chief = await ctx.agentTeam.addMember({ requestId: requestId('supervise-leader-chief'), workspaceId, handle: 'chief', description: 'Leads the team', presetId: 'team-member', channelRefs: [second.channel.channelRef] })
-    const chiefId = chief.status.member.memberId
-    const chiefAgent = ctx.agents.get(chief.status.member.sessionId)!
-    await ctx.agentTeam.updateMember({ requestId: requestId('supervise-leader-designate'), memberId: chiefId, handle: 'chief', description: 'Leads the team', leader: true })
-    const bystander = await ctx.agentTeam.addMember({ requestId: requestId('supervise-leader-watch'), workspaceId, handle: 'watcher', description: 'Works alongside', presetId: 'team-member', channelRefs: [channel.channel.channelRef] })
-    const bystanderAgent = ctx.agents.get(bystander.status.member.sessionId)!
-
-    // Spend the bring-up budget, then run the give-up and handover passes — the
-    // same coercion chain the fallback test walks.
-    const agent = ctx.agents.get(added.status.member.sessionId)!
-    presets.orphaned.add(agent.ctx)
-    presets.failingMount = true
-    for (let pass = 0; pass < 3; pass += 1) {
-      await ctx.agentTeam.runSupervisionPass()
-      const rebuilt = ctx.agents.get(added.status.member.sessionId)
-      if (rebuilt !== undefined) await waitForIdle(ctx, rebuilt)
-    }
-    await ctx.agentTeam.runSupervisionPass()
-    presets.failingMount = false
-    await ctx.agentTeam.runSupervisionPass()
-
-    const replacement = ctx.agentTeam.members().find(status => status.member.handle === 'builder-2')
-    expect(replacement, JSON.stringify(ctx.agentTeam.members().map(status => status.member.handle))).toMatchObject({ availability: 'active' })
-    // Exactly one notice, in the leader's Channel, authored by the Team
-    // Assistant (not the replacement) and addressed to the leader by handle.
-    const view = ctx.agentTeam.view({ workspaceId })
-    const notices = view.items.map(item => item.message).filter(message => message.body.includes('Supervision retirement'))
-    expect(notices).toHaveLength(1)
-    expect(notices[0]!.channelRef).toBe(second.channel.channelRef)
-    expect(notices[0]!.sender).toBe(AGENT_TEAM_ASSISTANT_MEMBER_ID)
-    expect(notices[0]!.body).toContain('@chief please reassign the items above to builder-2.')
-    // Only the leader is a direct recipient: the leader's Inbox carries the
-    // mention, the bystander's stays untouched — no broadcast fallback ran.
-    expect(ctx.agentTeam.inboxForAgent(chiefAgent, { workspaceId }).totalDirectCount).toBe(1)
-    expect(ctx.agentTeam.inboxForAgent(bystanderAgent, { workspaceId }).totalDirectCount).toBe(0)
-    expect(() => ctx.agentTeam.validateLedger()).not.toThrow()
-  })
-
-  it('replaces an unrecoverable leader with a full-parity successor and exactly one surviving leader', async () => {
-    const { ctx, workspaceId, presets } = await realHarness()
-    const channel = await ctx.agentTeam.createChannel({ requestId: requestId('supervise-parity-channel'), workspaceId, name: 'engineering', description: 'Engineering work' })
-    const model = { provider: 'mock', model: 'pinned-model' } as const
-    const capabilities = { tools: { allow: ['ordinary_tool'] }, skills: { allow: ['deploy'] } } as const
-    const prompt = { droppedSections: ['skills'], customPrompt: 'Prefer the tersest workable diff.', autoPrune: true, autoExecutePrune: true } as const
-    const added = await ctx.agentTeam.addMember({
-      requestId: requestId('supervise-parity-add'), workspaceId, handle: 'builder', description: 'Builds the implementation',
-      presetId: 'team-member', channelRefs: [channel.channel.channelRef],
-      model, capabilities, prompt, contextStartPolicy: 'fresh', contextWindow: 100_000,
-    })
-    const memberId = added.status.member.memberId
-    const agent = ctx.agents.get(added.status.member.sessionId)!
-    // The leader designation is a separate edit, and its absent-clears contract
-    // means the echo must repeat every overlay or they would be silently
-    // dropped before the handover even runs.
-    const designated = await ctx.agentTeam.updateMember({
-      requestId: requestId('supervise-parity-leader'), memberId, handle: 'builder', description: 'Builds the implementation',
-      model, capabilities, prompt, contextStartPolicy: 'fresh', contextWindow: 100_000, leader: true,
-    })
-    expect(designated.status.member.leader).toBe(true)
-    expect(designated.status.member).toMatchObject({ model, capabilities, prompt, contextStartPolicy: 'fresh', contextWindow: 100_000 })
-
-    // A claimed Task keeps the whole handover path exercised, not just the
-    // roster replacement.
-    const started = await ctx.agentTeam.sendMessage({ asTask: true, requestId: requestId('supervise-parity-task'), workspaceId, channelRef: channel.channel.channelRef, body: 'Build the feature', recipients: [memberId] })
-    if (started.kind !== 'committed') throw new Error(`expected committed start, received ${started.kind}`)
-    await ctx.agentTeam.readThreadForAgent(agent, { requestId: requestId('supervise-parity-read'), workspaceId, taskRef: started.task!.taskRef })
-    const claimed = await ctx.agentTeam.changeClaimForAgent(agent, { requestId: requestId('supervise-parity-claim'), workspaceId, taskRef: started.task!.taskRef, action: 'claim', direction: 'implements the feature', baseRevision: started.thread.revision })
-    if (claimed.kind !== 'committed') throw new Error(`expected committed claim, received ${claimed.kind}`)
-    await waitForIdle(ctx, agent)
-
-    // The same coercion chain every handover test walks: spend the bring-up
-    // budget on a Member no re-mount can repair, then the give-up pass and the
-    // handover pass with the mount lifted.
-    presets.orphaned.add(agent.ctx)
-    presets.failingMount = true
-    for (let pass = 0; pass < 3; pass += 1) {
-      await ctx.agentTeam.runSupervisionPass()
-      const rebuilt = ctx.agents.get(added.status.member.sessionId)
-      if (rebuilt !== undefined) await waitForIdle(ctx, rebuilt)
-    }
-    await ctx.agentTeam.runSupervisionPass()
-    presets.failingMount = false
-    await ctx.agentTeam.runSupervisionPass()
+    for (let pass = 0; pass < 5; pass += 1) await ctx.agentTeam.runSupervisionPass()
 
     const statuses = ctx.agentTeam.members()
-    const retired = statuses.find(status => status.member.memberId === memberId)!.member
-    const successorStatus = statuses.find(status => status.member.handle === 'builder-2')
-    expect(successorStatus, JSON.stringify(statuses.map(status => status.member.handle))).toMatchObject({ availability: 'active' })
-    const successor = successorStatus!.member
-    expect(retired.state).toBe('archived')
-
-    // Identity is the only thing that changes: ids, handle, and session move.
-    expect(successor.memberId).not.toBe(retired.memberId)
-    expect(successor.sessionId).not.toBe(retired.sessionId)
-    expect(successor.handle).toBe('builder-2')
-    expect(successor.predecessorMemberId).toBe(retired.memberId)
-    expect(successor.state).toBe('enabled')
-
-    // Deep parity on every inherited dimension: no setting is dropped, reset
-    // to a default, or left inconsistent between predecessor and successor.
-    expect(successor.workspaceId).toBe(retired.workspaceId)
-    expect(successor.description).toBe(retired.description)
-    expect(successor.presetId).toBe(retired.presetId)
-    expect(successor.model).toEqual(retired.model)
-    expect(successor.capabilities).toEqual(retired.capabilities)
-    expect(successor.prompt).toEqual(retired.prompt)
-    expect(successor.contextStartPolicy).toBe(retired.contextStartPolicy)
-    expect(successor.contextWindow).toBe(retired.contextWindow)
-    expect(successor.leader).toBe(retired.leader)
-
-    // The retired leader is archived, so the workspace ends with exactly one
-    // enabled leader — the successor, carrying no duplicate flag.
-    const leaders = statuses.filter(status => status.member.state === 'enabled' && status.member.leader === true)
-    expect(leaders.map(status => status.member.handle)).toEqual(['builder-2'])
+    const latched = statuses.find(status => status.member.memberId === memberId)!
+    expect(latched.member).toMatchObject({ handle: 'builder', state: 'enabled' })
+    expect(statuses.map(status => status.member.handle)).toEqual(['builder'])
+    // No replacement generation was ever minted, and nothing was archived.
+    expect(statuses.find(status => status.member.handle === 'builder-2')).toBeUndefined()
+    expect(archivedMemberOperations(ctx)).toEqual([])
+    // Exactly one reset fired: the durable binding sits where the give-up left
+    // it and never moves again, so the Member carries no loop's worth of
+    // Session generations.
+    const sessions = await ctx.agentTeam.memberSessions({ memberId })
+    expect(sessions[0]!.sessionId).toBe(boundSessionIdAfterReset)
+    expect(resetNotices(ctx, workspaceId)).toHaveLength(1)
     expect(() => ctx.agentTeam.validateLedger()).not.toThrow()
+  })
 
-    // The ledger carried the overlay durably: a cold replay restores the
-    // successor's full configuration, not the defaults.
-    const replayed = replayLedger(ctx.storageDomain)
-    expect(() => replayed.validate()).not.toThrow()
-    const restored = replayed.getMember(successor.memberId)!
-    expect(restored).toMatchObject({ handle: 'builder-2', state: 'enabled', leader: true, contextStartPolicy: 'fresh', contextWindow: 100_000 })
-    expect(restored.model).toEqual(model)
-    expect(restored.capabilities).toEqual(capabilities)
-    expect(restored.prompt).toEqual(prompt)
-    expect(restored.privateMemoryPath).toBe(successor.privateMemoryPath)
+  it('a clean turn clears the exhausted latch and supervision watches the Member again', async () => {
+    const { ctx, workspaceId } = await realHarness()
+    const { added, memberId } = await setupClaimedMember(ctx, workspaceId, 'supervise-unlatch')
+
+    // Streak → reset (the reset heals the roster state) → an immediate error
+    // on the fresh generation keeps the Member reading abnormal while the
+    // chain's next step is judged → the reset did not heal it → exhausted.
+    const firstAgent = ctx.agents.get(added.status.member.sessionId)!
+    for (let failure = 0; failure < 3; failure += 1) {
+      ctx.emit('agent/error', { agent: firstAgent, turn: 1, step: 1, error: new Error('HTTP 500 backend exploded') })
+    }
+    const firstSessionId = added.status.member.sessionId
+    await vi.waitFor(() => {
+      const status = ctx.agentTeam.members().find(status => status.member.memberId === memberId)
+      expect(status!.member.sessionId).not.toBe(firstSessionId)
+    })
+    const secondSessionId = ctx.agentTeam.members().find(status => status.member.memberId === memberId)!.member.sessionId
+    const secondAgent = ctx.agents.get(secondSessionId)
+    expect(secondAgent).toBeDefined()
+
+    ctx.emit('agent/error', { agent: secondAgent!, turn: 1, step: 1, error: new Error('HTTP 500 backend exploded') })
+    await ctx.agentTeam.runSupervisionPass()
+    // Latched: further errors open no new escalation and move no Session.
+    for (let failure = 0; failure < 3; failure += 1) {
+      ctx.emit('agent/error', { agent: secondAgent!, turn: 2, step: 1, error: new Error('HTTP 500 backend exploded') })
+    }
+    await ctx.agentTeam.runSupervisionPass()
+    await ctx.agentTeam.runSupervisionPass()
+    expect(ctx.agentTeam.members().find(status => status.member.memberId === memberId)!.member.sessionId).toBe(secondSessionId)
+
+    // The Member turns cleanly: a clean turn ends the latch.
+    ctx.emit('agent/status', { agent: secondAgent!, status: 'running' })
+    ctx.emit('agent/status', { agent: secondAgent!, status: 'idle' })
+    // ...and supervision watches again: a fresh three-error streak escalates
+    // and resets the Member once more, same identity, new Session.
+    for (let failure = 0; failure < 3; failure += 1) {
+      ctx.emit('agent/error', { agent: secondAgent!, turn: 4, step: 1, error: new Error('HTTP 500 backend exploded') })
+    }
+    await vi.waitFor(() => {
+      const status = ctx.agentTeam.members().find(status => status.member.memberId === memberId)
+      expect(status!.member.sessionId).not.toBe(secondSessionId)
+    })
+    expect(ctx.agentTeam.members().map(status => status.member.handle)).toEqual(['builder'])
+    expect(archivedMemberOperations(ctx)).toEqual([])
+    expect(() => ctx.agentTeam.validateLedger()).not.toThrow()
+  })
+
+  it('a Human clear-context clears the exhausted latch and supervision watches the Member again', async () => {
+    const { ctx, workspaceId } = await realHarness()
+    const { added, memberId } = await setupClaimedMember(ctx, workspaceId, 'supervise-human-latch')
+
+    // Streak → reset → an immediate error on the fresh generation keeps the
+    // Member reading abnormal across the chain's next step → exhausted.
+    const firstAgent = ctx.agents.get(added.status.member.sessionId)!
+    for (let failure = 0; failure < 3; failure += 1) {
+      ctx.emit('agent/error', { agent: firstAgent, turn: 1, step: 1, error: new Error('HTTP 500 backend exploded') })
+    }
+    const firstSessionId = added.status.member.sessionId
+    await vi.waitFor(() => {
+      const status = ctx.agentTeam.members().find(status => status.member.memberId === memberId)
+      expect(status!.member.sessionId).not.toBe(firstSessionId)
+    })
+    const secondSessionId = ctx.agentTeam.members().find(status => status.member.memberId === memberId)!.member.sessionId
+    const secondAgent = ctx.agents.get(secondSessionId)
+    expect(secondAgent).toBeDefined()
+    ctx.emit('agent/error', { agent: secondAgent!, turn: 1, step: 1, error: new Error('HTTP 500 backend exploded') })
+    await ctx.agentTeam.runSupervisionPass()
+
+    // The Human acts: one manual clear-context renews the Member again (same
+    // identity, fresh Session) and ends the exhausted latch.
+    await ctx.agentTeam.clearMemberContext({ requestId: requestId('supervise-human-clear'), workspaceId, memberId })
+    const clearedSessionId = ctx.agentTeam.members().find(status => status.member.memberId === memberId)!.member.sessionId
+    expect(clearedSessionId).not.toBe(secondSessionId)
+    const clearedAgent = ctx.agents.get(clearedSessionId)
+    expect(clearedAgent).toBeDefined()
+
+    // Supervision watches again: a fresh streak escalates and resets once more.
+    for (let failure = 0; failure < 3; failure += 1) {
+      ctx.emit('agent/error', { agent: clearedAgent!, turn: 1, step: 1, error: new Error('HTTP 500 backend exploded') })
+    }
+    await vi.waitFor(() => {
+      const status = ctx.agentTeam.members().find(status => status.member.memberId === memberId)
+      expect(status!.member.sessionId).not.toBe(clearedSessionId)
+    })
+    expect(ctx.agentTeam.members().map(status => status.member.handle)).toEqual(['builder'])
+    expect(archivedMemberOperations(ctx)).toEqual([])
+    expect(() => ctx.agentTeam.validateLedger()).not.toThrow()
   })
 })
-
 describe('Agent Team member context control (ticket 01)', () => {
   it('renews a fresh-start Member at the atomic-start and claim boundaries and never renews a continue Member', async () => {
     const adapter = new ScriptedAdapter()
@@ -5660,8 +5374,8 @@ describe('Agent Team member context control (ticket 01)', () => {
     // turn on the marker: armed, and holding something the judge can read.
     const workerAgent = ctx.agents.get(session0)!
     let calls = 0
-    const authored = await ctx.tools.execute({ signal: new AbortController().signal, callId: ToolCallId(`relevance-author-${++calls}`), name: 'team_message',
-      arguments: { action: 'start', channelRef: channel.channel.channelRef, body: HISTORY_BODY }, agent: workerAgent })
+    const authored = await executeToolCall(ctx.tools, workerAgent, ToolCallId(`relevance-author-${++calls}`), 'team_message',
+      { action: 'start', channelRef: channel.channel.channelRef, body: HISTORY_BODY })
     expect(authored.isError, authored.isError ? authored.error.message : 'ok').toBe(false)
     workerAgent.followup(createUserMessage({ content: [{ type: 'text', text: 'finish current work' }], source: { kind: 'user' } }))
     await waitForIdle(ctx, workerAgent)
@@ -5715,8 +5429,8 @@ describe('Agent Team member context control (ticket 01)', () => {
     // new work: the leader's judgement must decide instead of the dispatch
     // silently landing in the live Session.
     const workerAgent = ctx.agents.get(session0)!
-    const authored = await ctx.tools.execute({ signal: new AbortController().signal, callId: ToolCallId('unarmed-author'), name: 'team_message',
-      arguments: { action: 'start', channelRef: channel.channel.channelRef, body: '旧任务：装配 kv_cache_unified.rs 的三跳配置' }, agent: workerAgent })
+    const authored = await executeToolCall(ctx.tools, workerAgent, ToolCallId('unarmed-author'), 'team_message',
+      { action: 'start', channelRef: channel.channel.channelRef, body: '旧任务：装配 kv_cache_unified.rs 的三跳配置' })
     expect(authored.isError, authored.isError ? authored.error.message : 'ok').toBe(false)
 
     // The model reads the assignment as brand-new work: the renewal lands
@@ -5753,8 +5467,8 @@ describe('Agent Team member context control (ticket 01)', () => {
     // score must NOT erase the Session on an infra whim — the delivery rides
     // into the live Session instead.
     const workerAgent = ctx.agents.get(session0)!
-    const authored = await ctx.tools.execute({ signal: new AbortController().signal, callId: ToolCallId('unarmedfault-author'), name: 'team_message',
-      arguments: { action: 'start', channelRef: channel.channel.channelRef, body: '旧任务：装配 kv_cache_unified.rs 的三跳配置' }, agent: workerAgent })
+    const authored = await executeToolCall(ctx.tools, workerAgent, ToolCallId('unarmedfault-author'), 'team_message',
+      { action: 'start', channelRef: channel.channel.channelRef, body: '旧任务：装配 kv_cache_unified.rs 的三跳配置' })
     expect(authored.isError, authored.isError ? authored.error.message : 'ok').toBe(false)
     adapter.verdict('the judge replied with prose only')
     const mgrAgent = ctx.agents.get(mgr.status.member.sessionId)!
@@ -5798,8 +5512,8 @@ describe('Agent Team member context control (ticket 01)', () => {
     // degrades to today's live delivery — the unambiguous boundaries (claim,
     // Human atomic start, the armed next dispatch) stay the renewal seams.
     const workerAgent = ctx.agents.get(session0)!
-    const authored = await ctx.tools.execute({ signal: new AbortController().signal, callId: ToolCallId('noleader-author'), name: 'team_message',
-      arguments: { action: 'start', channelRef: channel.channel.channelRef, body: '旧任务：装配 kv_cache_unified.rs 的三跳配置' }, agent: workerAgent })
+    const authored = await executeToolCall(ctx.tools, workerAgent, ToolCallId('noleader-author'), 'team_message',
+      { action: 'start', channelRef: channel.channel.channelRef, body: '旧任务：装配 kv_cache_unified.rs 的三跳配置' })
     expect(authored.isError, authored.isError ? authored.error.message : 'ok').toBe(false)
     const mgrAgent = ctx.agents.get(mgr.status.member.sessionId)!
     const dispatched = await ctx.agentTeam.sendMessageForAgent(mgrAgent, { requestId: requestId('noleader-new'), workspaceId, channelRef: channel.channel.channelRef, body: '新任务：把 README 的安装段落重写成三步 @worker' })
@@ -5946,7 +5660,7 @@ describe('Agent Team member context control (ticket 01)', () => {
     for (let turn = 0; turn < 8; turn += 1) adapter.enqueue(textResponse('Acknowledged.'))
     let callNumber = 0
     const call = async (name: string, args: unknown) => {
-      const result = await ctx.tools.execute({ signal: new AbortController().signal, callId: ToolCallId(`watch-${++callNumber}`), name, arguments: args, agent: leader })
+      const result = await executeToolCall(ctx.tools, leader, ToolCallId(`watch-${++callNumber}`), name, args)
       expect(result.isError).toBe(false)
       if (result.isError) throw new Error(result.error.message)
       return result.value as Record<string, any>
@@ -5957,7 +5671,8 @@ describe('Agent Team member context control (ticket 01)', () => {
     expect(started.watchRef).toMatch(/^watch:/)
 
     // Only the designated leader may watch: a fellow Member is refused by the ledger.
-    const refused = await ctx.tools.execute({ signal: new AbortController().signal, callId: ToolCallId('watch-refused'), name: 'team_watch', arguments: { action: 'start', memberRef: chief.status.member.memberId }, agent: workerAgent })
+    const refused = await executeToolCall(ctx.tools, workerAgent, ToolCallId('watch-refused'), 'team_watch',
+      { action: 'start', memberRef: chief.status.member.memberId })
     expect(refused.isError).toBe(true)
     expect(refused.error?.message ?? '').toMatch(/Leader/)
 

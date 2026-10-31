@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import type { AgentTeamMemberId, AgentTeamTaskRef, AgentTeamTaskRow } from '@wowyuarm/dsh-agent-team/types'
 import type { WorkspaceId } from '@deepseek-ai/dsh-api-workspace-controller/client'
 import { Button } from '@deepseek-ai/dsh-client-ui-primitives'
-import type { TeamConversationProps } from './slots.ts'
+import type { TeamPagePayload } from './slots.ts'
 import { claimersLabel, formatAbsoluteTime, formatInboxTime, formatTaskStatus, taskStatusDot } from './team-formatters.ts'
 import { namedAvatarOwners, TeamAvatarStack, type TeamAvatarHuman } from './TeamAvatarStack.tsx'
 import { TeamStateDot } from './TeamStateDot.tsx'
@@ -18,18 +18,18 @@ interface TeamTaskRow {
 }
 
 interface TeamTasksPageProps {
-  readonly useWorkspaces: TeamConversationProps['useWorkspaces']
-  readonly loadTasks: TeamConversationProps['loadTasks']
+  readonly useWorkspaces: TeamPagePayload['useWorkspaces']
+  readonly loadTasks: TeamPagePayload['loadTasks']
   /** Wake source while the page is open: one scope-less subscription, like the Inbox page. */
-  readonly subscribeChanges: TeamConversationProps['subscribeChanges']
+  readonly subscribeChanges: TeamPagePayload['subscribeChanges']
   /** Host batch resolution behind the multi-select bar: acceptance or closing for several Tasks at once. */
-  readonly changeTasks: TeamConversationProps['changeTasks']
-  readonly selectWorkspace: TeamConversationProps['selectWorkspace']
-  readonly selectThread: TeamConversationProps['selectThread']
+  readonly changeTasks: TeamPagePayload['changeTasks']
+  readonly selectWorkspace: TeamPagePayload['selectWorkspace']
+  readonly selectThread: TeamPagePayload['selectThread']
   /** The Human's display name, from the Client's one identity projection. */
   readonly humanName: string
   readonly humanAvatarUrl?: string | undefined
-  readonly t: TeamConversationProps['t']
+  readonly t: TeamPagePayload['t']
 }
 
 const OPEN_STATES = new Set(['todo', 'in_progress', 'in_review'])
@@ -296,7 +296,7 @@ function TaskNodeView({ node, depth, showWorkspace, human, selected, onToggle, t
   readonly human: TeamAvatarHuman | undefined
   readonly selected?: ReadonlySet<AgentTeamTaskRef> | undefined
   readonly onToggle?: (taskRef: AgentTeamTaskRef, on: boolean) => void
-  readonly t: TeamConversationProps['t']
+  readonly t: TeamPagePayload['t']
   readonly onOpen: (row: TeamTaskRow) => void
 }) {
   const progress = subtreeProgress(node)
@@ -349,7 +349,7 @@ function TaskRow({ row, showWorkspace, progress, human, check, t, onOpen }: {
   readonly progress?: { readonly done: number, readonly total: number } | undefined
   readonly human: TeamAvatarHuman | undefined
   readonly check?: { readonly checked: boolean, readonly onCheck: (on: boolean) => void, readonly label: string } | undefined
-  readonly t: TeamConversationProps['t']
+  readonly t: TeamPagePayload['t']
   readonly onOpen: () => void
 }) {
   const { task } = row

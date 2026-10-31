@@ -186,15 +186,15 @@ describe('Agent Team shipping contract', () => {
       exports: Record<string, { default?: string }>
       dsh: { client: { platform: string; inject: string[] } }
     }
-    expect(bundleManifest.peerDependencies['@deepseek-ai/dsh-tool-web']).toBe('>=0.2.1-alpha.2 <0.2.2')
-    expect(bundleManifest.peerDependencies['@deepseek-ai/dsh-command-compact']).toBe('>=0.2.1-alpha.2 <0.2.2')
-    expect(bundleManifest.peerDependencies['@deepseek-ai/dsh-agent-preset']).toBe('>=0.2.1-alpha.2 <0.2.2')
-    expect(bundleManifest.peerDependencies['@deepseek-ai/dsh-agent-preset-registry']).toBe('>=0.2.1-alpha.2 <0.2.2')
+    expect(bundleManifest.peerDependencies['@deepseek-ai/dsh-tool-web']).toBe('>=0.2.1-rc.3 <0.2.2')
+    expect(bundleManifest.peerDependencies['@deepseek-ai/dsh-command-compact']).toBe('>=0.2.1-rc.3 <0.2.2')
+    expect(bundleManifest.peerDependencies['@deepseek-ai/dsh-agent-preset']).toBe('>=0.2.1-rc.3 <0.2.2')
+    expect(bundleManifest.peerDependencies['@deepseek-ai/dsh-agent-preset-registry']).toBe('>=0.2.1-rc.3 <0.2.2')
     expect(bundleManifest.peerDependencies['@deepseek-ai/dsh-agent-presets']).toBeUndefined()
     // The certified baseline moves as one cut: every DSH peer carries the same
     // range, or an install resolves two DSH generations at once. No host-scope
     // package may sit in `dependencies` (see the host-scope gate below).
-    expect([...dshPeerRanges(bundleManifest)]).toEqual(['>=0.2.1-alpha.2 <0.2.2'])
+    expect([...dshPeerRanges(bundleManifest)]).toEqual(['>=0.2.1-rc.3 <0.2.2'])
     expect(preset).toContain('compaction: true')
     expect(preset).toContain('toolResultPruner: true')
     expect(preset).toContain('team_inbox, team_thread, team_message, team_claim, team_view, team_supervise, and team_watch')

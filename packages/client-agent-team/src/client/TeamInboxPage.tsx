@@ -3,7 +3,7 @@ import type { AgentTeamInboxItem, AgentTeamMemberId } from '@wowyuarm/dsh-agent-
 import type { WorkspaceId } from '@deepseek-ai/dsh-api-workspace-controller/client'
 import { Button } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { TeamKey } from './locales.ts'
-import type { TeamConversationProps } from './slots.ts'
+import type { TeamPagePayload } from './slots.ts'
 import { claimersLabel, formatAbsoluteTime, formatInboxTime, groupThreadRows, type TeamThreadWorkspaceGroup } from './team-formatters.ts'
 import { namedAvatarOwners, TeamAvatarStack, type TeamAvatarHuman } from './TeamAvatarStack.tsx'
 import { TeamCountBadge } from './TeamCountBadge.tsx'
@@ -18,18 +18,18 @@ interface TeamInboxRow {
 }
 
 interface TeamInboxPageProps {
-  readonly useWorkspaces: TeamConversationProps['useWorkspaces']
-  readonly loadInbox: TeamConversationProps['loadInbox']
+  readonly useWorkspaces: TeamPagePayload['useWorkspaces']
+  readonly loadInbox: TeamPagePayload['loadInbox']
   /** Wake source while the page is open: one scope-less subscription, shared with the badge poll. */
-  readonly subscribeChanges: TeamConversationProps['subscribeChanges']
+  readonly subscribeChanges: TeamPagePayload['subscribeChanges']
   /** The durable read the page-wide drain runs; opening a row still acknowledges through its Thread. */
-  readonly readThread: TeamConversationProps['readThread']
-  readonly selectWorkspace: TeamConversationProps['selectWorkspace']
-  readonly selectThread: TeamConversationProps['selectThread']
+  readonly readThread: TeamPagePayload['readThread']
+  readonly selectWorkspace: TeamPagePayload['selectWorkspace']
+  readonly selectThread: TeamPagePayload['selectThread']
   /** The Human's display name, from the Client's one identity projection. */
   readonly humanName: string
   readonly humanAvatarUrl?: string | undefined
-  readonly t: TeamConversationProps['t']
+  readonly t: TeamPagePayload['t']
 }
 
 /**
@@ -341,7 +341,7 @@ export function TeamInboxPage({ useWorkspaces, loadInbox, subscribeChanges, read
  */
 function InboxThreadGroups({ groups, t, human, onOpen }: {
   readonly groups: readonly TeamThreadWorkspaceGroup<TeamInboxRow>[]
-  readonly t: TeamConversationProps['t']
+  readonly t: TeamPagePayload['t']
   readonly human: TeamAvatarHuman | undefined
   readonly onOpen: (row: TeamInboxRow) => void
 }) {
@@ -382,7 +382,7 @@ function InboxThreadGroups({ groups, t, human, onOpen }: {
  */
 function InboxQueueRow({ row, t, human, onOpen }: {
   readonly row: TeamInboxRow
-  readonly t: TeamConversationProps['t']
+  readonly t: TeamPagePayload['t']
   readonly human: TeamAvatarHuman | undefined
   readonly onOpen: () => void
 }) {

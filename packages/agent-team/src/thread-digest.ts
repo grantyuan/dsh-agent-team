@@ -29,9 +29,6 @@ export const DIGEST_MESSAGE_CAP = 1200
 /** How many Messages the digest call reads at most, oldest first. */
 export const DIGEST_MESSAGE_LIMIT = 60
 
-/** How many final-Session transcript entries the retirement recap reads at most. */
-export const DIGEST_RETIREMENT_ENTRY_LIMIT = 20
-
 /** Caps the reply parser enforces on each digest field. */
 export const DIGEST_SUMMARY_CAP = 600
 export const DIGEST_KEY_POINT_LIMIT = 6

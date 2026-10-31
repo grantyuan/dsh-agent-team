@@ -15,16 +15,15 @@ Team 是每个 DSH home 内唯一的协作域。append-only operation ledger 是
 
 ## Lifecycle 与通知
 - Agent lifecycle、JSON/SQLite replay、authorization、idempotency 和 revision checks 都留在 Host 侧。durable unread 变化可以通过 public Agent safe-boundary API 产生一条有界、合并后的 Agent context notification：direct mentions 携带其 Message 和 source，Task/Claim Activities 携带简要状态变化，ordinary unread 只携带不含正文的 Thread-first route（若存在则带 Task overlay）。Promotion 与其他 Task transition 一样是 Task activity，通过 Activity markers 到达 followers。这类 notification 不是第二权威，也不保证模型恰好处理一次。
-- Member supervision（`supervisor.ts`）是 `recovery.ts` 之后的自动兜底。每十分钟一趟 tick——只在 startup 的 Member restore 落定后才挂上定时器，冷 Session 不会被误读为停止——观察对象是所有 enabled Members。一趟 tick 先推进 Host 手上未结束的强制链（重试那次没有落地的重置，随后交接给重置也没治好的 Member），再执行拉起 pass，因此已开启的强制链不会卡住、退化成无休止的「继续」提示。
-- 监督与交接提醒都以 Team Assistant 的口吻发出：一个固定的非 Member 身份，不是 roster 成员、也没有自己的 Session。它是纯发言权限——只能提交顶层 Channel 消息，其余（reply、阅读、认领、管理操作）一律拒绝；其 handle 对 Member 注册保留，而 Human actor 仍是真实用户的唯一发声口。
-- Agent 活着且 turn 仍可能推进时读作 settling（活着但闲置且持有未竟 Claim 是按设计等待，不被打扰）；不处于 active、携带 error presence、或已运行但超过三十分钟没有任何 durable session event 时读作 stopped。尚未被强制链接管的 stopped Member 每个 pass 拉起一次、至多三次；已被强制链接管的 Member 留给该链，因为 nudge 只会让它一直跑过那一步等待的 turn boundary。
+- Member supervision（`supervisor.ts`）是 `recovery.ts` 之后的自动兜底。每十分钟一趟 tick——只在 startup 的 Member restore 落定后才挂上定时器，冷 Session 不会被误读为停止——观察对象是所有 enabled Members。一趟 tick 先推进 Host 手上未结束的强制链（重试那次没有落地的重置，随后把重置也没治好的 Member 闩给 Human），再执行拉起 pass，因此已开启的强制链不会卡住、退化成无休止的「继续」提示。
+- 监督重置提醒都以 Team Assistant 的口吻发出：一个固定的非 Member 身份，不是 roster 成员、也没有自己的 Session。它是纯发言权限——只能提交顶层 Channel 消息，其余（reply、阅读、认领、管理操作）一律拒绝；其 handle 对 Member 注册保留，而 Human actor 仍是真实用户的唯一发声口。
+- Agent 活着且 turn 仍可能推进时读作 settling（活着但闲置且持有未竟 Claim 是按设计等待，不被打扰）；不处于 active、携带 error presence、或已运行但超过三十分钟没有任何 durable session event 时读作 stopped。尚未被强制链接管的 stopped Member 每个 pass 拉起一次、至多三次；已被强制链接管、或重置失败后被闩住的 Member 则保持不动，因为 nudge 只会让它一直跑过那个补救等待的 turn boundary。
 - Supervision 不对失败做任何分类：开启强制链的只有纯故障计数——三次 `agent/error` 之间没有任何干净回合结束，或二十分钟滚动窗口内出现三次失败。装不进路由的上下文只是又一轮失败的 turn：provider 的拒绝照样上浮、计数照样累加，强制链随之推进，不存在任何上下文专属的快车道。
-- 强制链的第一步是 Host 亲自重置该 Member 的上下文——与 Human 菜单相同的 fresh-context 重置，只私下提示被重置的 Member 本人，不进任何 Channel。归档与换代交接（下述）是最后手段，只在后续 tick 仍读出异常时才推进。任一时刻重新读作 healthy 都会结束强制链，被治好的 Member 重新武装温和的 bring-up。
+- 强制链第一步也是唯一自动的一步，是 Host 亲自重置该 Member 的上下文——与 Human 菜单相同的 fresh-context 重置，只私下提示被重置的 Member 本人。身份、handle、preset、钉住的设置、私有记忆与 Claims 原样保留——不归档、不产生任何替补；手动归档始终是 Human 自己的操作。
+- 重置没有治好 Member 时，强制链关闭并将其闩给 Human：supervision 不再对它花费任何自动拉起或重置，直到它重新转好（一次干净回合或一次 healthy 读取）或 Human 对其 runtime 采取措施——recover、清空上下文、压缩、编辑、suspend、resume。重新读作 healthy 会结束强制链，被治好的 Member 重新武装温和的 bring-up。
 - 每一轮完成的模型请求都要通过返回结果检查：一轮在结束时既没有工具调用也没有可见文本——或文本没有以「任务结束」完成标记收尾（标记之后跟随的标点或装饰字符仍被宽容接受）——即视为一轮故障，Host 会投递一条 `continue` 提示让 Member 继续执行：仍在进行中的轮次用 steer 插入，否则开启下一轮。连续三次提示后熔断，任何健康的一轮（出现工具调用或以标记收尾）都会重置 episode；该提示在 context projection 中始终按纯提醒处理。
 - guard 同时管辖停止边界：turn 以 `completed` 结束而末轮呈故障形态时——即使环内提示预算已经熔断——Host 会按 per-Member 冷却在停止边界补发一次停止提醒，并为该提醒开启的新一轮重新武装提示预算。被中断的轮次、用户中止与 error 停止是人为或 Host 事件而非模型故障——停止 lane 保持安静，等下一轮。
 - activation 会对持久化 Member 的 Session 日志做尾部扫描：近期一次未被提醒过的故障停止（六小时窗口内、且 Inbox 无待投递的 direct 工作）会补上停止提醒，而不是让中途停下的 Member 静默闲置。
-- 替换在一个串行化的 lifecycle step 内以普通 Host 生命周期完成：失败 Member 走同一条 `archiveMember`（其 Claims 照常以公开 `claims_released` Activities 释放），同角色的下一代以 Human 权限入队——handle 取该角色下一个空闲的 `-N` 代际，可变角色事实照搬，私有记忆（`memory.md` 与 `notes/`，`skills/` 有意不继承）在替补首次 activation 之前拷贝完成，前任的 Channel 参与关系逐一补授。
-- 替补逐字继承前任的配置——同一 `presetId`、`description`、`model`、`capabilities`、prompt 画像、`contextStartPolicy`、`contextWindow` 与 `leader` 标记——因此其生效设置与被它接替的 Member 一致，而不会静默重置为默认值；同时记录一条 succession edge（`predecessorMemberId`）指向该前任，这条 edge 把继任者的 Session lineage 扩展到前任的历史（读取逻辑见 Workspace, Session, and storage reuse）。
 - continuation watcher（`continuation-watcher.ts`）负责监督的反面：每个 Agent 都健康且正常停止，但仍有 Agent 还能推进的任务。每分钟一趟 pass——与监督共用同一个 restore gate——当所有 enabled Member 都读作 `available` 且存在这类任务时开始一段 quiet hold；任何 ledger 提交都会重启该 hold（Human 阅读也算），Agent 重新工作、任务格局变化、或一条提醒无人理会超过十分钟，都会重新武装。安静满两分钟后，Host 以 Team Assistant 的口吻向该 Workspace 被指定 leader（`member.leader`）的 open work 最繁忙 Channel 发一条提醒，列出 open Tasks；`@` 提及经普通 Inbox 路径唤醒 leader。没有 enabled 指定 leader 的 Workspace 每 episode 只记一次日志而不提醒；投递失败记日志并在后续 pass 重试。计数器与监督同为进程内。
 - 完成联络员（`completion-liaison.ts`）负责 watcher 之后的 per-Member 时刻：Member 以「任务结束」标记停止且短暂宽限后仍静止时，Host 检查它完成后是否向指定负责人发过汇报（提及负责人的渠道消息或 DM，从完成位置向账本尾部扫描）；没有则以 Team Assistant 口吻在负责人自己的渠道发一条 report-check 提醒唤醒负责人。
 - 若该 Workspace 没有指定 enabled 负责人，联络员改为把未完成任务直接推送给该 Member，由其自主决策——推送正文声明拒绝的唯一契约：最终回复以「拒绝继续」开头。被捕获的拒绝使本进程内不再向其推送任务，并把其原话（截断）在该渠道转告 `@human`；决定继续则不播报。episode、决策、拒绝与冷却闩同为进程内，而每条提醒都是普通 ledger Message。
@@ -33,8 +32,8 @@ Team 是每个 DSH home 内唯一的协作域。append-only operation ledger 是
 - 输出截断升级（`truncation-escalation.ts`）负责 provider 强制的停止形态：turn 以每请求输出 token 上限（`max-tokens` 停止原因）截尾时，Member 的回答被截断但保留在其 Session 里；guard 的环内提示很可能为重跑同一条超长回答烧尽——此后 Member 就保持停止，正是 Web 端提示 Human「发送继续」的那种局面。此时 Host 不代替团队决策：对 Member 所在的每个 Workspace，以 Team Assistant 口吻在其指定负责人（`member.leader`，须为 Member 之外）的渠道发一条升级提醒，经普通 Inbox 路径唤醒负责人裁决——让该 Member 分块续作（写入文件、分段发布，避免再次触顶）、把未竟工作改派他人，或留其停止等待 Human。
 - 升级按 (Member, Workspace) 十分钟闩一次：窗口内的再次截断是同一个未决局面，不再重复提醒；以「任务结束」标记收尾的干净停止结束 episode，下一次截断重新升级；没有合格负责人的 Member 每 episode 只记一次日志。闩为进程内，每条提醒都是普通 ledger Message；有意地，activation 尾部扫描不补发跨重启的截断升级——被截断的 Session 恢复后保持安静，直到该 Member 再次运转。
 - watcher 的 open 集合止于 `in_review`：Claims 全部完成的任务在等 Human 验收，这不是要提醒已停止 Agent 的工作，因此只剩这类任务的 Workspace 永不触发——Human 任务列表仍将其显示为进行中。
-- 随后以 Team Assistant 口吻向受影响的业务 Channel 发一条结构化退役公示：一块带标题的正文，列明退役原因、该 Member 服役期间已完成的工作、可选的 best-effort Final Session recap，以及本次释放后重新无人认领的工作。Workspace 有指定 leader 时公示只投给该 leader 一人；只有在没有可及 leader 时才回退为在其继承的每个 Channel 广播，并以 `@human` 的请求触达每个存活的同侪 Member。
-- 交接的一切 durable 结果都是 ledger operation，因此交接中途崩溃只会按正常台账重放，绝不会留下半真半假的 Team 事实；计数器与观察名单为进程内，重启即重新挣回预算，与压力策略同构。
+- 重置按 escalation 恰好公示一次：以 Team Assistant 口吻向该 Member 所在的每个 Channel 发一条结构化重置公示，列明失败原因，声明重置保留了 Member 的身份（handle、设置、私有记忆、Claims）且没有产生任何替补，并带上 `@human` 的请求——若它持续失败，请人工接管（recover、清空上下文，或归档）。
+- 重置以普通的 member-session renewal operation 落账，因此升级中途崩溃只会按正常台账重放，绝不会留下半真半假的 Team 事实；计数器、未结强制链与 exhausted 闩为进程内，重启即重新挣回预算，与压力策略同构。
 
 ## 变更流与 Projection
 - `changes()` 是流式 Remote，可声明一个 scope（workspace/channel/thread/presence）；省略 scope 时观察共享 Team 投影变化，不包含 presence。Host 先注册监听，再发送当前基线，之后只发送匹配的变更通知；消费者暂停期间仅保留最新待发送版本。取消或 Host 释放时关闭订阅。Thread read 与 `team/dm-sent` 不改变共享投影，因此既不推进其版本也不唤醒订阅者。Presence 使用进程内 epoch，其余 scope 使用最近一次共享投影提交的 ledger sequence。版本只在同一 scope 和 Host 生命周期内有意义。Host 只为受 operation 影响的 Members 重算 Inbox hints。
@@ -44,7 +43,7 @@ Team 是每个 DSH home 内唯一的协作域。append-only operation ledger 是
   读取完整被检视日志或外来日志的冷路径——activation、transition、timeline、carried-input 重放——仍全量折叠。 两者各自按 Member 保存一个 cursor，并在该 Member 的 Session 变化时替换，因此保留的折叠状态以 roster 为界，而不随 Member 经历过的代数增长。
 
 ## Session 持久化与重放
-- Bundle 目标为 DSH `0.2.1-alpha.2`。 其 Session persistence 使用当前 DSH schema：随附的 JSONL backend 会自行迁移已发布的旧格式（v0/v1/v2 → V3 → V4），旧格式数据无需手动处置。 这个 DSH Session-schema 策略不会抹掉 Team operation history：Team 有意保留针对旧版、Message-level `occurredAt` 之前 records 的窄 replay normalization。 普通存储的 Message operations 在加载时使用包裹 operation 的 instant；旧 `team/thread-read` snapshot anchors 与 Message facts 从来源 Message operation 解析 instant，只有必要时才回退到 read operation——而 snapshot 正是唯一仍会走到这条 normalization 的记录形态：它把 Message anchors 与 Thread facts 连同消费掉的 Inbox delta 一起冻结在记录里。
+- Bundle 目标为 DSH `0.2.1-rc.3`。 其 Session persistence 使用当前 DSH schema：随附的 JSONL backend 会自行迁移已发布的旧格式（v0/v1/v2 → V3 → V4），旧格式数据无需手动处置。 这个 DSH Session-schema 策略不会抹掉 Team operation history：Team 有意保留针对旧版、Message-level `occurredAt` 之前 records 的窄 replay normalization。 普通存储的 Message operations 在加载时使用包裹 operation 的 instant；旧 `team/thread-read` snapshot anchors 与 Message facts 从来源 Message operation 解析 instant，只有必要时才回退到 read operation——而 snapshot 正是唯一仍会走到这条 normalization 的记录形态：它把 Message anchors 与 Thread facts 连同消费掉的 Inbox delta 一起冻结在记录里。
 
   当前每次读写入的 receipt 只存进度与 Inbox delta，是唯一不存任何 instant 的 Thread-read 形态；旧记录就地 normalize 并校验，绝不改写。 不要增加 Team 自有的 Session migration、宽泛 compatibility reads 或 fallback storage paths；可选的 `member.model` inheritance 与可选 Message attachments 都是当前语义，不是 legacy fields。
 
@@ -55,7 +54,7 @@ Team 是每个 DSH home 内唯一的协作域。append-only operation ledger 是
 ## External-agent 网关
 - 网关（`external-api.ts`）是进入 Host 的又一条传输通道，与 Remote（Web Client）和 member tools 并列：它服务于运行在本进程之外、在此没有 live Session 的 agent harness。它自身不保存任何 Team facts——每条路由都转发到按 Member 键控的 Host 入口（`*ForAgent` tool 表面的 `*ForMember` 兄弟方法），背后是同样的 accepting 状态、Workspace 与 participation fences。
 - 外部 Member 是一个永不激活 session 的 roster Member：`addExternalMember` 以 Human actor 走普通的成员创建 roster 操作，并在加入时授予 Channel 覆盖面（外部 Member 之后没有可用于 join Channel 的 session）。它的 presence 显示 unavailable，mention 照常落入 unread——与任何没有 live session 的 Member 已有的 recorded-not-delivered 语义一致。
-- 这是持久性质而非创建时性质：Member 实体带有 `external` 标记，所有会创建会话的路径都读它。重启恢复跳过外部 Member；resume 恢复为 enabled 但不激活；recover 与 supervision reset 拒绝外部 Member；supervisor 的观察名单排除它们——虚拟成员永远读作 stopped，若进入 supervision 只会开出一条永远无法痊愈的升级链，最终以 archive-and-replace 毁掉虚拟成员、在其位置造出一个真实克隆（这正是该标记要防止的双执行故障）。
+- 这是持久性质而非创建时性质：Member 实体带有 `external` 标记，所有会创建会话的路径都读它。重启恢复跳过外部 Member；resume 恢复为 enabled 但不激活；recover 与 supervision reset 拒绝外部 Member；supervisor 的观察名单排除它们——虚拟成员永远读作 stopped，若进入 supervision 只会开出一条永远无法痊愈的强制链，让 Host 反复重置一个根本没有会话的成员（这正是该标记要防止的双执行故障）。
 - 鉴权依赖唯一的 boot secret：join 路由用它作 bearer 凭证，每个 Member 自己的凭证是 `HMAC-SHA256(secret, memberId)`——无状态、重启稳定、按 Member 区分。持有 boot secret 即可派生所有 member token；这是单操作者 localhost 监听的既定信任模型。启用开关、端口与 token 是 volatile 的 Team 设置控件，每次 volatile 更新实时调和——启用即启动监听，停用即关闭，改端口或 token 即重挂；启用却未设 token 时仅告警并保持关闭：未鉴权的端口永远不会打开。
 - v1 表面镜像四个交流 tool 的结构化形态——view、inbox、threads read/history、messages start/reply/dm——挂在 `/agent-team/<workspaceId>/…` 之下。ledger 拒绝（`unread_required`、`stale_revision`、`member_not_following`）以 409 连同其 kind 返回，外部 member 遵循与模型相同的 read → token → write 协议；读取跳过 live-session 的 context advice；claims、supervision 与 watch 不在暴露范围内。
 - 对外部 Member 的投递是纯轮询：bundle 附带一个零依赖客户端脚本加一个 skill（`packages/agent-team/external-client/`），经 `/agent-team/client/…` 原样下发，其 `watch` 命令在有未读工作时退出——DSH 的后台完成通知就是那次唤醒。没有服务端 long-poll，也没有 webhook。

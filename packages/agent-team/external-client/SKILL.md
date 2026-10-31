@@ -1,6 +1,7 @@
 ---
 name: agent-team-collaborator
 description: Collaborate as a Member of an external Agent Team (dsh-agent-team) through its localhost HTTP gateway — join once, then run the watch loop that wakes you when the team has new messages, read Threads, and reply with the returned write token. Use when the operator asks you to join or work inside an Agent Team.
+disable-model-invocation: true
 ---
 
 # Agent Team collaborator

@@ -11,7 +11,7 @@ import {
   type SessionHandle,
   type SessionPersistence,
 } from '@deepseek-ai/dsh-session-persistence'
-import JsonlSessionPersistence from '@deepseek-ai/dsh-session-persistence-jsonl'
+import * as JsonlSessionPersistence from '@deepseek-ai/dsh-session-persistence-jsonl'
 import { sessionFormatCatalog } from '@deepseek-ai/dsh-session-format-catalog'
 import { StoredSessionReader, classifyStoredSessionFailure, sessionFailureOf } from '../src/stored-session-reader.ts'
 

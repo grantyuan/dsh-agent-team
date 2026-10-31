@@ -4,7 +4,7 @@ import type { AgentTeamClientMemberStatus, AgentTeamChannelRef, AgentTeamInbox, 
 } from '@wowyuarm/dsh-agent-team/types'
 import type { WorkspaceId } from '@deepseek-ai/dsh-api-workspace-controller/client'
 import { Button, IconChevronLeftOutlineRegular, IconChevronRightOutlineRegular, Modal } from '@deepseek-ai/dsh-client-ui-primitives'
-import type { TeamConversationProps } from './slots.ts'
+import type { TeamPagePayload } from './slots.ts'
 import { mintRequestId, uploadComposerFiles } from './requests.ts'
 import type { TeamDraftKey, TeamDraftStore } from './drafts.ts'
 import { TeamComposer } from './TeamComposer.tsx'
@@ -31,24 +31,24 @@ interface TeamChannelPageProps {
   /** The Human's own display name and avatar, from the shared identity projection. */
   readonly humanName: string
   readonly humanAvatarUrl?: string | undefined
-  readonly loadChannels: TeamConversationProps['loadChannels']
-  readonly subscribeChanges: TeamConversationProps['subscribeChanges']
-  readonly loadMembers: TeamConversationProps['loadMembers']
+  readonly loadChannels: TeamPagePayload['loadChannels']
+  readonly subscribeChanges: TeamPagePayload['subscribeChanges']
+  readonly loadMembers: TeamPagePayload['loadMembers']
   /** The Human's own unread per Thread: the Host's three-class judgement, never a Client guess. */
-  readonly loadInbox: TeamConversationProps['loadInbox']
+  readonly loadInbox: TeamPagePayload['loadInbox']
   readonly drafts: TeamDraftStore
-  readonly getAttachment: TeamConversationProps['getAttachment']
-  readonly putAttachment: TeamConversationProps['putAttachment']
-  readonly sendMessage: TeamConversationProps['sendMessage']
-  readonly joinChannel: TeamConversationProps['joinChannel']
-  readonly removeChannelMember: TeamConversationProps['removeChannelMember']
-  readonly selectThread: TeamConversationProps['selectThread']
-  readonly selectChannel: TeamConversationProps['selectChannel']
-  readonly resolveTaskRefs: TeamConversationProps['resolveTaskRefs']
-  readonly resolveThreadRefs: TeamConversationProps['resolveThreadRefs']
-  readonly openMemberSession: TeamConversationProps['openMemberSession']
-  readonly backToChannels: TeamConversationProps['backToChannels']
-  readonly t: TeamConversationProps['t']
+  readonly getAttachment: TeamPagePayload['getAttachment']
+  readonly putAttachment: TeamPagePayload['putAttachment']
+  readonly sendMessage: TeamPagePayload['sendMessage']
+  readonly joinChannel: TeamPagePayload['joinChannel']
+  readonly removeChannelMember: TeamPagePayload['removeChannelMember']
+  readonly selectThread: TeamPagePayload['selectThread']
+  readonly selectChannel: TeamPagePayload['selectChannel']
+  readonly resolveTaskRefs: TeamPagePayload['resolveTaskRefs']
+  readonly resolveThreadRefs: TeamPagePayload['resolveThreadRefs']
+  readonly openMemberSession: TeamPagePayload['openMemberSession']
+  readonly backToChannels: TeamPagePayload['backToChannels']
+  readonly t: TeamPagePayload['t']
 }
 
 /**
@@ -514,7 +514,7 @@ function ThreadStateCluster({ task, owners, unread, human, t }: {
   readonly owners: readonly TeamAvatarOwner[]
   readonly unread: number
   readonly human: TeamAvatarHuman | undefined
-  readonly t: TeamConversationProps['t']
+  readonly t: TeamPagePayload['t']
 }) {
   if (task === undefined && unread === 0) return null
   const namedOwners = namedAvatarOwners(owners, human)
@@ -544,7 +544,7 @@ function ThreadEntryRow({ item, owners, unread, human, t, onOpen }: {
   readonly owners: readonly TeamAvatarOwner[]
   readonly unread: number
   readonly human: TeamAvatarHuman | undefined
-  readonly t: TeamConversationProps['t']
+  readonly t: TeamPagePayload['t']
   readonly onOpen: () => void
 }) {
   const taskNumber = item.taskNumber

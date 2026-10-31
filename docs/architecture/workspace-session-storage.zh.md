@@ -30,6 +30,8 @@ Host 的每一次逐 Session stored 读取都经过同一个 seam：`packages/ag
 
 激活 diagnostic 是结构化的——`AgentTeamMemberDiagnostic` 携带 `class`（`session-refused`、`session-unreadable`、`preset-composition`、`rollover`、`runtime`、`activation`）、detail，以及适用时的被拒 artifact 路径。availability/presence 仍是仅有的用户可见状态；diagnostic 是投影派生态、绝不持久化，ledger 仍是唯一 Team 权威。
 
-Client 的 Session 历史读取（`memberSessions`/`memberSessionTranscript`）会遍历 Member 的 lineage，使被 supervision 接替的继任者能在自己的条目下展示前任的历史：先按从新到旧读取请求 Member 自己的世代——其绑定 Session、再沿 Session 的 `parentSession` 链，绑定 Session 从未落盘时回退到 ledger 的 `previousSessionForMember`——随后沿存储的 succession edge 继续。
+Client 的 Session 历史读取（`memberSessions`/`memberSessionTranscript`）会遍历 Member 的 lineage，使 Session 历史页能在各自条目下展示每个世代：先按从新到旧读取请求 Member 自己的世代——其绑定 Session、再沿 Session 的 `parentSession` 链，绑定 Session 从未落盘时回退到 ledger 的 `previousSessionForMember`——随后沿存储的 succession edge 继续。
 
-这条 edge 即继任者的 `predecessorMemberId`：遍历以同样方式进入每个已退役前任的世代。只有请求 Member 的第一个世代是 current；凡跨 edge 到达的世代都属于已退役前任，只读，并以该前任的 handle 标注。Member 之间不迁移、不复制任何内容——继任者经该 edge 直接读取前任自己的存储日志——前任不可读或缺失时安全结束遍历，并以 `MAX_TIMELINE_ANCESTORS` 与 seen-set 设界。
+这条 edge 即 Member 上的 `predecessorMemberId` 字段，在 ledger 记录过的地方照常读取与遵守——supervision 不再铸造继任者，当前没有任何操作再写入它。遍历以同样方式进入每个已退役前任的世代；只有请求 Member 的第一个世代是 current。
+
+凡跨 edge 到达的世代都属于已退役前任，只读，并以该前任的 handle 标注。Member 之间不迁移、不复制任何内容——edge 持有者经该 edge 直接读取前任自己的存储日志——前任不可读或缺失时安全结束遍历，并以 `MAX_TIMELINE_ANCESTORS` 与 seen-set 设界。

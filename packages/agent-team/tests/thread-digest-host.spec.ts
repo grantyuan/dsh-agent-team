@@ -16,12 +16,13 @@ import AgentPresetRegistry from '@deepseek-ai/dsh-agent-preset-registry'
 import LlmRuntime, { LlmAdapter } from '@deepseek-ai/dsh-llm'
 import type { GenerateOptions, StreamChunk } from '@deepseek-ai/dsh-llm'
 import SessionStore, { SessionId } from '@deepseek-ai/dsh-session'
-import JsonlSessionPersistence from '@deepseek-ai/dsh-session-persistence-jsonl'
+import * as JsonlSessionPersistence from '@deepseek-ai/dsh-session-persistence-jsonl'
 import Storage from '@deepseek-ai/dsh-storage'
 import { DomainFacility } from '@deepseek-ai/dsh-storage-domain'
 import SystemPrompt from '@deepseek-ai/dsh-system-prompt'
 import SessionProjectionRegistry from '@deepseek-ai/dsh-session-projection'
 import ToolRuntime from '@deepseek-ai/dsh-tools'
+import * as NativeToolExecutor from '@deepseek-ai/dsh-tool-executor-native'
 import { WorkspaceId } from '@deepseek-ai/dsh-workspace'
 import AgentTeam from '../src/index.ts'
 import { DIGEST_SYSTEM_PREFIX } from '../src/thread-digest.ts'
@@ -92,6 +93,9 @@ async function buildSharedHarness(): Promise<{
   await ctx.plugin(SessionProjectionRegistry)
   await ctx.plugin(SystemPrompt)
   await ctx.plugin(ToolRuntime)
+  // rc.3 moved tool execution out of the tools service: mount the native
+  // executor the same way the deployment's agent-tool-presentation row does.
+  await ctx.plugin(NativeToolExecutor)
   await ctx.plugin(AgentRegistry)
   await ctx.plugin(AgentLoop, { agents: [] })
   ctx.provide('agentDefaultModel', { currentSelection: () => ({ provider: 'mock', model: 'mock' }) })

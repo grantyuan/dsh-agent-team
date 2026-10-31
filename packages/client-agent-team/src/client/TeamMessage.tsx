@@ -3,7 +3,7 @@ import { MarkdownText, Modal } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { MarkdownLabels } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { SessionId } from '@deepseek-ai/dsh-session'
 import type { AgentTeamChannelRef, AgentTeamMemberId, AgentTeamMessageAttachment, AgentTeamMessageRef, AgentTeamTaskRef, AgentTeamThreadRef } from '@wowyuarm/dsh-agent-team/types'
-import type { TeamConversationProps } from './slots.ts'
+import type { TeamPagePayload } from './slots.ts'
 import type { ResolvedMemberRef } from './refs.ts'
 import { cachedAttachmentDataUrl, formatByteSize, loadAttachmentDataUrl } from './attachment-preview.ts'
 import { cachedResolvedTaskRef, resolveUnknownTaskRefs, useResolvedTaskRefVersion, type ResolvedTaskRef } from './refs.ts'
@@ -33,8 +33,8 @@ export interface TeamMessageProps {
    * or undecodable bytes draw the initial on the business-tinted chip. */
   readonly avatarUrl?: string | undefined
   /** Cache readback for thumbnails; absent on surfaces without the remotes. */
-  readonly loadAttachment?: TeamConversationProps['getAttachment'] | undefined
-  readonly t?: TeamConversationProps['t'] | undefined
+  readonly loadAttachment?: TeamPagePayload['getAttachment'] | undefined
+  readonly t?: TeamPagePayload['t'] | undefined
   /** Resolve a branded ref found in the body; absent surfaces render refs as plain text. */
   readonly onOpenRef?: ((ref: string) => void) | undefined
   /** Host lookup turning task refs into human-facing numbers; absent keeps raw refs. */
@@ -482,8 +482,8 @@ function renderRefs(text: string, onOpenRef: ((ref: string) => void) | undefined
 /** One message's attachment strip: image thumbnails with a large view, or name chips when bytes are gone. */
 function TeamAttachmentStrip({ attachments, loadAttachment, t }: {
   readonly attachments: readonly AgentTeamMessageAttachment[]
-  readonly loadAttachment?: TeamConversationProps['getAttachment'] | undefined
-  readonly t?: TeamConversationProps['t'] | undefined
+  readonly loadAttachment?: TeamPagePayload['getAttachment'] | undefined
+  readonly t?: TeamPagePayload['t'] | undefined
 }) {
   const [zoomed, setZoomed] = useState<AgentTeamMessageAttachment>()
   return <div className={css.attachmentStrip}>
@@ -502,8 +502,8 @@ function TeamAttachmentStrip({ attachments, loadAttachment, t }: {
 
 function TeamAttachment({ attachment, loadAttachment, t, onZoom }: {
   readonly attachment: AgentTeamMessageAttachment
-  readonly loadAttachment?: TeamConversationProps['getAttachment'] | undefined
-  readonly t?: TeamConversationProps['t'] | undefined
+  readonly loadAttachment?: TeamPagePayload['getAttachment'] | undefined
+  readonly t?: TeamPagePayload['t'] | undefined
   readonly onZoom: (attachment: AgentTeamMessageAttachment) => void
 }) {
   const wantsPreview = loadAttachment !== undefined && attachment.mediaType.startsWith('image/')
