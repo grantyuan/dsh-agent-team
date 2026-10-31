@@ -423,7 +423,10 @@ export class TeamDockStore {
       }
     }
     next = { ...next, ...patch }
-    if (next.open && next.panes.length === 0) next = { ...next, open: false }
+    // An empty pane list drops the pane pointers, but `open` survives: a
+    // reopened dock with no pane yet takes its first tab from the current
+    // navigation face (the seat's sync effect), and only the explicit
+    // closePane/openFace paths write `open` themselves.
     if (next.panes.length === 0) {
       const { focusedPaneId: _focusedPaneId, maximizedPaneId: _maximizedPaneId, ...rest } = next
       next = rest

@@ -12,14 +12,18 @@ Host face declaration → generate:typert → Typert Host + Remote client → ct
 `InvocationDescriptor` is local reflection metadata, not a wire message. Wire fields remain explicit typed values. Update declarations/tests, regenerate, and run typecheck/build; never hand-edit artifacts.
 
 ## Client plugin and slot composition
-The external Client plugin leaves the shipped Shell as outer-layout owner. Team adds one footer action and shadows three seats:
+The external Client plugin leaves the shipped Shell as outer-layout owner. Team adds one footer action and shadows three seats while Team mode stands:
 
 ```text
 sidebar.footer.action       additive Team entry
 sidebar.workspaces          Team shadow, priority -100
-main (key conversation)     Team shadow, priority -100
+rightbar (Team page dock)   Team shadow, priority -100
 sidebar.settings            Team shadow, priority -100
 ```
+
+The frame's `main` conversation seat stays shipped in every Team state — the Human's current session, or an embedded Member's when one is selected — so the Team pages never take the center over. They render as tabs in the right-column dock instead: one dock entry shadows `rightbar` at priority -100 and hosts the Inbox, Tasks, Message Center, Channel, Thread, and session-history pages as tabs in one to three vertical split panes, each pane maximizable and closable, the dock itself expandable over the frame and closable from a sidebar toggle.
+
+The dock reports its presentation (`shown`/`track`/`fullscreen`) through `ctx.layout.openRightbar`/`closeRightbar`, the same face ui-sidebar-right uses, so the frame keeps owning the column geometry.
 
 Activation mounts `agentTeamRemote`, waits for `remote.agentTeam`, then registers Team footer and mode shadows. `dsh.client.inject` describes the module graph but does not guarantee apply order or service readiness; use `ctx.slots.inject()` when a declaration may appear later.
 
@@ -60,7 +64,7 @@ The Human Client consumes the Host's Inbox projection (the 「收件箱 / Inbox�
 
 Every Inbox row carries its own resolved clocks — `createdOccurredAt`, `latestReplyOccurredAt` with its `latestReplyActor`, and the `needsHumanDecision` flag (an open Task at `in_review`, or a Human-naming Message that asked for a decision with no Human word after it — a bare mention never lights it) — so the row needs no Thread read of its own; the page's 排序 control re-lays those rows per browser, a taste in `localStorage` that never becomes a Team fact.
 
-Team navigation mode, Workspace selection, the last Channel/Thread, and the page position of the Inbox and Tasks lists are browser-persisted; unread, Attention, and what waits on the Human are Host-owned.
+Team navigation mode, Workspace selection, the last Channel/Thread, and the page position of the Inbox and Tasks lists are browser-persisted; unread, Attention, and what waits on the Human are Host-owned. The dock's pane layout — which tabs stand in which pane, the split sizes, the maximized pane, and the open/fullscreen presentation — is browser-persisted presentation memory beside the same navigation facts; what a tab shows is still the snapshot's face, and entering Team mode reopens the last face the Human stood on, including the embedded Member conversation when its session still exists (a runtime-only memory, so a renewed or removed Member simply stays closed).
 
 The Team sidebar keeps Channels/Agents ordering as a browser-only `localStorage` preference, merged over Remote defaults.
 

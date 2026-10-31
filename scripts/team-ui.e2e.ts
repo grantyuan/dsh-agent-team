@@ -2965,7 +2965,7 @@ it('opens a taskless thread from its ref chip in real Web', async () => {
  *      the team leader, and
  *   3. the successor's configuration is identical to the predecessor's.
  */
-it('retires a supervised Member into a successor in real Web', async () => {
+it('resets a supervised Member in place without a successor in real Web', async () => {
   await installLocalBundle(false)
   scaffold = await launchWebScaffold({ harnessHome: HOME, profile: { packages: [{ dir: STAGED_BUNDLE, enabled: true }] } })
   browser = await chromium.launch({ headless: true, executablePath: CHROME })
@@ -2979,11 +2979,11 @@ it('retires a supervised Member into a successor in real Web', async () => {
   await page.getByRole('button', { name: '新建频道' }).click()
   const channelDialog = page.getByRole('dialog', { name: '新建频道' })
   await channelDialog.getByLabel('名称').fill('engineering')
-  await channelDialog.getByLabel('说明').fill('Controller handover')
+  await channelDialog.getByLabel('说明').fill('Supervision reset')
   await channelDialog.getByRole('button', { name: '创建频道' }).click()
 
-  // The retiring Member carries a pinned context window and a role paragraph:
-  // both must survive the handover for the parity assertion to mean anything.
+  // The reset must preserve the Member's identity end to end: the row carries
+  // a pinned context window and a role paragraph, and both must survive it.
   await page.getByRole('button', { name: '添加 Agent' }).click()
   const builderDialog = page.getByRole('dialog', { name: '添加 Agent' })
   await builderDialog.getByLabel('名称').fill('builder')
@@ -3004,7 +3004,7 @@ it('retires a supervised Member into a successor in real Web', async () => {
   await reviewerDialog.getByRole('button', { name: '创建 Agent' }).click()
   await page.getByRole('button', { name: '打开 reviewer 的会话' }).waitFor({ timeout: 20_000 })
 
-  // Membership lives on the Channel side now.
+  // Membership lives on the Channel side.
   await page.getByRole('button', { name: '# engineering' }).hover()
   await page.getByRole('button', { name: 'engineering 的操作' }).click()
   await page.getByRole('menuitem', { name: '编辑频道' }).click()
@@ -3018,27 +3018,14 @@ it('retires a supervised Member into a successor in real Web', async () => {
   await expect.poll(async () => await joinEditor.getByRole('button', { name: '移除', exact: true }).count()).toBe(2)
   await joinEditor.getByRole('button', { name: '关闭', exact: true }).click()
 
-  // reviewer is the team leader: the handover notice is addressed to it alone
-  // instead of being broadcast to the whole Channel.
-  const reviewerRow = page.locator('[class*="agentRow"]').filter({ hasText: 'reviewer' }).first()
-  await reviewerRow.hover()
-  await reviewerRow.getByRole('button', { name: 'reviewer 的操作' }).click()
-  await page.getByRole('menuitem', { name: '编辑 Agent' }).click()
-  const leaderEditor = page.getByRole('dialog', { name: '编辑 Agent' })
-  await leaderEditor.getByRole('checkbox', { name: '设为团队负责人' }).check()
-  await leaderEditor.getByRole('button', { name: '保存' }).click()
-  await expect.poll(async () => await page.getByRole('dialog', { name: '编辑 Agent' }).count()).toBe(0)
-
-  // --- Host side: capture the members, do real work, drive the handover -----
+  // --- Host side: capture the member, do real work, drive the reset --------
   const ws = scaffold.ctx.workspaceRegistry.list()[0]!
   const statuses = () => scaffold.ctx.agentTeam.members({ workspaceId: ws.id }) as readonly {
     member: { memberId: string; handle: string; sessionId: string; state: string; predecessorMemberId?: string; leader?: boolean; description: string; presetId: string; model?: unknown; capabilities?: unknown; prompt?: unknown; contextStartPolicy?: unknown; contextWindow?: unknown }
   }[]
   const statusOf = (handle: string) => statuses().find(entry => entry.member.handle === handle)
   const handlesOf = () => statuses().map(entry => entry.member.handle)
-  await expect.poll(() => statusOf('reviewer')?.member.leader ?? false, { timeout: 30_000 }).toBe(true)
   const builderMember = statusOf('builder')!.member
-  const reviewerMember = statusOf('reviewer')!.member
   const channelRef = scaffold.ctx.agentTeam.view({ workspaceId: ws.id }).channels.find(channel => channel.name === 'engineering')!.channelRef
 
   let builderAgent = scaffold.ctx.agents.get(builderMember.sessionId)
@@ -3048,8 +3035,7 @@ it('retires a supervised Member into a successor in real Web', async () => {
   }
   expect(builderAgent).toBeDefined()
 
-  // Completed work: Task #1 is claimed, finished, and accepted, so the notice
-  // reports a finished direction and a completed task.
+  // Completed work: Task #1 is claimed, finished, and accepted.
   const task1 = await scaffold.ctx.agentTeam.sendMessage({ asTask: true, requestId: 'ui11-task-1' as never, workspaceId: ws.id, channelRef, body: 'Build the feature', recipients: [builderMember.memberId] })
   if (task1.kind !== 'committed') throw new Error(`expected committed Task #1 start, received ${task1.kind}`)
   await builderAgent!.whenIdle()
@@ -3064,8 +3050,7 @@ it('retires a supervised Member into a successor in real Web', async () => {
   if (accepted1.kind !== 'committed') throw new Error(`expected committed Task #1 accept, received ${accepted1.kind}`)
   await builderAgent!.whenIdle()
 
-  // Released work: Task #2 stays claimed and open, so the notice lists it as
-  // now-unclaimed and asks the leader to reassign it.
+  // Held work: Task #2 stays claimed and open — a reset must release nothing.
   const task2 = await scaffold.ctx.agentTeam.sendMessage({ asTask: true, requestId: 'ui11-task-2' as never, workspaceId: ws.id, channelRef, body: 'Integrate the interface', recipients: [builderMember.memberId] })
   if (task2.kind !== 'committed') throw new Error(`expected committed Task #2 start, received ${task2.kind}`)
   await builderAgent!.whenIdle()
@@ -3074,144 +3059,147 @@ it('retires a supervised Member into a successor in real Web', async () => {
   if (claim2.kind !== 'committed') throw new Error(`expected committed Task #2 claim, received ${claim2.kind}`)
   await builderAgent!.whenIdle()
 
-  // Drive the real chain: report the healthy Member to the supervisor's own
-  // closure as an abnormal stop, then tick until the successor lands. The patch
-  // reaches the supervisor because the closure calls the instance method.
+  // Drive the real supervision chain: report the healthy Member as an abnormal
+  // stop, then tick. The bring-up budget spends itself (three passes), the
+  // next pass escalates into the Host's own fresh-context reset — the same
+  // Member keeps its identity and its Claims, and no successor is ever
+  // minted. A reset that does not heal latches the Member: further passes
+  // must not loop resets.
   const teamAny = scaffold.ctx.agentTeam as unknown as Record<string, unknown>
   const origStateOf = (teamAny.supervisionStateOf as (id: string) => string).bind(teamAny)
   let forced = true
   ;(teamAny as { supervisionStateOf: (id: string) => string }).supervisionStateOf =
     (id: string) => (forced && id === builderMember.memberId) ? 'stopped' : origStateOf(id)
   try {
-    for (let pass = 0; pass < 8; pass += 1) {
+    for (let pass = 0; pass < 7; pass += 1) {
       await scaffold.ctx.agentTeam.runSupervisionPass()
-      const rebuilt = scaffold.ctx.agents.get(builderMember.sessionId)
+      const rebuilt = scaffold.ctx.agents.get(statusOf('builder')!.member.sessionId)
       if (rebuilt !== undefined) await rebuilt.whenIdle()
-      if (handlesOf().includes('builder-2')) break
     }
   } finally {
     forced = false
   }
-  expect(handlesOf()).toContain('builder-2')
-  const successor = statusOf('builder-2')!
-  expect(successor.member.predecessorMemberId).toBe(builderMember.memberId)
 
-  // --- ① History reachable through the successor's own entry ----------------
-  const sessions = await scaffold.ctx.agentTeam.memberSessions({ memberId: successor.member.memberId })
+  // No successor, ever: the roster is still exactly the two created Members.
+  expect(handlesOf().sort()).toEqual(['builder', 'reviewer'])
+  const resetMember = statusOf('builder')!.member
+  // The identity is the Member's own: same id, same handle, same facts.
+  expect(resetMember.memberId).toBe(builderMember.memberId)
+  expect(resetMember.handle).toBe('builder')
+  expect(JSON.stringify(resetMember.prompt ?? null)).toBe(JSON.stringify(builderMember.prompt ?? null))
+  expect(JSON.stringify(resetMember.contextWindow ?? null)).toBe(JSON.stringify(builderMember.contextWindow ?? null))
+  // The remedy was the context reset: the working Session was renewed.
+  expect(resetMember.sessionId).not.toBe(builderMember.sessionId)
+  // Extra passes still mint no successor: reset is the only remedy, however
+  // many episodes it takes.
+  for (let pass = 0; pass < 2; pass += 1) await scaffold.ctx.agentTeam.runSupervisionPass()
+  expect(handlesOf().sort()).toEqual(['builder', 'reviewer'])
+  expect(statusOf('builder')!.member.memberId).toBe(builderMember.memberId)
+
+  // The Claims the Member held survive the reset untouched.
+  const viewAfter = scaffold.ctx.agentTeam.view({ workspaceId: ws.id })
+  const heldTask = viewAfter.items.find(item => (item.task as { taskRef?: string } | undefined)?.taskRef === task2.task!.taskRef)
+  expect((heldTask?.claimOwners ?? []).some(owner => owner.memberId === builderMember.memberId)).toBe(true)
+
+  // The structured reset notice rides the Member's Channel in the Team
+  // Assistant's voice: the cause, the no-replacement guarantee, and the
+  // take-over ask.
+  // One notice per reset episode; the roster above proves none of them
+  // created a replacement, so assert the body of the first.
+  const noticeItems = viewAfter.items.filter(item => item.message.body.includes('Supervision reset — builder'))
+  expect(noticeItems.length).toBeGreaterThanOrEqual(1)
+  const notice = noticeItems[0]!
+  expect(notice.message.sender).toBe('member:assistant')
+  const noticeBody = notice.message.body
+  // The cause names the episode that spent the remedy — a bring-up budget or
+  // an error streak — without naming any successor.
+  expect(noticeBody).toMatch(/Cause: builder (stopped abnormally|failed)/)
+  expect(noticeBody).toContain('same Member, same handle, same preset and pinned settings, same private memory, and the same Claims.')
+  expect(noticeBody).toContain('Nothing was archived and no replacement was created')
+  expect(noticeBody).toContain('@human please take over manually')
+
+  // --- The renewed lineage is readable through the Client ------------------
+  const sessions = await scaffold.ctx.agentTeam.memberSessions({ memberId: resetMember.memberId })
   expect(sessions.length).toBeGreaterThanOrEqual(2)
   expect(sessions[0]!.isCurrent).toBe(true)
-  expect(sessions[0]!.sessionId).toBe(successor.member.sessionId)
-  const predecessorGenerations = sessions.filter(generation => !generation.isCurrent)
-  expect(predecessorGenerations.length).toBeGreaterThanOrEqual(1)
-  for (const generation of predecessorGenerations) expect(generation.predecessorHandle).toBe('builder')
-  const readableGenerations = predecessorGenerations.filter(generation => generation.createdAt !== undefined)
+  expect(sessions[0]!.sessionId).toBe(resetMember.sessionId)
+  const readableGenerations = sessions.filter(generation => !generation.isCurrent && generation.createdAt !== undefined)
   expect(readableGenerations.length).toBeGreaterThanOrEqual(1)
   let sawTaskText = false
   for (const generation of readableGenerations) {
-    const transcript = await scaffold.ctx.agentTeam.memberSessionTranscript({ memberId: successor.member.memberId, sessionId: generation.sessionId })
+    const transcript = await scaffold.ctx.agentTeam.memberSessionTranscript({ memberId: resetMember.memberId, sessionId: generation.sessionId })
     if (transcript.entries.some(entry => entry.text.includes('Build the feature'))) sawTaskText = true
   }
   expect(sawTaskText).toBe(true)
 
-  // The same lineage through the Client: the successor's row opens the audit
-  // page and its inherited generations render the predecessor's transcript.
   const agentsSection = page.getByRole('button', { name: 'Agents', exact: true })
   if (await agentsSection.getAttribute('aria-expanded') !== 'true') await agentsSection.click()
-  const successorRow = page.locator('[class*="agentRow"]').filter({ hasText: 'builder-2' }).first()
-  await successorRow.waitFor({ timeout: 30_000 })
-  await successorRow.hover()
-  await successorRow.getByRole('button', { name: 'builder-2 的操作' }).click()
+  const builderRow = page.locator('[class*="agentRow"]').filter({ hasText: 'builder' }).first()
+  await builderRow.waitFor({ timeout: 30_000 })
+  await builderRow.hover()
+  await builderRow.getByRole('button', { name: 'builder 的操作' }).click()
   await page.getByRole('menuitem', { name: '历史会话' }).click()
   const historyPage = page.locator('[data-team-session-history]')
   await historyPage.waitFor()
-  await expect.poll(() => historyPage.getByText('历史会话：builder-2').count(), { timeout: 20_000 }).toBe(1)
+  await expect.poll(() => historyPage.getByText('历史会话：builder').count(), { timeout: 20_000 }).toBe(1)
   await expect.poll(async () => await historyPage.getByRole('alert').count()).toBe(0)
   const currentGeneration = historyPage.getByRole('button', { name: /当前会话/ })
   await expect.poll(async () => await currentGeneration.count(), { timeout: 20_000 }).toBe(1)
-  await expect.poll(async () => await currentGeneration.isDisabled()).toBe(false)
-  await expect.poll(async () => await historyPage.getByRole('button', { name: /继承自 builder/ }).count()).toBeGreaterThanOrEqual(1)
   await settleLayout(page)
-  await page.screenshot({ path: join(UI11_SHOTS, 'retirement-history.png'), fullPage: true })
+  await page.screenshot({ path: join(UI11_SHOTS, 'supervision-reset-history.png'), fullPage: true })
   await page.setViewportSize({ width: 390, height: 844 })
   await settleLayout(page)
-  await page.screenshot({ path: join(UI11_SHOTS, 'retirement-history-narrow.png'), fullPage: true })
+  await page.screenshot({ path: join(UI11_SHOTS, 'supervision-reset-history-narrow.png'), fullPage: true })
   await page.setViewportSize({ width: 1440, height: 960 })
   await settleLayout(page)
-  const readableInherited = historyPage.locator('button:enabled').filter({ hasText: '继承自 builder' })
-  await expect.poll(async () => await readableInherited.count()).toBeGreaterThanOrEqual(1)
-  const inheritedCount = await readableInherited.count()
-  // A generation switch loads its transcript asynchronously, so read after each
-  // click only once the selected generation's own log has settled — the very
-  // first read otherwise still shows the default-selected current session.
+  // A previous generation loads its stored log; the reset preserved the work
+  // the Member had done, so the task text is readable in the lineage.
+  const olderGenerations = historyPage.locator('[role="log"]')
   let sawTaskTextInUi = false
-  for (let index = 0; index < inheritedCount && !sawTaskTextInUi; index += 1) {
-    await readableInherited.nth(index).click()
+  const generationButtons = historyPage.locator('nav button:enabled').filter({ hasNotText: '当前会话' })
+  const buttonCount = Math.min(await generationButtons.count(), 4)
+  for (let index = 0; index < buttonCount && !sawTaskTextInUi; index += 1) {
+    const button = generationButtons.nth(index)
+    if (!(await button.isEnabled())) continue
+    await button.click()
     try {
-      await expect.poll(async () => ((await historyPage.locator('[role="log"]').textContent()) ?? '').includes('Build the feature'), { timeout: 8_000 }).toBe(true)
+      await expect.poll(async () => ((await olderGenerations.last().textContent()) ?? '').includes('Build the feature'), { timeout: 8_000 }).toBe(true)
       sawTaskTextInUi = true
     } catch {
-      // This inherited generation's stored log does not hold the task text; try the next.
+      // This generation's stored log does not hold the task text; try the next.
     }
   }
   expect(sawTaskTextInUi).toBe(true)
   await historyPage.getByRole('button', { name: '返回' }).click()
   await historyPage.waitFor({ state: 'detached' })
 
-  // --- ② The Channel notice is complete and addressed to the leader ---------
-  const noticeItems = scaffold.ctx.agentTeam.view({ workspaceId: ws.id }).items
-    .filter(item => item.message.body.includes('Supervision retirement — builder'))
-  expect(noticeItems).toHaveLength(1)
-  const notice = noticeItems[0]!
-  expect(notice.message.sender).toBe('member:assistant')
-  expect([...notice.mentions]).toEqual([reviewerMember.memberId])
-  const noticeBody = notice.message.body
-  expect(noticeBody).toContain('Cause: builder')
-  expect(noticeBody).toContain('and was archived.')
-  expect(noticeBody).toContain('Completed work in service:')
-  expect(noticeBody).toContain('Finished directions:')
-  expect(noticeBody).toContain('- implements the feature (task #1)')
-  expect(noticeBody).toContain('Completed tasks: 1')
-  expect(noticeBody).toContain('Released work now unclaimed:')
-  expect(noticeBody).toContain('- integrates the interface (task #2)')
-  expect(noticeBody).toContain('@reviewer please reassign the items above to builder-2.')
-  expect(noticeBody).toContain('Succession: builder-2 is builder\'s same-role replacement: same preset, same pinned settings, inherited private memory, and the same Channel reach.')
-
+  // The reset notice renders in the Channel feed, complete and unexpanded.
   await page.getByRole('button', { name: '# engineering' }).click()
   const channelFeed = page.locator('[data-team-channel]')
   await channelFeed.waitFor()
-  await expect.poll(async () => ((await channelFeed.textContent()) ?? '').includes('Supervision retirement'), { timeout: 20_000 }).toBe(true)
-  await expect.poll(async () => ((await channelFeed.textContent()) ?? '').includes('- integrates the interface (task #2)')).toBe(true)
-  // The plain-text notice is shorter than the 600-character clamp ceiling, so the
-  // whole body renders at once: its last line is present and no expand control
-  // appears, and the screenshot captures the complete notice without a click.
-  const noticeArticle = channelFeed.locator('article').filter({ hasText: 'Supervision retirement — builder' })
+  await expect.poll(async () => ((await channelFeed.textContent()) ?? '').includes('Supervision reset — builder'), { timeout: 20_000 }).toBe(true)
+  const noticeArticle = channelFeed.locator('article').filter({ hasText: 'Supervision reset — builder' })
   await expect.poll(async () => await noticeArticle.count()).toBeGreaterThanOrEqual(1)
-  await expect.poll(async () => ((await noticeArticle.first().textContent()) ?? '').includes('same Channel reach.')).toBe(true)
+  await expect.poll(async () => ((await noticeArticle.first().textContent()) ?? '').includes('take over manually')).toBe(true)
   expect(await noticeArticle.first().locator('[data-message-expand="true"]').count()).toBe(0)
   await settleLayout(page)
-  await page.screenshot({ path: join(UI11_SHOTS, 'retirement-notice.png'), fullPage: true })
+  await page.screenshot({ path: join(UI11_SHOTS, 'supervision-reset-notice.png'), fullPage: true })
   await page.setViewportSize({ width: 390, height: 844 })
   await settleLayout(page)
-  await page.screenshot({ path: join(UI11_SHOTS, 'retirement-notice-narrow.png'), fullPage: true })
+  await page.screenshot({ path: join(UI11_SHOTS, 'supervision-reset-notice-narrow.png'), fullPage: true })
   await page.setViewportSize({ width: 1440, height: 960 })
   await settleLayout(page)
 
-  // --- ③ The successor's configuration equals the predecessor's -------------
-  const parityFields = ['description', 'presetId', 'model', 'capabilities', 'prompt', 'contextStartPolicy', 'contextWindow', 'leader'] as const
-  const predecessor = statusOf('builder')!.member
-  for (const field of parityFields) {
-    expect(JSON.stringify(successor.member[field] ?? null)).toBe(JSON.stringify(predecessor[field] ?? null))
-  }
-  // The same parity through the Client editor: the inherited window override is
-  // echoed and the successor is not the leader.
-  await successorRow.hover()
-  await successorRow.getByRole('button', { name: 'builder-2 的操作' }).click()
+  // The Client editor echoes the preserved facts: the window override and the
+  // Member is not the leader.
+  await builderRow.hover()
+  await builderRow.getByRole('button', { name: 'builder 的操作' }).click()
   await page.getByRole('menuitem', { name: '编辑 Agent' }).click()
   const parityEditor = page.getByRole('dialog', { name: '编辑 Agent' })
   await parityEditor.waitFor()
   await expect.poll(() => parityEditor.getByLabel('上下文窗口覆盖').inputValue()).toBe('96000')
   await expect.poll(async () => await parityEditor.getByRole('checkbox', { name: '设为团队负责人' }).isChecked()).toBe(false)
-  await parityEditor.screenshot({ path: join(UI11_SHOTS, 'retirement-parity.png') })
+  await parityEditor.screenshot({ path: join(UI11_SHOTS, 'supervision-reset-parity.png') })
   await parityEditor.getByRole('button', { name: '关闭', exact: true }).click()
 
   expect(consoleWatch).toEqual({ warnings: [], pageErrors: [] })

@@ -78,7 +78,7 @@ export { TeamDockStore, type TeamDockSnapshot } from './dock.ts'
 const NS = 'team'
 
 export const inject = [
-  'slots', 'workspaces', 'locale', 'remote', 'remote.session', 'sessions', 'connection', 'conversation', 'uiWorkspace',
+  'slots', 'workspaces', 'locale', 'remote', 'remote.session', 'sessions', 'connection', 'conversation', 'uiWorkspace', 'layout',
 ]
 
 /**

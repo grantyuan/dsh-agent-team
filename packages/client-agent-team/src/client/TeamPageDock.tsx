@@ -50,10 +50,19 @@ export function TeamPageDock(props: TeamDockProps) {
   // Every navigation face lands in the dock: a sidebar card, a Channel row, a
   // Thread row, a Back button — the snapshot moves, the dock focuses or opens
   // the tab that stands for it, reopening the dock when it was closed. The
-  // dockState dependency re-runs this after the dock's own writes too; openFace
-  // stays silent when the face already owns a tab, so the pair converges.
+  // effect deliberately does not depend on the dock's own state: a close the
+  // Human performed (the toggle, the last pane closed) must not be undone by
+  // this sync, and openFace is silent for a face that already owns its tab.
   useEffect(() => {
     if (navigationState.mode !== 'team') return
+    const face = faceOfSnapshot(navigationState)
+    if (face !== undefined) dock.openFace(face)
+  }, [dock, navigationState])
+
+  // A dock reopened with no pane left takes its first tab from the current
+  // navigation face, so the sidebar toggle always lands on a real page.
+  useEffect(() => {
+    if (!dockState.open || dockState.panes.length > 0) return
     const face = faceOfSnapshot(navigationState)
     if (face !== undefined) dock.openFace(face)
   }, [dock, dockState, navigationState])

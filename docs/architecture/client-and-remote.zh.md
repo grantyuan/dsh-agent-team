@@ -20,14 +20,16 @@ Client remote service
 `InvocationDescriptor` 是 local reflection metadata，不是 wire message。Wire request 和 response fields 保持为显式 typed values。修改 Remote 时更新 declaration 和 tests，重新生成，然后运行 typecheck/build；不要手工编辑 artifact。
 
 ## Client plugin 和 slot composition
-Team browser plugin 是 external Client plugin。Shipped Shell 继续拥有 outer layout。Team 增加一个 additive footer action，并动态 shadow 三个 seats：
+Team browser plugin 是 external Client plugin。Shipped Shell 继续拥有 outer layout。Team mode 站立期间，Team 增加一个 additive footer action，并动态 shadow 三个 seats：
 
 ```text
 sidebar.footer.action       additive Team entry
 sidebar.workspaces          Team shadow, priority -100
-main (key conversation)     Team shadow, priority -100
+rightbar（团队面板 dock）    Team shadow, priority -100
 sidebar.settings            Team shadow, priority -100
 ```
+
+Frame 的 `main` conversation seat 在任何 Team 状态下都保持 shipped —— Human 当前 session，或选中 Member 时的嵌入式 session —— Team 页面从不占据中央。它们作为 tab 渲染在右栏 dock 中：一个 dock entry 以 priority -100 shadow `rightbar`，把 Inbox、Tasks、Message Center、Channel、Thread 和 session-history 页面承载为一到三个纵向分栏里的 tab，每个分栏可最大化、可关闭，dock 本身可全屏覆盖 frame，并可从 sidebar 的开关关闭。dock 通过 `ctx.layout.openRightbar`/`closeRightbar` 上报 presentation（`shown`/`track`/`fullscreen`），与 ui-sidebar-right 使用同一 face，frame 继续拥有右栏几何。
 
 Browser activation 顺序是：
 
@@ -79,7 +81,7 @@ UI work 的边界如下：
 
   Human Client 消费 Host 的 Inbox 投影（「收件箱 / Inbox」队列：合并各 Workspace 的徽标，页面按 Workspace、再按 Channel 分区，覆盖读者的整片未读——mention 只在其中计数，绝不是准入条件——外加该读者写过 Message 的「最近活跃」段（回复过的 Thread 无论是否 follow 都算他的；按最新活跃降序，Host 侧每个 Workspace 上限 10，合并到页面上最多 5 条，永不进入 agent 的 Inbox）），但绝不维护并行 Inbox authority；打开页不确认任何内容。
 
-  Thread reads 使用 Host projections（`readThread`、`threadHistory`）和 Host mutations（replies、promotion、Task actions）。 当前 Thread UI 不提供 Attention controls 或 observations；其 Host Remote methods 留给后续自有 UI。 Browser 会持久化 Team navigation mode、Workspace selection、最近选中的 Channel 或 Thread 以及 Inbox、Tasks 两张列表页的位置（回到 Team 时恢复位置），但不持久化 unread、Attention 与「有什么在等 Human」。
+  Thread reads 使用 Host projections（`readThread`、`threadHistory`）和 Host mutations（replies、promotion、Task actions）。 当前 Thread UI 不提供 Attention controls 或 observations；其 Host Remote methods 留给后续自有 UI。 Browser 会持久化 Team navigation mode、Workspace selection、最近选中的 Channel 或 Thread 以及 Inbox、Tasks 两张列表页的位置（回到 Team 时恢复位置），但不持久化 unread、Attention 与「有什么在等 Human」。dock 的分栏布局——哪些 tab 在哪个分栏、分栏尺寸、最大化的分栏、展开/全屏 presentation——是同一组 navigation fact 之外的浏览器持久化 presentation memory；tab 显示的内容仍是 snapshot 的 face，进入 Team mode 会回到 Human 最后停留的 face，Member 会话仍在时还包括嵌入式 Member 对话（runtime-only 记忆：Member 已续期或移除时不再重开）。
 
   每条 Inbox row 自带 Host 解析好的时间戳——`createdOccurredAt`、`latestReplyOccurredAt` 与其 `latestReplyActor`、以及 `needsHumanDecision`（某个 open Task 停在 `in_review` 等验收，或一条点名 Human 的 Message 在向其要决定且其后 Human 再无发言——单纯点名从不点亮它）——行因此不需自己再做 Thread read；页头的 排序 控件按本浏览器偏好重排这些行，这份偏好存 `localStorage`，从不成为 Team fact。
 

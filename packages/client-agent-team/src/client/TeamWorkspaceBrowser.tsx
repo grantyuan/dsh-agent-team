@@ -44,6 +44,10 @@ export function TeamWorkspaceBrowser({ wide, expandSidebar, navigation, dock, se
   const tasksIsCurrent = navigationState.tasks === true && navigationState.memberSessionId === undefined
   const messagesIsCurrent = navigationState.messages === true && navigationState.memberSessionId === undefined
   const [creatingAgents, setCreatingAgents] = useState<readonly AgentTeamAddMemberRequest[]>([])
+  // The cards are the dock's front door: selecting a page always shows the
+  // dock, even when the navigation face it names already stands (the store's
+  // own action would stay silent) — the dock sync then focuses that tab.
+  const openDock = (): void => { dock.setOpen(true) }
   // Rail icons request expansion and name the section to reveal once wide.
   const [pendingSection, setPendingSection] = useState<SidebarSection>()
   const channelsRef = useRef<HTMLDivElement>(null)
@@ -106,22 +110,22 @@ export function TeamWorkspaceBrowser({ wide, expandSidebar, navigation, dock, se
   if (!wide) {
     return <nav className={css.railWorkspace} aria-label={t('workspaceSections')}>
       <Tooltip label={t('dockToggleButton')} side="right">
-        <button type="button" className={css.railButton} aria-label={t('dockToggleButton')} aria-pressed={dockState.open} onClick={dock.toggleOpen}>
+        <button type="button" className={css.railButton} aria-label={t('dockToggleButton')} aria-pressed={dockState.open} onClick={() => { dock.toggleOpen() }}>
           <IconCompareSplitOutlineRegular size={16} />
         </button>
       </Tooltip>
       <Tooltip label={inboxLabel} side="right">
-        <button type="button" className={css.railButton} aria-label={inboxLabel} aria-current={inboxIsCurrent ? 'page' : undefined} onClick={() => { selectInbox(); expandSidebar() }}>
+        <button type="button" className={css.railButton} aria-label={inboxLabel} aria-current={inboxIsCurrent ? 'page' : undefined} onClick={() => { openDock(); selectInbox(); expandSidebar() }}>
           <InboxMark unread={inboxTotal} />
         </button>
       </Tooltip>
       <Tooltip label={t('tasksTitle')} side="right">
-        <button type="button" className={css.railButton} aria-label={t('tasksTitle')} aria-current={tasksIsCurrent ? 'page' : undefined} onClick={() => { selectTasks(); expandSidebar() }}>
+        <button type="button" className={css.railButton} aria-label={t('tasksTitle')} aria-current={tasksIsCurrent ? 'page' : undefined} onClick={() => { openDock(); selectTasks(); expandSidebar() }}>
           <IconChecklistOutlineRegular size={16} />
         </button>
       </Tooltip>
       <Tooltip label={t('messagesTitle')} side="right">
-        <button type="button" className={css.railButton} aria-label={t('messagesTitle')} aria-current={messagesIsCurrent ? 'page' : undefined} onClick={() => { selectMessages(); expandSidebar() }}>
+        <button type="button" className={css.railButton} aria-label={t('messagesTitle')} aria-current={messagesIsCurrent ? 'page' : undefined} onClick={() => { openDock(); selectMessages(); expandSidebar() }}>
           <IconBrowseOutlineRegular size={16} />
         </button>
       </Tooltip>
@@ -143,7 +147,7 @@ export function TeamWorkspaceBrowser({ wide, expandSidebar, navigation, dock, se
         column dock, and this is the one control that shows or hides that
         column without touching which page it holds. */}
     <div className={css.dockToggleRow}>
-      <button type="button" className={css.dockToggle} aria-pressed={dockState.open} onClick={dock.toggleOpen}>
+      <button type="button" className={css.dockToggle} aria-pressed={dockState.open} onClick={() => { dock.toggleOpen() }}>
         <IconCompareSplitOutlineRegular size={16} />
         <span>{t('dockToggleButton')}</span>
       </button>
@@ -151,15 +155,15 @@ export function TeamWorkspaceBrowser({ wide, expandSidebar, navigation, dock, se
     {/* The Inbox is the one destination that crosses Workspaces — its total sums
         every one of them — so it stands above the selector rather than inside
         the scope that selector names. */}
-    <button type="button" className={css.inboxCard} aria-label={inboxLabel} aria-current={inboxIsCurrent ? 'page' : undefined} onClick={selectInbox}>
+    <button type="button" className={css.inboxCard} aria-label={inboxLabel} aria-current={inboxIsCurrent ? 'page' : undefined} onClick={() => { openDock(); selectInbox() }}>
       <InboxMark unread={inboxTotal} />
       <span className={css.inboxCardLabel}>{t('inboxTitle')}</span>
     </button>
-    <button type="button" className={css.tasksCard} aria-label={t('tasksTitle')} aria-current={tasksIsCurrent ? 'page' : undefined} onClick={selectTasks}>
+    <button type="button" className={css.tasksCard} aria-label={t('tasksTitle')} aria-current={tasksIsCurrent ? 'page' : undefined} onClick={() => { openDock(); selectTasks() }}>
       <IconChecklistOutlineRegular size={16} />
       <span className={css.inboxCardLabel}>{t('tasksTitle')}</span>
     </button>
-    <button type="button" className={css.messagesCard} aria-label={t('messagesTitle')} aria-current={messagesIsCurrent ? 'page' : undefined} onClick={selectMessages}>
+    <button type="button" className={css.messagesCard} aria-label={t('messagesTitle')} aria-current={messagesIsCurrent ? 'page' : undefined} onClick={() => { openDock(); selectMessages() }}>
       <IconBrowseOutlineRegular size={16} />
       <span className={css.inboxCardLabel}>{t('messagesTitle')}</span>
     </button>

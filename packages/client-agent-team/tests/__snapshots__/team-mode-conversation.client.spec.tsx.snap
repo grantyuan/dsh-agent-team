@@ -109,6 +109,26 @@ exports[`Team conversation surfaces > restores persisted Team mode, reconciles a
               aria-label="工作区"
               class="workspaceBrowser"
             >
+              <div
+                class="dockToggleRow"
+              >
+                <button
+                  aria-pressed="true"
+                  class="dockToggle"
+                  type="button"
+                >
+                  <svg
+                    aria-hidden="true"
+                    data-content="8f7c7df2"
+                    data-icon="dsw-icon-compare-split-outline-regular"
+                    height="16"
+                    width="16"
+                  />
+                  <span>
+                    团队面板
+                  </span>
+                </button>
+              </div>
               <button
                 aria-label="收件箱"
                 class="inboxCard"
@@ -668,26 +688,320 @@ exports[`Team conversation surfaces > restores persisted Team mode, reconciles a
       data-slot="main"
       style="display: contents;"
     >
-      <main
-        class="welcomeSurface"
-        data-team-conversation="true"
+      <div
+        data-slot="main.conversation"
+        style="display: contents;"
       >
         <div
-          class="welcome"
+          class="root"
+          data-phase="active"
+          style="--dsh-conversation-column-width: 0px;"
+        >
+          <div
+            data-slot="conversation.header"
+            style="display: contents;"
+          >
+            <header
+              class="header"
+            >
+              <div
+                class="headerLeading"
+                data-conversation-header-leading=""
+              >
+                <div
+                  data-slot="conversation.header.leading"
+                  style="display: contents;"
+                />
+              </div>
+              <div
+                data-slot="conversation.session.header"
+                style="display: contents;"
+              >
+                <div
+                  class="titleRow"
+                >
+                  <div
+                    class="titleCluster"
+                  >
+                    <nav
+                      aria-label="会话层级"
+                      class="crumbs"
+                    >
+                      <span
+                        class="crumbSeg"
+                      >
+                        <span
+                          class="crumb crumbCurrent"
+                        >
+                          ordinary-session
+                        </span>
+                        <div
+                          data-slot="conversation.session.header.lineage"
+                          style="display: contents;"
+                        />
+                      </span>
+                    </nav>
+                    <div
+                      class="headerActions"
+                    >
+                      <div
+                        data-slot="conversation.session.header.actions"
+                        style="display: contents;"
+                      />
+                    </div>
+                  </div>
+                  <div
+                    class="headerUtilities"
+                  >
+                    <div
+                      data-slot="conversation.session.header.utilities"
+                      style="display: contents;"
+                    />
+                  </div>
+                  <div
+                    class="headerCorner"
+                    data-conversation-header-corner=""
+                  >
+                    <div
+                      data-slot="conversation.session.header.corner"
+                      style="display: contents;"
+                    />
+                  </div>
+                </div>
+              </div>
+            </header>
+          </div>
+          <div
+            class="body"
+            data-content-phase="active"
+            data-conversation-content=""
+            data-conversation-region="chat"
+            data-conversation-session="ordinary-session"
+          >
+            <div
+              class="scrollBody"
+              data-conversation-scroll=""
+            >
+              <div
+                data-slot="conversation.session"
+                style="display: contents;"
+              >
+                <div
+                  class="viewArea"
+                />
+              </div>
+              <div
+                class="composerSeat"
+                data-composer-seat=""
+                data-conversation-region="composer"
+              >
+                <div
+                  data-slot="conversation.composer"
+                  style="display: contents;"
+                >
+                  <div
+                    data-chain-overlay-fallback="conversation.composer"
+                    style="display: contents;"
+                  >
+                    <div
+                      class="composerStack"
+                    >
+                      <div
+                        data-slot="conversation.input.dock"
+                        style="display: contents;"
+                      />
+                      <div
+                        data-slot="conversation.composer.bar"
+                        style="display: contents;"
+                      >
+                        <div
+                          data-slot-error="conversation.composer.bar"
+                        />
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+            <div
+              class="widthHandle"
+              data-side="left"
+              data-width-handle="left"
+            />
+            <div
+              class="widthHandle"
+              data-side="right"
+              data-width-handle="right"
+            />
+          </div>
+        </div>
+      </div>
+    </div>
+    <div
+      data-slot="rightbar"
+      style="display: contents;"
+    >
+      <section
+        aria-label="团队面板"
+        class="panel"
+        data-team-dock="true"
+        style="width: 400px;"
+      >
+        <header
+          class="dockHeader"
         >
           <span
-            class="welcomeEyebrow"
+            class="dockTitle"
           >
-            Alpha
+            团队面板
           </span>
-          <h1>
-            频道
-          </h1>
-          <p>
-            从左侧选择一个频道开始协作
-          </p>
+          <div
+            class="dockActions"
+          >
+            <button
+              aria-label="将当前页面拆分到新分栏"
+              class="iconButton"
+              type="button"
+            >
+              <svg
+                aria-hidden="true"
+                data-content="8f7c7df2"
+                data-icon="dsw-icon-compare-split-outline-regular"
+                height="16"
+                width="16"
+              />
+            </button>
+            <button
+              aria-label="最大化面板"
+              aria-pressed="false"
+              class="iconButton"
+              type="button"
+            >
+              <svg
+                aria-hidden="true"
+                data-content="1b11d48d"
+                data-icon="dsw-icon-fullscreen-outline-regular"
+                height="16"
+                width="16"
+              />
+            </button>
+            <button
+              aria-label="关闭面板"
+              class="iconButton"
+              type="button"
+            >
+              <svg
+                aria-hidden="true"
+                data-content="2788a0e8"
+                data-icon="dsw-icon-close-outline-regular"
+                height="16"
+                width="16"
+              />
+            </button>
+          </div>
+        </header>
+        <div
+          class="panes"
+        >
+          <div
+            class="pane"
+            data-team-dock-pane="true"
+            style="flex-grow: 1;"
+          >
+            <div
+              aria-label="团队面板"
+              class="paneHeader"
+              role="tablist"
+            >
+              <div
+                aria-selected="true"
+                class="tab"
+                data-team-dock-tab="true"
+                role="tab"
+                tabindex="0"
+              >
+                <span
+                  class="tabLabel"
+                >
+                  团队
+                </span>
+                <button
+                  aria-label="关闭标签"
+                  class="tabClose"
+                  tabindex="0"
+                  type="button"
+                >
+                  <svg
+                    aria-hidden="true"
+                    data-content="2788a0e8"
+                    data-icon="dsw-icon-close-outline-regular"
+                    height="12"
+                    width="12"
+                  />
+                </button>
+              </div>
+              <div
+                class="paneActions"
+              >
+                <button
+                  aria-label="最大化此分栏"
+                  aria-pressed="false"
+                  class="iconButton"
+                  type="button"
+                >
+                  <svg
+                    aria-hidden="true"
+                    data-content="1b11d48d"
+                    data-icon="dsw-icon-fullscreen-outline-regular"
+                    height="14"
+                    width="14"
+                  />
+                </button>
+                <button
+                  aria-label="关闭此分栏"
+                  class="iconButton"
+                  type="button"
+                >
+                  <svg
+                    aria-hidden="true"
+                    data-content="2788a0e8"
+                    data-icon="dsw-icon-close-outline-regular"
+                    height="14"
+                    width="14"
+                  />
+                </button>
+              </div>
+            </div>
+            <div
+              aria-label="团队"
+              class="body"
+              data-team-dock-body="true"
+              role="tabpanel"
+            >
+              <main
+                class="welcomeSurface"
+                data-team-dock-welcome="true"
+              >
+                <div
+                  class="welcome"
+                >
+                  <span
+                    class="welcomeEyebrow"
+                  >
+                    stale
+                  </span>
+                  <h1>
+                    频道
+                  </h1>
+                  <p>
+                    从左侧选择一个频道开始协作
+                  </p>
+                </div>
+              </main>
+            </div>
+          </div>
         </div>
-      </main>
+      </section>
     </div>
   </div>
 </div>
